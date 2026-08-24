@@ -155,7 +155,7 @@ window.__ModuleLoader__.load({
 			// for a panel sitting on top of it, which then shows the wallpaper
 			// through its own text. Themes that define no overlay token fall back
 			// to the old value, so the default look is unchanged.
-			".tkl_panel{z-index:30;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base));width:460px;max-width:calc(100vw - 24px);max-height:76vh;box-shadow:var(--dsw-shadow-lv2);border-radius:12px;flex-direction:column;display:flex;position:fixed;bottom:128px;left:12px;overflow:hidden;" +
+			".tkl_panel{z-index:30;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base));width:620px;max-width:calc(100vw - 24px);max-height:76vh;box-shadow:var(--dsw-shadow-lv2);border-radius:12px;flex-direction:column;display:flex;position:fixed;bottom:128px;left:12px;overflow:hidden;" +
 				// Scoped here rather than on :root so nothing escapes into the host.
 				"--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);" +
 				"--tkl-radius:12px;--tkl-radius-sm:8px;--tkl-radius-xs:6px;" +
@@ -237,7 +237,7 @@ window.__ModuleLoader__.load({
 			".tkl_rowPath{color:var(--dsw-alias-label-caption);font-size:10px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left;min-width:0;flex:1}",
 			".tkl_row:hover{background:var(--dsw-alias-interactive-bg-hover)}",
 			".tkl_row[data-on]{background:var(--dsw-alias-interactive-bg-active)}",
-			".tkl_rowName{color:var(--dsw-alias-label-primary);flex:none;width:150px;min-width:0;font-size:12px;line-height:18px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}",
+			".tkl_rowName{color:var(--dsw-alias-label-primary);flex:1 1 auto;min-width:0;font-size:12px;line-height:18px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}",
 			".tkl_rowValue{color:var(--dsw-alias-label-primary);flex:none;font-size:12px;line-height:18px;font-variant-numeric:tabular-nums;text-align:right;min-width:64px}",
 			".tkl_rowMeta{color:var(--dsw-alias-label-tertiary);flex:none;width:44px;font-size:11px;line-height:18px;font-variant-numeric:tabular-nums;text-align:right}",
 
@@ -294,7 +294,7 @@ window.__ModuleLoader__.load({
 			".tkl_table th:first-child{text-align:left}",
 			".tkl_table th:hover{color:var(--dsw-alias-label-secondary)}",
 			".tkl_table td{color:var(--dsw-alias-label-primary);text-align:right;padding:5px 0;border-bottom:1px solid var(--dsw-alias-border-l1);font-variant-numeric:tabular-nums;white-space:nowrap}",
-			".tkl_table td:first-child{text-align:left;max-width:130px;overflow:hidden;text-overflow:ellipsis}",
+			".tkl_table td:first-child{text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis}",
 			".tkl_table tr:last-child td{border-bottom:0}",
 			".tkl_hit{color:var(--dsw-alias-label-tertiary);font-size:11px;margin-left:3px}",
 			".tkl_sortMark{color:var(--dsw-alias-label-secondary);margin-left:2px}",
