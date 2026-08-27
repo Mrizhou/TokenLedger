@@ -580,6 +580,42 @@ test("a vendor origin names its scheme outright, with no fingerprint probe", () 
 	assert.deepEqual(accounts.map((a) => a.displayName), ["OpenRouter", "Moonshot", "智谱 GLM"]);
 });
 
+test("a built-in route without a baseURL still names its vendor", () => {
+	// The harness resolves its built-in providers' endpoints from its own
+	// catalog, so the stored profile carries no baseURL. Reading that absence as
+	// "the shipped DeepSeek default" pointed a Z.ai key at api.deepseek.com and
+	// collapsed the second such route as a duplicate vendor — the live install
+	// showed a card that could not read and a picker with no 智谱 in it.
+	const accounts = listAccounts(
+		ctxWith([piAi("zai"), piAi("zai-coding-cn")], {
+			providers: {
+				zai: { apiKeyEnv: "ZAI_API_KEY" },
+				"zai-coding-cn": { apiKeyEnv: "ZAI_CODING_CN_API_KEY" }
+			}
+		}),
+		{ softwareOf: new Map() }
+	);
+	assert.deepEqual(accounts.map((a) => a.scheme), ["zai", "zai"]);
+	assert.deepEqual(accounts.map((a) => a.displayName), ["Z.ai", "智谱 GLM"]);
+	assert.deepEqual(accounts.map((a) => a.origin), ["https://api.z.ai", "https://open.bigmodel.cn"]);
+	assert.deepEqual(accounts.map((a) => a.hasCredential), [true, true]);
+});
+
+test("an explicit baseURL beats the built-in origin table", () => {
+	// A route called anything may point anywhere: the table only speaks for
+	// routes whose profile says nothing at all.
+	const accounts = listAccounts(
+		ctxWith([piAi("zai")], {
+			providers: {
+				zai: { baseURL: "https://relay-one.example/v1", apiKeyEnv: "K" }
+			}
+		}),
+		{ softwareOf: new Map() }
+	);
+	assert.equal(accounts[0].scheme, undefined, "the relay is not the vendor");
+	assert.equal(accounts[0].host, "relay-one.example");
+});
+
 test("two routes at one vendor collapse, because they draw on one wallet", () => {
 	// The opposite of the relay rule directly above: there, two keys are two
 	// quotas and must stay apart. Here they are one account seen twice.
@@ -669,16 +705,127 @@ test("an unreported currency stays absent rather than being guessed", async () =
 	assert.equal(result.currency, undefined);
 });
 
-test("zai reads available against total", async () => {
+/**
+ * A fetch that answers by path, so a reader with more than one route can be
+ * walked through all of them. An unmatched path throws rather than 404s: a
+ * stub that answers everything looks exactly like a vendor gone mad, and the
+ * test should say which path nobody planned for.
+ */
+const byPath = (routes) => async (url, init) => {
+	const path = new URL(url).pathname;
+	for (const [needle, answer] of routes) {
+		if (path.includes(needle)) {
+			if (typeof answer === "function") return answer(url, init);
+			// A plain body is wrapped into a response; an object that already
+			// speaks `ok`/`json` is a whole response and goes out untouched.
+			// Wrapping a 404-shaped answer as a body would turn the refusal
+			// into a successful response whose body merely mentions failure.
+			return "ok" in answer || "json" in answer ? answer : { ok: true, json: async () => answer };
+		}
+	}
+	throw new Error(`unexpected path: ${path}`);
+};
+
+test("zai reads the account report first: what was spent, what is left", async () => {
+	const seen = [];
 	const result = await readBalance({
 		scheme: "zai",
 		origin: "https://open.bigmodel.cn",
 		apiKey: "glm-key",
-		fetch: okJson({ data: { total_balance: 100, available_balance: 64 } })
+		fetch: byPath([
+			[
+				"/api/biz/account/query-customer-account-report",
+				(url, init) => {
+					seen.push(init.headers.authorization);
+					return {
+						ok: true,
+						json: async () => ({
+							code: 200,
+							msg: "操作成功",
+							success: true,
+							data: {
+								balance: 66.5,
+								rechargeAmount: 70.0,
+								giveAmount: 0.0,
+								totalSpendAmount: 3.5,
+								availableBalance: 66.5,
+								frozenBalance: 0,
+								creditStatus: "NOT_OPEN"
+							}
+						})
+					};
+				}
+			],
+			["/api/monitor/usage/quota/limit", { data: { limits: [] } }],
+			["/api/biz/subscription/list", { data: [] }]
+		])
+	});
+	assert.equal(result.total, 66.5);
+	assert.equal(result.granted, undefined, "recharge is cumulative top-up, not a gift; the card must not say 其中赠送");
+	assert.equal(result.used, 3.5);
+	assert.equal(result.currency, "CNY", "the report carries no currency; the vendor map supplies it");
+	assert.equal(result.isAvailable, true);
+	assert.deepEqual(seen, ["glm-key"], "console routes take the key raw, without a Bearer prefix");
+});
+
+test("an origin that does not serve the report falls back to the v4 balance", async () => {
+	let bearer;
+	const result = await readBalance({
+		scheme: "zai",
+		origin: "https://api.z.ai",
+		apiKey: "zai-key",
+		fetch: byPath([
+			["/api/biz/account/query-customer-account-report", { ok: false, status: 404 }],
+			[
+				"/api/paas/v4/balance",
+				(url, init) => {
+					bearer = init.headers.authorization;
+					return { ok: true, json: async () => ({ data: { total_balance: 100, available_balance: 64 } }) };
+				}
+			],
+			["/api/monitor/usage/quota/limit", { data: { limits: [] } }],
+			["/api/biz/subscription/list", { data: [] }]
+		])
 	});
 	assert.equal(result.total, 64);
 	assert.equal(result.granted, 100);
-	assert.equal(result.currency, "CNY");
+	assert.equal("used" in result, false, "the v4 route carries no spend; none is invented");
+	assert.equal(bearer, "Bearer zai-key", "the v4 route still takes the inference API's Bearer form");
+});
+
+test("a refusal on the report route is not the wallet's answer", async () => {
+	// The gateway refuses every path the same way, so a refusal here says
+	// nothing about the wallet the older route would still answer for — and on
+	// a bad key both routes refuse alike, so the surfaced refusal is honest
+	// either way.
+	const result = await readBalance({
+		scheme: "zai",
+		origin: "https://open.bigmodel.cn",
+		apiKey: "k",
+		fetch: byPath([
+			["/api/biz/account/query-customer-account-report", { code: 401, msg: "token expired or incorrect", success: false }],
+			["/api/paas/v4/balance", { data: { total_balance: 100, available_balance: 64 } }],
+			["/api/monitor/usage/quota/limit", { data: { limits: [] } }],
+			["/api/biz/subscription/list", { data: [] }]
+		])
+	});
+	assert.equal(result.total, 64);
+});
+
+test("when both wallet routes fail, the older route's refusal is the one surfaced", async () => {
+	const result = await readBalance({
+		scheme: "zai",
+		origin: "https://api.z.ai",
+		apiKey: "k",
+		fetch: byPath([
+			["/api/biz/account/query-customer-account-report", { success: false, msg: "report leg" }],
+			["/api/paas/v4/balance", { code: 401, msg: "token expired or incorrect", success: false }],
+			["/api/monitor/usage/quota/limit", { code: 401, msg: "token expired or incorrect", success: false }],
+			["/api/biz/subscription/list", { code: 401, msg: "token expired or incorrect", success: false }]
+		])
+	});
+	assert.equal(result.fetched, false);
+	assert.equal(result.reason, "upstream-401", "the v4 refusal carries the code; the report's bare refusal does not");
 });
 
 // --- quota windows ------------------------------------------------------------
@@ -787,20 +934,20 @@ test("a success code spelled 0 is still a success", async () => {
 		scheme: "zai",
 		origin: "https://api.z.ai",
 		apiKey: "k",
-		fetch: okJson({ code: 0, data: { total_balance: 100, available_balance: 64 } })
+		fetch: okJson({ code: 0, data: { availableBalance: 64 } })
 	});
 	assert.equal(result.fetched, true);
 	assert.equal(result.total, 64);
 });
 
 test("a vendor that carries neither convention is left alone", async () => {
-	// `/api/paas/v4/balance` may answer with a bare `data` object. An envelope
-	// that fires on absence would break every such response.
+	// The wallet routes may answer with a bare `data` object. An envelope that
+	// fires on absence would break every such response.
 	const result = await readBalance({
 		scheme: "zai",
 		origin: "https://api.z.ai",
 		apiKey: "k",
-		fetch: okJson({ data: { total_balance: 10, available_balance: 10 } })
+		fetch: okJson({ data: { availableBalance: 10 } })
 	});
 	assert.equal(result.fetched, true);
 	assert.equal(result.total, 10);

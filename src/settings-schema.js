@@ -82,6 +82,21 @@ export function buildSchema(z) {
 		 */
 		endpoints: z.array(declaredEndpoint),
 		/**
+		 * New API console credentials, keyed by ORIGIN — one entry per relay site,
+		 * written by the panel's 设置余额 dialog. `/api/user/self` reads the site
+		 * user's WALLET, which every key on that site draws from, so the origin is
+		 * the unit the credential actually scopes to; two routes on one site share
+		 * the entry and the card.
+		 */
+		userAuth: z.dict(
+			z.object({
+				/** The numeric 用户ID from 个人设置. */
+				userId: z.number().step(1).min(1),
+				/** The 系统访问令牌; sent as a header, never echoed back out. */
+				token: z.string()
+			})
+		),
+		/**
 		 * Relay overrides, keyed by DSH provider route. Normally empty: sites are
 		 * discovered from the host's own provider configuration. An entry here is
 		 * for what discovery cannot see — a composition with no settings provider,
@@ -131,7 +146,14 @@ export async function registerNamespace(settings, base, onChange) {
 	const value = scope.get();
 	onChange?.(value);
 	scope.watch?.((next) => onChange?.(next));
-	return { scope, value, remove: (route) => removeRelay(settings, route) };
+	return {
+		scope,
+		value,
+		remove: (route) => removeRelay(settings, route),
+		// The dialog's 清除 button. Bound here, where the service is at hand —
+		// the caller only ever holds the registration, not the service.
+		removeUserAuth: (origin) => removeUserAuth(settings, origin)
+	};
 }
 
 /**
@@ -153,4 +175,21 @@ export async function removeRelay(settings, route) {
 		throw new Error("这个 settings 服务没有 mutate，删不了单个键");
 	}
 	await settings.mutate(NAMESPACE, [{ op: "unset", path: ["relays", route] }]);
+}
+
+/**
+ * Remove one site's console credentials.
+ *
+ * Same reason `removeRelay` reaches for `mutate`: a deep merge cannot express
+ * "this origin's entry is gone", and `unset` names the key to drop. Called by
+ * the panel dialog's 清除 button.
+ *
+ * @param settings - the settings service.
+ * @param origin - the origin whose entry goes away.
+ */
+export async function removeUserAuth(settings, origin) {
+	if (typeof settings.mutate !== "function") {
+		throw new Error("这个 settings 服务没有 mutate，删不了单个键");
+	}
+	await settings.mutate(NAMESPACE, [{ op: "unset", path: ["userAuth", origin] }]);
 }

@@ -58,6 +58,14 @@ export const BASE_PATH = "/api/tokenledger";
 export const USAGE_PATH = `${BASE_PATH}/usage`;
 export const BALANCE_PATH = `${BASE_PATH}/balance`;
 export const ACCOUNTS_PATH = `${BASE_PATH}/accounts`;
+/**
+ * The one route that WRITES, and what it writes is the plugin's own settings
+ * namespace: the per-origin New API console credentials the 设置余额 dialog
+ * edits. Its POST is the single exception to this surface's read-only rule —
+ * the fence (loopback peer + host) is identical, the body is size-capped, and
+ * nothing here ever echoes the token back.
+ */
+export const USERAUTH_PATH = `${BASE_PATH}/userauth`;
 
 /**
  * How many days the activity strip covers: a full year of whole weeks.
@@ -90,6 +98,15 @@ export function hostNameOf(header) {
 	return colon === -1 ? header : header.slice(0, colon);
 }
 
+/** The path a request addresses, without the query. */
+export function pathOf(url) {
+	try {
+		return new URL(url ?? "/", "http://localhost").pathname;
+	} catch {
+		return "";
+	}
+}
+
 /**
  * Decide whether a request may be served.
  *
@@ -97,7 +114,13 @@ export function hostNameOf(header) {
  *   `{ status, body }` to send back.
  */
 export function screenRequest(req) {
-	if (req?.method !== "GET") return { status: 405, body: { ok: false, error: "method-not-allowed" } };
+	const path = pathOf(req?.url);
+	const method = req?.method;
+	// POST exists for exactly one route — the credentials dialog. Everywhere
+	// else the surface stays read-only, and an unexpected POST is refused
+	// before the loopback fence is even consulted.
+	const methodOk = method === "GET" || (method === "POST" && path === USERAUTH_PATH);
+	if (!methodOk) return { status: 405, body: { ok: false, error: "method-not-allowed" } };
 	const peerOk = isLoopbackAddress(req.socket?.remoteAddress);
 	const hostOk = isLoopbackAddress(hostNameOf(req.headers?.host));
 	// Both, and the peer address is the one that cannot be forged.
@@ -113,6 +136,65 @@ export function accountOf(url) {
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * `?force=1` on a balance request — the panel's refresh button asking the
+ * wallet to skip its freshness window. A backoff is never bypassed by this;
+ * the throttle is the one thing the cache exists to respect.
+ */
+export function forceOf(url) {
+	try {
+		const value = new URL(url ?? "/", "http://localhost").searchParams.get("force");
+		return value === "1" || value === "true";
+	} catch {
+		return false;
+	}
+}
+
+/** The origin a userauth request names, or undefined when absent. */
+export function originOf(url) {
+	try {
+		const value = new URL(url ?? "/", "http://localhost").searchParams.get("origin");
+		return value === null || value === "" ? undefined : value;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Cap for the credentials POST body; two integers and a token fit in far less. */
+export const USERAUTH_BODY_LIMIT = 4096;
+
+/**
+ * Read a request body as JSON, with a hard byte ceiling.
+ *
+ * Resolves `undefined` for an empty body and throws `payload-too-large` past
+ * the cap — the dialog's payload is two short fields, so anything larger is
+ * not the dialog.
+ */
+export function readJsonBody(req, limit = USERAUTH_BODY_LIMIT) {
+	return new Promise((resolve, reject) => {
+		const chunks = [];
+		let size = 0;
+		req.on("data", (chunk) => {
+			size += chunk.length;
+			if (size > limit) {
+				reject(Object.assign(new Error("payload-too-large"), { kind: "payload-too-large" }));
+				req.destroy();
+				return;
+			}
+			chunks.push(chunk);
+		});
+		req.on("end", () => {
+			if (chunks.length === 0) return resolve(undefined);
+			try {
+				resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+			} catch {
+				reject(Object.assign(new Error("invalid-json"), { kind: "invalid-json" }));
+			}
+		});
+		req.on("error", reject);
+	});
 }
 
 /** Parse `?days=` / `?site=` into the range the store queries take. */
@@ -361,8 +443,53 @@ function attachRoutes(ctx, httpServer, deps) {
 	if (typeof deps.balance === "function") {
 		route(
 			BALANCE_PATH,
-			async (query, url) => deps.balance(accountOf(url)),
+			// `?origin=` (no `account=`) marks a WARM request: the browser fires
+			// one per configured site at page load, so the first panel open
+			// finds the host's cache already hot. Passive — freshness and the
+			// throttle backoff govern it like any other read.
+			async (query, url) => deps.balance(accountOf(url), forceOf(url), originOf(url)),
 			"tokenledger balance route"
+		);
+	}
+
+	// The credentials route, in one registration: the webserver's contract is
+	// that a route OWNS its path and handles every method itself ("routes own
+	// their method handling"), so GET and POST dispatch inside the handler —
+	// a second exact registration on the same path would fight this one.
+	//
+	// GET answers what the dialog may SHOW about stored credentials: that they
+	// exist and which user id they carry. The token itself is never in that
+	// answer — a GET that echoed a secret would make every devtools session a
+	// credential leak. POST saves or clears one origin's entry; the fence ran
+	// in `screenRequest`, the body is capped, and a failure lands here as a
+	// plain status the dialog can print.
+	if (typeof deps.userAuth === "function" || typeof deps.saveUserAuth === "function") {
+		ctx.effect(
+			() =>
+				httpServer.register({
+					kind: "exact",
+					path: USERAUTH_PATH,
+					handler: async (req, res) => {
+						const refused = screenRequest(req);
+						if (refused !== undefined) return send(res, refused.status, refused.body);
+						try {
+							if (req.method === "POST" && typeof deps.saveUserAuth === "function") {
+								const body = await readJsonBody(req);
+								await deps.saveUserAuth(body);
+								return send(res, 200, { ok: true });
+							}
+							if (req.method === "GET" && typeof deps.userAuth === "function") {
+								return send(res, 200, { ok: true, origins: deps.userAuth(originOf(req.url)) });
+							}
+							send(res, 405, { ok: false, error: "method-not-allowed" });
+						} catch (error) {
+							const status = error?.kind === "payload-too-large" || error?.kind === "invalid-json" ? 400 : 500;
+							logger?.warn?.("tokenledger: %s failed: %s", USERAUTH_PATH, error?.message ?? error);
+							send(res, status, { ok: false, error: error?.kind ?? "internal" });
+						}
+					}
+				}),
+			"tokenledger userauth route"
 		);
 	}
 

@@ -86,7 +86,7 @@ dsh plugin --profile web remove dsh-tokenledger
 | New API 系（含 One API、VoAPI 等分支） | 额度 | provider 的 `apiKeyEnv` | `/api/usage/token/` + `/api/status` |
 | Sub2API | 余额 / 额度 / 订阅 | provider 的 `apiKeyEnv` | `/v1/usage` |
 | Moonshot / Kimi | 余额 | provider 的 `apiKeyEnv` | `/v1/users/me/balance` |
-| 智谱 GLM / Z.ai | 余额 | provider 的 `apiKeyEnv` | `/api/paas/v4/balance` |
+| 智谱 GLM / Z.ai | 余额 | provider 的 `apiKeyEnv` | `/api/biz/account/query-customer-account-report`，读不到时回退 `/api/paas/v4/balance` |
 | OpenRouter | 余额 | **Management Key** | `/api/v1/credits` |
 | OpenCode Go | 订阅 | provider 的 `apiKeyEnv`，或本机 `auth.json` | `/zen/go/v1/usage` |
 | Kimi For Coding | 订阅 | provider 的 `apiKeyEnv` | `/coding/v1/usages` |

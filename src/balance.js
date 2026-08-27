@@ -44,6 +44,7 @@
 
 import { detectRelaySoftware } from "./adapters/detect.js";
 import { compileEndpoint, indexEndpoints } from "./declarative.js";
+import { unitFromStatus } from "./newapi-user.js";
 import { normalizeWindows } from "./quota.js";
 import { normalizeOrigin } from "./relay-sites.js";
 import { KIMI, MINIMAX, OPENCODE_GO, readZaiCodingPlan } from "./subscriptions.js";
@@ -111,6 +112,25 @@ export function vendorOf(baseUrl) {
 		return undefined;
 	}
 }
+
+/**
+ * Origins for the harness's built-in provider routes, which carry no `baseURL`
+ * in the stored profile: the installation resolves their endpoints from its own
+ * catalog, and a profile read through the settings seam shows nothing where a
+ * hand-configured route would say its origin.
+ *
+ * Without this table those routes fall into the DeepSeek default — no baseURL
+ * meant the shipped DeepSeek origin, by the only convention the module had —
+ * which points a Z.ai key at api.deepseek.com and then collapses the second
+ * such route as a duplicate vendor. The card fails its reads and the picker
+ * never names 智谱 at all, which is what a live install showed. An explicit
+ * `baseURL` on the route always wins over this table: a route called anything
+ * may point anywhere.
+ */
+const BUILTIN_PROVIDER_ORIGINS = new Map([
+	["zai", "https://api.z.ai"],
+	["zai-coding-cn", "https://open.bigmodel.cn"]
+]);
 
 /** How many hops to follow before giving up on a same-origin redirect loop. */
 const MAX_REDIRECTS = 3;
@@ -268,6 +288,56 @@ function toNumber(value) {
 }
 
 /**
+ * Z.ai's wallet: the console's account report first, the v4 balance second.
+ *
+ * `query-customer-account-report` is the route 智谱's own billing page reads,
+ * and it answers with what was spent and what is left, where
+ * `/api/paas/v4/balance` carries two numbers and no spending. Report first for
+ * that richness; v4 kept behind it because the report is a console route the
+ * inference origins are not guaranteed to serve, and a route that is simply
+ * not there must not cost the balance that is.
+ *
+ * The report's `rechargeAmount` and `giveAmount` stay off the card: they are
+ * cumulative top-up accounting, not a gift breakdown, and the card's only
+ * granted line is labeled 「其中赠送」 — filling it from the top-up total told
+ * a live account its recharge was a gift.
+ *
+ * Auth follows the console family: the key alone, as `/api/biz/subscription/
+ * list` already reads, while the v4 route still takes the inference API's
+ * Bearer form.
+ *
+ * A failed report leg is never an answer about the wallet — "the report could
+ * not be read here" and "the account is empty" are different facts — so every
+ * report failure falls through to v4, and when v4 fails too, its error is the
+ * one that surfaces: it is the route this module's refusal vocabulary was
+ * written against, and on this vendor a bad key refuses both identically.
+ */
+async function readZaiWallet({ origin, get }) {
+	try {
+		const report = await get(new URL("/api/biz/account/query-customer-account-report", origin).href, { raw: true });
+		const data = report?.data ?? {};
+		const available = toNumber(data.availableBalance) ?? toNumber(data.balance);
+		return {
+			currency: typeof data.currency === "string" ? data.currency : undefined,
+			total: available,
+			used: toNumber(data.totalSpendAmount)
+		};
+	} catch {
+		// The report route's failure is the report route's problem.
+	}
+
+	const body = await get(new URL("/api/paas/v4/balance", origin).href);
+	const data = body?.data ?? {};
+	const available = toNumber(data.available_balance);
+	const total = toNumber(data.total_balance) ?? available;
+	return {
+		currency: typeof data.currency === "string" ? data.currency : undefined,
+		total: available ?? total,
+		granted: total
+	};
+}
+
+/**
  * One reader per relay program, plus the vendor.
  *
  * Each returns the same shape so the panel renders one card whatever answered:
@@ -359,30 +429,32 @@ export const SCHEMES = {
 		// hold both at once, so both are read and either may fail alone. A plan
 		// user with an empty wallet must not see an empty card, and a wallet user
 		// with no plan must not see the balance disappear because a second route
-		// answered 404.
+		// answered 404. The wallet itself has two routes of its own — the
+		// console's account report first, the v4 balance behind it; the order
+		// and the field mapping live in `readZaiWallet`.
 		async read({ origin, get, vendor }) {
 			const [wallet, plan] = await Promise.allSettled([
-				get(new URL("/api/paas/v4/balance", origin).href),
+				readZaiWallet({ origin, get }),
 				readZaiCodingPlan({ origin, get })
 			]);
 			if (wallet.status === "rejected" && plan.status === "rejected") throw wallet.reason;
 
-			const data = wallet.status === "fulfilled" ? wallet.value?.data : undefined;
-			const available = toNumber(data?.available_balance);
-			const total = toNumber(data?.total_balance) ?? available;
+			const money = wallet.status === "fulfilled" ? wallet.value : undefined;
+			const available = money?.total;
 			const coding = plan.status === "fulfilled" ? plan.value : undefined;
 			const windows = coding?.windows ?? [];
 
 			return {
 				isAvailable:
-					total !== undefined
-						? total > 0
+					available !== undefined
+						? available > 0
 						: windows.length === 0
 							? undefined
 							: windows.some((w) => w.unlimited === true || (w.usedPercent ?? 0) < 100),
-				currency: typeof data?.currency === "string" ? data.currency : vendor?.currency,
-				total: available ?? total,
-				granted: total,
+				currency: money?.currency ?? vendor?.currency,
+				total: available,
+				granted: money?.granted,
+				...(money?.used === undefined ? {} : { used: money.used }),
 				...(coding?.plan === undefined ? {} : { plan: coding.plan }),
 				windows
 			};
@@ -405,15 +477,21 @@ export const SCHEMES = {
 			const available = toNumber(data.total_available);
 
 			// Quota is an internal integer, and `quota_per_unit` is the site's own
-			// divisor for turning it into **USD** — which is what New API's own
-			// wallet page shows. `price` is a different number: the local-currency
-			// price of one unit at top-up time. Treating a present `price` as
-			// "this site bills in CNY" put a ¥ in front of a dollar figure.
+			// divisor for turning it into its display currency — the same unit
+			// semantics the user-wallet reader uses, so a site that shows ¥ in its
+			// own console gets a ¥ here too. `price` is a different number: the
+			// local-currency price of one unit at top-up time. Treating a present
+			// `price` as "this site bills in CNY" put a ¥ in front of a dollar
+			// figure.
 			let scale;
+			let unitCurrency;
 			try {
 				const status = (await get(new URL("/api/status", origin).href, { anonymous: true }))?.data ?? {};
-				const perUnit = toNumber(status.quota_per_unit);
-				if (perUnit !== undefined && perUnit > 0) scale = 1 / perUnit;
+				const unit = unitFromStatus(status);
+				if (unit.perUnit > 0) scale = 1 / unit.perUnit;
+				// A site that names its display unit wins; the classic New API page
+				// shows dollars, so absence keeps the long-standing label.
+				unitCurrency = status.quota_display_type === undefined || status.quota_display_type === null ? "USD" : unit.currency;
 			} catch {
 				// A site that will not describe its own units still has a quota.
 			}
@@ -426,7 +504,7 @@ export const SCHEMES = {
 			return {
 				isAvailable: unlimited || (available ?? 0) > 0,
 				unlimited,
-				currency: scale === undefined ? undefined : "USD",
+				currency: scale === undefined ? undefined : unitCurrency,
 				// An unlimited key has no remaining quota to report, and New API
 				// does not leave the field empty — it decrements from zero, so
 				// `total_available` comes back as the negated usage. Shown as a
@@ -669,7 +747,12 @@ export function listAccounts(ctx, options = {}) {
 		} catch {
 			continue;
 		}
-		const baseUrl = profile?.baseURL ?? profile?.baseUrl;
+		// A profile without a baseURL is either the shipped DeepSeek default or
+		// one of the installation's built-in routes, whose origin lives in the
+		// harness's catalog, not in the stored settings. The table names those;
+		// everything else keeps the DeepSeek convention it always had.
+		const baseUrl =
+			profile?.baseURL ?? profile?.baseUrl ?? BUILTIN_PROVIDER_ORIGINS.get(entry.provider);
 		const vendor = vendorOf(baseUrl);
 		const origin = isOfficialDeepSeek(baseUrl) ? (normalizeOrigin(baseUrl) ?? DEEPSEEK_ORIGIN) : normalizeOrigin(baseUrl);
 		if (origin === undefined) continue;
