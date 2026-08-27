@@ -669,16 +669,46 @@ test("an unreported currency stays absent rather than being guessed", async () =
 	assert.equal(result.currency, undefined);
 });
 
-test("zai reads available against total", async () => {
+test("zai reads the account report balance, grant and spend fields", async () => {
 	const result = await readBalance({
 		scheme: "zai",
 		origin: "https://open.bigmodel.cn",
 		apiKey: "glm-key",
-		fetch: okJson({ data: { total_balance: 100, available_balance: 64 } })
+		fetch: okJson({
+			code: 200,
+			success: true,
+			data: {
+				balance: "42.569039095",
+				availableBalance: "42.569039095",
+				rechargeAmount: "50.000000",
+				giveAmount: 0,
+				totalSpendAmount: "7.430960905"
+			}
+		})
+	});
+	assert.equal(result.total, 42.569039095);
+	assert.equal(result.granted, 50);
+	assert.equal(result.used, 7.430960905);
+	assert.equal(result.currency, "CNY");
+});
+
+test("zai falls back to the legacy wallet endpoint when the report route is absent", async () => {
+	const seen = [];
+	const result = await readBalance({
+		scheme: "zai",
+		origin: "https://api.z.ai",
+		apiKey: "glm-key",
+		fetch: async (url) => {
+			seen.push(String(url));
+			if (String(url).includes("query-customer-account-report")) return { ok: false, status: 404 };
+			if (String(url).includes("/api/paas/v4/balance")) return okJson({ data: { total_balance: 100, available_balance: 64 } })();
+			return { ok: false, status: 404 };
+		}
 	});
 	assert.equal(result.total, 64);
 	assert.equal(result.granted, 100);
-	assert.equal(result.currency, "CNY");
+	assert.ok(seen.some((url) => url.includes("query-customer-account-report")));
+	assert.ok(seen.some((url) => url.includes("/api/paas/v4/balance")));
 });
 
 // --- quota windows ------------------------------------------------------------

@@ -308,9 +308,10 @@ test("zai's console routes get the bare key, and the inference route the Bearer 
 	});
 	await read("zai", "https://api.z.ai", fetch);
 	const authOf = (fragment) => seen.find((r) => r.url.includes(fragment)).authorization;
+	assert.equal(authOf("/api/biz/account/query-customer-account-report"), "Bearer k");
 	assert.equal(authOf("/api/paas/v4/balance"), "Bearer k");
 	assert.equal(authOf("/api/monitor/"), "k");
-	assert.equal(authOf("/api/biz/"), "k");
+	assert.equal(authOf("/api/biz/subscription/list"), "k");
 });
 
 test("either half of a zai account can fail without taking the other down", async () => {

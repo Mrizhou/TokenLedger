@@ -361,15 +361,40 @@ export const SCHEMES = {
 		// with no plan must not see the balance disappear because a second route
 		// answered 404.
 		async read({ origin, get, vendor }) {
+			// The account-report endpoint is the current wallet API for both Z.ai
+			// hosts. Older deployments may not expose it yet, so only a real 404/405
+			// falls back to the legacy endpoint; authentication failures are kept as
+			// failures instead of being retried against another route.
+			const readWallet = async () => {
+				try {
+					return { kind: "report", body: await get(new URL("/api/biz/account/query-customer-account-report", origin).href) };
+				} catch (error) {
+					if (error?.fromEnvelope === true || (error?.status !== 404 && error?.status !== 405)) throw error;
+					return { kind: "legacy", body: await get(new URL("/api/paas/v4/balance", origin).href) };
+				}
+			};
 			const [wallet, plan] = await Promise.allSettled([
-				get(new URL("/api/paas/v4/balance", origin).href),
+				readWallet(),
 				readZaiCodingPlan({ origin, get })
 			]);
 			if (wallet.status === "rejected" && plan.status === "rejected") throw wallet.reason;
 
-			const data = wallet.status === "fulfilled" ? wallet.value?.data : undefined;
-			const available = toNumber(data?.available_balance);
-			const total = toNumber(data?.total_balance) ?? available;
+			const walletResult = wallet.status === "fulfilled" ? wallet.value : undefined;
+			const data = walletResult?.body?.data;
+			const reportAvailable = toNumber(data?.availableBalance) ?? toNumber(data?.balance);
+			const legacyAvailable = toNumber(data?.available_balance);
+			const available = walletResult?.kind === "report" ? reportAvailable ?? legacyAvailable : legacyAvailable;
+			const total =
+				walletResult?.kind === "report"
+					? available
+					: toNumber(data?.total_balance) ?? available;
+			const reportGrantedParts = [toNumber(data?.rechargeAmount), toNumber(data?.giveAmount)].filter((value) => value !== undefined);
+			const granted =
+				walletResult?.kind === "report"
+					? reportGrantedParts.length > 0
+						? reportGrantedParts.reduce((sum, value) => sum + value, 0)
+						: toNumber(data?.total_balance)
+					: total;
 			const coding = plan.status === "fulfilled" ? plan.value : undefined;
 			const windows = coding?.windows ?? [];
 
@@ -382,7 +407,8 @@ export const SCHEMES = {
 							: windows.some((w) => w.unlimited === true || (w.usedPercent ?? 0) < 100),
 				currency: typeof data?.currency === "string" ? data.currency : vendor?.currency,
 				total: available ?? total,
-				granted: total,
+				...(granted === undefined ? {} : { granted }),
+				...(walletResult?.kind === "report" ? { used: toNumber(data?.totalSpendAmount) } : {}),
 				...(coding?.plan === undefined ? {} : { plan: coding.plan }),
 				windows
 			};
