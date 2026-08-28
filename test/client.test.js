@@ -178,11 +178,17 @@ test("everything that floats asks for the overlay ground, with the page ground a
 		);
 	}
 
-	// The frosted pane is the panel's whole point now: the ground is thinned
-	// and a backdrop blur keeps text readable over busy content.
+	// The pane's solidity follows DSH's 玻璃透明度 setting when the token
+	// exists — and DSH is itself a plugin: older builds and other compositions
+	// never define the token, so the fallback is a built-in frosted default
+	// (90%) rather than an opaque pane. Compatibility first, appearance second.
 	const panel = css.match(/\.tkl_panel\{[^}]*\}/)[0];
-	assert.match(panel, /color-mix\(in srgb,var\(--dsw-alias-bg-overlay,var\(--dsw-alias-bg-base\)\) \d+%/, "the pane is thinned, not opaque");
-	assert.match(panel, /backdrop-filter:blur/, "the blur is what keeps thinned text readable");
+	assert.match(
+		panel,
+		/color-mix\(in srgb,var\(--dsw-alias-bg-overlay,var\(--dsw-alias-bg-base\)\) var\(--dsw-alias-glass-opacity,90%\)/,
+		"solidity follows the appearance slider's token, with a frosted fallback"
+	);
+	assert.equal(/backdrop-filter/.test(panel), false, "no forced blur: DSH's own wallpaper frost governs");
 
 	// The fallback is the whole point: a theme defining no overlay token has to
 	// render exactly as it did before.

@@ -156,11 +156,16 @@ window.__ModuleLoader__.load({
 			// for a panel sitting on top of it, which then shows the wallpaper
 			// through its own text. Themes that define no overlay token fall back
 			// to the old value, so the default look is unchanged.
-			// Frosted ground: 86% of the theme's overlay colour over a live blur
-			// of whatever sits behind the window. Opaque enough that text keeps
-			// its contrast, transparent enough that the window reads as a pane
-			// of glass rather than a hole punched in the page.
-			".tkl_panel{z-index:30;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base)) 86%,transparent);backdrop-filter:blur(16px) saturate(150%);-webkit-backdrop-filter:blur(16px) saturate(150%);width:620px;max-width:calc(100vw - 24px);max-height:76vh;box-shadow:var(--dsw-shadow-lv2);border-radius:12px;flex-direction:column;display:flex;position:fixed;bottom:128px;left:12px;overflow:hidden;" +
+			//
+			// The pane's solidity follows DSH's 玻璃透明度 appearance setting when
+			// that token exists (`--dsw-alias-glass-opacity` — the same slider
+			// that drives DSH's own menus and dialogs). DSH is itself a plugin:
+			// older builds and other compositions never define the token, and
+			// those fall back to a built-in frosted default instead of an opaque
+			// pane — compatibility first, appearance second. No forced backdrop
+			// blur in either case: with a wallpaper set, DSH frosts it itself,
+			// and a second blur would fight it.
+			".tkl_panel{z-index:30;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base)) var(--dsw-alias-glass-opacity,90%),transparent);width:620px;max-width:calc(100vw - 24px);max-height:76vh;box-shadow:var(--dsw-shadow-lv2);border-radius:12px;flex-direction:column;display:flex;position:fixed;bottom:128px;left:12px;overflow:hidden;" +
 				// Scoped here rather than on :root so nothing escapes into the host.
 				"--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);" +
 				"--tkl-radius:12px;--tkl-radius-sm:8px;--tkl-radius-xs:6px;" +
@@ -327,7 +332,7 @@ window.__ModuleLoader__.load({
 			// under the note instead.
 			".tkl_balance > .tkl_setBtn{margin-top:8px;align-self:flex-start}",
 			".tkl_dlgOverlay{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.32);display:flex;align-items:center;justify-content:center}",
-			".tkl_dlg{width:420px;max-width:calc(100vw - 32px);max-height:80vh;overflow-y:auto;box-sizing:border-box;background:color-mix(in srgb,var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base)) 92%,transparent);backdrop-filter:blur(16px) saturate(150%);-webkit-backdrop-filter:blur(16px) saturate(150%);border:1px solid var(--dsw-alias-border-l1);border-radius:var(--tkl-radius);box-shadow:var(--dsw-shadow-lv2);padding:14px 16px}",
+			".tkl_dlg{width:420px;max-width:calc(100vw - 32px);max-height:80vh;overflow-y:auto;box-sizing:border-box;background:color-mix(in srgb,var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base)) var(--dsw-alias-glass-opacity,90%),transparent);border:1px solid var(--dsw-alias-border-l1);border-radius:var(--tkl-radius);box-shadow:var(--dsw-shadow-lv2);padding:14px 16px}",
 			".tkl_dlgHead{display:flex;align-items:center;gap:8px;margin-bottom:8px}",
 			".tkl_dlgTitle{color:var(--dsw-alias-label-primary);flex:1;font-size:13px;font-weight:500;line-height:20px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
 			".tkl_steps{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:18px;margin:0 0 10px;padding-left:18px}",
