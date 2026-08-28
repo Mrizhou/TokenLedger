@@ -102,6 +102,7 @@ window.__ModuleLoader__.load({
 		const NS = "tokenLedger";
 		const USAGE_PATH = "/api/tokenledger/usage";
 		const BALANCE_PATH = "/api/tokenledger/balance";
+		const USERAUTH_PATH = "/api/tokenledger/userauth";
 		/** A year of whole weeks; must match the host's window or the strip has holes. */
 		const ACTIVITY_DAYS = 371;
 
@@ -155,7 +156,11 @@ window.__ModuleLoader__.load({
 			// for a panel sitting on top of it, which then shows the wallpaper
 			// through its own text. Themes that define no overlay token fall back
 			// to the old value, so the default look is unchanged.
-			".tkl_panel{z-index:30;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base));width:620px;max-width:calc(100vw - 24px);max-height:76vh;box-shadow:var(--dsw-shadow-lv2);border-radius:12px;flex-direction:column;display:flex;position:fixed;bottom:128px;left:12px;overflow:hidden;" +
+			// Frosted ground: 86% of the theme's overlay colour over a live blur
+			// of whatever sits behind the window. Opaque enough that text keeps
+			// its contrast, transparent enough that the window reads as a pane
+			// of glass rather than a hole punched in the page.
+			".tkl_panel{z-index:30;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base)) 86%,transparent);backdrop-filter:blur(16px) saturate(150%);-webkit-backdrop-filter:blur(16px) saturate(150%);width:620px;max-width:calc(100vw - 24px);max-height:76vh;box-shadow:var(--dsw-shadow-lv2);border-radius:12px;flex-direction:column;display:flex;position:fixed;bottom:128px;left:12px;overflow:hidden;" +
 				// Scoped here rather than on :root so nothing escapes into the host.
 				"--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);" +
 				"--tkl-radius:12px;--tkl-radius-sm:8px;--tkl-radius-xs:6px;" +
@@ -171,7 +176,7 @@ window.__ModuleLoader__.load({
 			"[data-theme='dark'] .tkl_panel{--tkl-level-1:#065f46;--tkl-level-2:#059669;--tkl-level-3:#10b981;--tkl-level-4:#34d399;--tkl-direct:#6b7280;--tkl-series-0:#38bdf8;--tkl-series-1:#fbbf24;--tkl-series-2:#a78bfa;--tkl-series-3:#2dd4bf;--tkl-series-4:#f472b6;--tkl-series-5:#a3e635}",
 			"[data-theme='light'] .tkl_panel{--tkl-level-1:#a7f3d0;--tkl-level-2:#6ee7b7;--tkl-level-3:#34d399;--tkl-level-4:#10b981;--tkl-direct:#8b93a7;--tkl-series-0:#0ea5e9;--tkl-series-1:#f59e0b;--tkl-series-2:#8b5cf6;--tkl-series-3:#14b8a6;--tkl-series-4:#ec4899;--tkl-series-5:#84cc16}",
 
-			".tkl_header{box-sizing:border-box;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base));flex:none;justify-content:space-between;align-items:center;min-height:44px;padding:10px 12px;display:flex;gap:8px}",
+			".tkl_header{box-sizing:border-box;border-bottom:1px solid var(--dsw-alias-border-l2);background:transparent;flex:none;justify-content:space-between;align-items:center;min-height:44px;padding:10px 12px;display:flex;gap:8px}",
 			".tkl_headerLeft{align-items:center;gap:8px;display:flex;min-width:0}",
 			".tkl_title{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:20px;white-space:nowrap}",
 			".tkl_headerActions{align-items:center;gap:2px;display:flex;flex:none}",
@@ -309,8 +314,33 @@ window.__ModuleLoader__.load({
 			".tkl_balanceWho{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}",
 			".tkl_balanceOk{color:var(--dsw-alias-state-success-primary)}",
 			".tkl_balanceBad{color:var(--dsw-alias-state-warn-primary)}",
-			".tkl_balanceAmount{color:var(--dsw-alias-label-primary);font-size:16px;line-height:22px;font-weight:600;font-variant-numeric:tabular-nums}",
+			".tkl_balanceAmount{color:var(--dsw-alias-label-primary);font-size:16px;line-height:22px;font-weight:600;font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:8px}",
 			".tkl_balanceMeta{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;margin-left:auto;text-align:right}",
+
+			// -- the 设置余额 button and its dialog --------------------------------
+			// A ghost chip sitting AFTER the balance amount: the amount is the
+			// figure the card exists for, and the action that refreshes or
+			// re-aims it belongs in its wake, not ahead of it.
+			".tkl_setBtn{cursor:pointer;flex:none;background:var(--dsw-alias-interactive-bg-active);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;color:var(--dsw-alias-label-secondary);font:inherit;font-size:10px;font-weight:400;line-height:16px;padding:0 8px}",
+			".tkl_setBtn:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}",
+			// On a failed read there is no amount to follow, so the chip hangs
+			// under the note instead.
+			".tkl_balance > .tkl_setBtn{margin-top:8px;align-self:flex-start}",
+			".tkl_dlgOverlay{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.32);display:flex;align-items:center;justify-content:center}",
+			".tkl_dlg{width:420px;max-width:calc(100vw - 32px);max-height:80vh;overflow-y:auto;box-sizing:border-box;background:color-mix(in srgb,var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base)) 92%,transparent);backdrop-filter:blur(16px) saturate(150%);-webkit-backdrop-filter:blur(16px) saturate(150%);border:1px solid var(--dsw-alias-border-l1);border-radius:var(--tkl-radius);box-shadow:var(--dsw-shadow-lv2);padding:14px 16px}",
+			".tkl_dlgHead{display:flex;align-items:center;gap:8px;margin-bottom:8px}",
+			".tkl_dlgTitle{color:var(--dsw-alias-label-primary);flex:1;font-size:13px;font-weight:500;line-height:20px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+			".tkl_steps{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:18px;margin:0 0 10px;padding-left:18px}",
+			".tkl_field{display:block;margin-bottom:10px}",
+			".tkl_fieldLabel{color:var(--dsw-alias-label-secondary);display:block;font-size:11px;line-height:16px;margin-bottom:3px}",
+			".tkl_input{background:var(--dsw-alias-interactive-bg-active);border:1px solid var(--dsw-alias-border-l2);border-radius:var(--tkl-radius-xs);box-sizing:border-box;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;padding:5px 8px;width:100%}",
+			".tkl_input:focus{border-color:var(--dsw-alias-label-tertiary);outline:none}",
+			".tkl_actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}",
+			".tkl_btn{background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--tkl-radius-xs);color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:12px;padding:4px 12px}",
+			".tkl_btn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}",
+			".tkl_btnPrimary{background:var(--dsw-alias-interactive-bg-active);color:var(--dsw-alias-label-primary)}",
+			".tkl_btnDanger{color:var(--dsw-alias-state-error-primary)}",
+			".tkl_busy{cursor:default;opacity:.5}",
 
 			// -- quota windows -------------------------------------------------------
 			// A subscription's allowances: one row per window, each naming itself,
@@ -428,6 +458,20 @@ window.__ModuleLoader__.load({
 			balanceBad: "tkl_balanceBad",
 			balanceAmount: "tkl_balanceAmount",
 			balanceMeta: "tkl_balanceMeta",
+			setBtn: "tkl_setBtn",
+			dlgOverlay: "tkl_dlgOverlay",
+			dlg: "tkl_dlg",
+			dlgHead: "tkl_dlgHead",
+			dlgTitle: "tkl_dlgTitle",
+			steps: "tkl_steps",
+			field: "tkl_field",
+			fieldLabel: "tkl_fieldLabel",
+			input: "tkl_input",
+			actions: "tkl_actions",
+			btn: "tkl_btn",
+			btnPrimary: "tkl_btnPrimary",
+			btnDanger: "tkl_btnDanger",
+			busy: "tkl_busy",
 			wins: "tkl_wins",
 			win: "tkl_win",
 			winHead: "tkl_winHead",
@@ -548,15 +592,25 @@ window.__ModuleLoader__.load({
 		 * Separate from the usage payload because it reaches a vendor over the
 		 * network: a slow or unreachable balance API must not hold up figures that
 		 * are already on disk.
+		 *
+		 * `forceNonce` moves only when the refresh button is pressed; every other
+		 * change re-reads through the host's freshness window. A request in flight
+		 * never blanks the card — keeping the previous figure visible is the whole
+		 * difference between "refreshing" and "balance loads slowly".
 		 */
-		function useBalance(open, account, nonce) {
+		function useBalance(open, account, nonce, forceNonce) {
 			const [state, setState] = react.useState({ status: "idle" });
+			const prevForce = react.useRef(0);
 
 			react.useEffect(() => {
 				if (!open) return undefined;
 				const controller = new AbortController();
-				setState({ status: "loading" });
-				const query = account === undefined ? "" : `?account=${encodeURIComponent(account)}`;
+				const force = forceNonce !== prevForce.current;
+				prevForce.current = forceNonce;
+				setState((prev) => ({ status: "loading", data: prev.data }));
+				const params = account === undefined ? [] : [`account=${encodeURIComponent(account)}`];
+				if (force) params.push("force=1");
+				const query = params.length === 0 ? "" : `?${params.join("&")}`;
 				fetchJson(BALANCE_PATH + query, controller.signal).then(
 					(data) => {
 						if (!controller.signal.aborted) setState({ status: "ready", data });
@@ -564,11 +618,11 @@ window.__ModuleLoader__.load({
 					() => {
 						// A balance that cannot be read is not worth an error banner over
 						// a panel whose real subject is token usage.
-						if (!controller.signal.aborted) setState({ status: "off" });
+						if (!controller.signal.aborted) setState((prev) => ({ status: "off", data: prev.data }));
 					}
 				);
 				return () => controller.abort();
-			}, [open, account, nonce]);
+			}, [open, account, nonce, forceNonce]);
 
 			return state;
 		}
@@ -1258,6 +1312,26 @@ window.__ModuleLoader__.load({
 			return date.toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 		}
 
+		/** A wall-clock hour:minute, for "you may retry at". */
+		function fmtClock(ms) {
+			const date = new Date(ms);
+			return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+		}
+
+		/**
+		 * The 设置查询API chip. Rendered right AFTER the balance amount — the
+		 * figure first, the action that re-aims it second — and under the note
+		 * on a failed read, where there is no figure to follow.
+		 */
+		function SetBalanceButton({ onConfigure, translate }) {
+			return jsx("button", {
+				type: "button",
+				className: S.setBtn,
+				onClick: onConfigure,
+				children: translate("balance.setButton")
+			});
+		}
+
 		/**
 		 * One account's balance, whatever software serves it.
 		 *
@@ -1265,11 +1339,21 @@ window.__ModuleLoader__.load({
 		 * and Sub2API without branching on the vendor — the differences that do
 		 * matter (an unlimited key, a plan name, a raw quota where the site
 		 * publishes no unit price) are extra lines, not different cards.
+		 *
+		 * A New API account carries one extra control: 设置查询API, sitting right
+		 * after the balance amount, opening the dialog that stores the site's
+		 * console credentials. Shown on the failure states too — a site whose
+		 * per-key read failed is exactly the one that needs them.
 		 */
-		function BalanceCard({ state, translate }) {
-			if (state.status === "loading") return jsx("div", { className: `${S.skel} ${S.skelStat}` });
-			if (state.status !== "ready") return null;
+		function BalanceCard({ state, translate, onConfigure }) {
+			if (state.status === "loading" && state.data === undefined) return jsx("div", { className: `${S.skel} ${S.skelStat}` });
+			if (state.status !== "ready" && state.status !== "loading") return null;
 			const balance = state.data;
+			if (balance === undefined) return null;
+			const setChip = () =>
+				balance.scheme === "newapi" && typeof onConfigure === "function"
+					? jsx(SetBalanceButton, { onConfigure, translate })
+					: null;
 
 			if (balance.supported === false) {
 				const key =
@@ -1278,19 +1362,37 @@ window.__ModuleLoader__.load({
 						: balance.reason === "unknown-account"
 							? "balance.unknownAccount"
 							: "balance.unavailable";
-				return jsx("p", { className: S.note, children: translate(key) });
+				return jsxs("div", {
+					className: S.balance,
+					children: [jsx("p", { className: S.note, children: translate(key) }), setChip()]
+				});
 			}
 			if (balance.fetched !== true) {
 				// A hint outranks the raw reason: some endpoints want a different
 				// credential from the one the route carries, and "401" alone sends
-				// people to check a key that is perfectly fine.
+				// people to check a key that is perfectly fine. A throttle says WHEN
+				// it will answer again instead of dressing up as a failure. An
+				// UNKNOWN hint falls back to the plain failure — a raw dictionary
+				// key on a card is worse than fewer words — and an empty reason
+				// loses the parentheses entirely rather than reading （）.
+				const hintKey = balance.hint !== undefined ? `balance.hint.${balance.hint}` : undefined;
 				const key =
-					balance.hint !== undefined
-						? `balance.hint.${balance.hint}`
-						: balance.reason === "no-credential"
-							? "balance.noKey"
-							: "balance.failed";
-				return jsx("p", { className: S.note, children: translate(key, { reason: balance.reason ?? "" }) });
+					balance.reason === "rate-limited"
+						? "balance.rateLimited"
+						: hintKey !== undefined && hintKey in zh
+							? hintKey
+							: balance.reason === "no-credential"
+								? "balance.noKey"
+								: "balance.failed";
+				const reason = balance.reason || "";
+				const text =
+					key === "balance.failed" && reason === ""
+						? translate("balance.failedPlain")
+						: translate(key, balance.reason === "rate-limited" ? { at: fmtClock(balance.retryAt) } : { reason });
+				return jsxs("div", {
+					className: S.balance,
+					children: [jsx("p", { className: S.note, children: text }), setChip()]
+				});
 			}
 
 			// A remaining balance when there is one; otherwise what this key has
@@ -1309,6 +1411,13 @@ window.__ModuleLoader__.load({
 			const amountLabel = typeof balance.total === "number" ? undefined : spent ? translate("balance.spent") : undefined;
 
 			const notes = [];
+			// The throttle hint is the one provenance note worth printing: it
+			// says WHEN the next read can even happen. Plain cache age is noise
+			// — the figure is either right or it refreshes, and the user asked
+			// for the 缓存 line to go.
+			if (balance.stale === true) {
+				notes.push(translate("balance.stale", { ago: agoLabel(balance.fetchedAt, translate), at: fmtClock(balance.retryAt) }));
+			}
 			// Say it first. These numbers came out of paths the user wrote, so a
 			// wrong one is a configuration mistake — and that has to be
 			// distinguishable from the plugin misreading a vendor it claims to
@@ -1318,8 +1427,15 @@ window.__ModuleLoader__.load({
 			if (typeof balance.expiresAt === "number") {
 				notes.push(translate("balance.expires", { at: new Date(balance.expiresAt * 1000).toLocaleDateString() }));
 			}
-			if (typeof balance.granted === "number" && balance.granted > 0) {
-				notes.push(translate("balance.granted", { amount: fmtMoney(balance.granted, balance.currency) }));
+			if (typeof balance.granted === "number" && balance.granted > 0 && balance.granted !== balance.used) {
+				// Z.ai's granted figure is the RECHARGE total (top-ups plus gifts),
+				// and a wallet's is what was ever put in — "赠送" on those cards
+				// told a user their top-up was a gift, which is the one word that
+				// must not be guessed. DeepSeek's really is its grant balance.
+				// A drained wallet (remaining 0) makes granted EQUAL used — the
+				// same number twice on one card says nothing twice.
+				const grantedKey = balance.scheme === "zai" || balance.userToken === true ? "balance.grantedRecharge" : "balance.granted";
+				notes.push(translate(grantedKey, { amount: fmtMoney(balance.granted, balance.currency) }));
 			}
 			if (typeof balance.plan === "string" && balance.plan !== "") {
 				notes.push(translate("balance.plan", { plan: balance.plan }));
@@ -1343,13 +1459,12 @@ window.__ModuleLoader__.load({
 					jsxs("div", {
 						className: S.balanceMain,
 						children: [
-							// Name the vendor AND the software. "Official balance"
-							// answers nothing on a panel that also reports relays.
+							// The origin and the software name say WHERE this money
+							// lives; the username is dropped on purpose — 账号 stays
+							// out of a card the picker already attributes.
 							jsx("div", {
 								className: S.balanceWho,
-								children: [balance.displayName, SCHEME_LABELS[balance.scheme], balance.keyName]
-									.filter(Boolean)
-									.join(" · ")
+								children: [balance.displayName, SCHEME_LABELS[balance.scheme]].filter(Boolean).join(" · ")
 							}),
 							jsxs("div", {
 								className: S.balanceAmount,
@@ -1357,7 +1472,9 @@ window.__ModuleLoader__.load({
 									amount,
 									amountLabel === undefined
 										? null
-										: jsx("span", { className: S.tipUnit, children: amountLabel })
+										: jsx("span", { className: S.tipUnit, children: amountLabel }),
+									// The action rides AFTER the figure it configures.
+									setChip()
 								]
 							})
 						]
@@ -1369,7 +1486,24 @@ window.__ModuleLoader__.load({
 								className: balance.isAvailable === true ? S.balanceOk : S.balanceBad,
 								children: balance.isAvailable === true ? translate("balance.active") : translate("balance.inactive")
 							}),
-							notes.length === 0 ? null : jsx("div", { children: notes.join(" · " ) })
+							// 已用 sits directly under 账户可用: the card's second money
+							// figure, shown only when the vendor reported BOTH what
+							// remains and what left. When there is no remaining
+							// figure the amount line already labels itself 已用 —
+							// a second line here would say it twice.
+							typeof balance.total === "number" && spent
+								? jsx("div", {
+										children: translate("balance.spentAmount", { amount: fmtMoney(balance.used, balance.currency) })
+									})
+								: null,
+							// Each note its own line, and no note twice: the meta column
+							// is narrow, and one long joined string wrapped mid-figure
+							// reads as the same number printed again below itself.
+							notes.length === 0
+								? null
+								: jsx("div", {
+										children: [...new Set(notes)].map((note, i) => jsx("div", { children: note }, i))
+									})
 						]
 					})
 						]
@@ -1383,13 +1517,214 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * How each relay program is named on the card.
-		 *
-		 * Only where the name adds something the host does not already say. A
-		 * vendor whose display name is already "OpenCode Go" gains nothing from a
-		 * second "OpenCode Go" beside it.
+		 * How each relay program is named on the card — the who-line keeps the
+		 * origin and the software, and deliberately NOT the username: the 账号
+		 * belongs to the site's console, not to a card the picker attributes.
 		 */
 		const SCHEME_LABELS = { deepseek: "API 余额", newapi: "New API", sub2api: "Sub2API" };
+
+		/**
+		 * The 设置查询API dialog: per-site console credentials for New API's
+		 * personal wallet.
+		 *
+		 * The steps are the whole setup — a console login, a system access token,
+		 * a numeric user id — so the dialog teaches them rather than linking out.
+		 * What is already stored is shown as STATE ("已配置"), never as a value:
+		 * the read route answers `hasToken`, and the token itself has no reason
+		 * to cross the wire backwards. Saving an empty token keeps the stored one,
+		 * which is what makes "change the user id alone" possible.
+		 */
+		function UserAuthDialog({ account, translate, onClose, onSaved }) {
+			const [userId, setUserId] = react.useState(undefined);
+			const [token, setToken] = react.useState("");
+			const [saved, setSaved] = react.useState(undefined);
+			const [busy, setBusy] = react.useState(false);
+			const [error, setError] = react.useState(undefined);
+
+			react.useEffect(() => {
+				let live = true;
+				fetchJson(`${USERAUTH_PATH}?origin=${encodeURIComponent(account.origin)}`).then(
+					(payload) => {
+						if (!live) return;
+						const entry = payload.origins?.[account.origin];
+						setSaved(entry);
+						// Prefill the STATE, not just the value attribute: an untouched
+						// field must still submit the id it displays, or a second edit
+						// saves `Number(undefined)` and is told its id is not a number.
+						if (entry?.userId !== undefined) setUserId(String(entry.userId));
+					},
+					() => {}
+				);
+				return () => {
+					live = false;
+				};
+			}, [account.origin]);
+
+			// Escape closes the DIALOG, not the panel beneath it: the capture-phase
+			// listener runs before the panel's own, and stopPropagation keeps it
+			// that way.
+			react.useEffect(() => {
+				const onKey = (event) => {
+					if (event.key === "Escape") {
+						event.stopPropagation();
+						onClose();
+					}
+				};
+				window.addEventListener("keydown", onKey, true);
+				return () => window.removeEventListener("keydown", onKey, true);
+			}, [onClose]);
+
+			const post = async (payload) => {
+				const response = await fetch(USERAUTH_PATH, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(payload)
+				});
+				// A 404 here has one meaning worth spelling out: the route the
+				// dialog is posting to does not exist in the RUNNING host, which
+				// still holds the pre-feature plugin code. A restart fixes it; no
+				// amount of retyping the token will.
+				if (response.status === 404) throw new Error(translate("dialog.hostStale"));
+				const result = await response.json().catch(() => undefined);
+				if (result?.ok !== true) throw new Error(result?.error ?? `HTTP ${response.status}`);
+			};
+
+			const save = async () => {
+				const id = Number(userId);
+				if (!Number.isInteger(id) || id <= 0) {
+					setError(translate("dialog.badUserId"));
+					return;
+				}
+				if (token === "" && saved?.hasToken !== true) {
+					setError(translate("dialog.needToken"));
+					return;
+				}
+				setBusy(true);
+				setError(undefined);
+				try {
+					await post(
+						token === ""
+							? { origin: account.origin, userId: id }
+							: { origin: account.origin, userId: id, token }
+					);
+					onSaved();
+				} catch (e) {
+					setError(translate("dialog.saveFailed", { reason: String(e?.message ?? e) }));
+				} finally {
+					setBusy(false);
+				}
+			};
+
+			const remove = async () => {
+				setBusy(true);
+				setError(undefined);
+				try {
+					await post({ origin: account.origin, remove: true });
+					onSaved();
+				} catch (e) {
+					setError(translate("dialog.saveFailed", { reason: String(e?.message ?? e) }));
+				} finally {
+					setBusy(false);
+				}
+			};
+
+			return jsxs("div", {
+				className: S.dlgOverlay,
+				onPointerDown: (event) => {
+					if (event.target === event.currentTarget) onClose();
+				},
+				children: [
+					jsxs("div", {
+						className: S.dlg,
+						role: "dialog",
+						"aria-label": translate("dialog.title"),
+						children: [
+							jsxs("div", {
+								className: S.dlgHead,
+								children: [
+									jsx("span", { className: S.dlgTitle, children: `${translate("dialog.title")} · ${account.displayName}` }),
+									jsx("button", {
+										type: "button",
+										className: S.iconButton,
+										"aria-label": translate("action.close"),
+										onClick: onClose,
+										children: jsx(primitives.IconCloseOutline16, { size: 16 })
+									})
+								]
+							}),
+							jsxs("ol", {
+								className: S.steps,
+								children: [
+									jsx("li", { children: translate("dialog.step1") }),
+									jsx("li", { children: translate("dialog.step2") }),
+									jsx("li", { children: translate("dialog.step3") }),
+									jsx("li", { children: translate("dialog.step4") })
+								]
+							}),
+							jsx("p", { className: S.note, children: translate("dialog.note") }),
+							jsxs("label", {
+								className: S.field,
+								children: [
+									jsx("span", { className: S.fieldLabel, children: translate("dialog.userId") }),
+									jsx("input", {
+										className: S.input,
+										type: "text",
+										inputMode: "numeric",
+										value: userId ?? (saved?.userId !== undefined ? String(saved.userId) : ""),
+										onChange: (event) => setUserId(event.target.value),
+										placeholder: translate("dialog.userIdPlaceholder"),
+										autoComplete: "off"
+									})
+								]
+							}),
+							jsxs("label", {
+								className: S.field,
+								children: [
+									jsx("span", { className: S.fieldLabel, children: translate("dialog.tokenLabel") }),
+									jsx("input", {
+										className: S.input,
+										// Text, not password: the token is the user's own
+										// console secret, pasted from the same console they
+										// would re-read it from — hiding it only makes
+										// paste mistakes invisible.
+										type: "text",
+										value: token,
+										onChange: (event) => setToken(event.target.value),
+										placeholder: saved?.hasToken === true ? translate("dialog.keepToken") : translate("dialog.tokenPlaceholder"),
+										autoComplete: "off",
+										spellCheck: false
+									})
+								]
+							}),
+							saved?.hasToken === true ? jsx("p", { className: S.note, children: translate("dialog.configured") }) : null,
+							error === undefined ? null : jsx("p", { className: S.error, children: error }),
+							jsxs("div", {
+								className: S.actions,
+								children: [
+									saved?.hasToken === true
+										? jsx("button", {
+												type: "button",
+												className: `${S.btn} ${S.btnDanger}${busy ? ` ${S.busy}` : ""}`,
+												disabled: busy,
+												onClick: remove,
+												children: translate("dialog.remove")
+											})
+										: null,
+									jsx("button", { type: "button", className: S.btn, disabled: busy, onClick: onClose, children: translate("action.close") }),
+									jsx("button", {
+										type: "button",
+										className: `${S.btn} ${S.btnPrimary}${busy ? ` ${S.busy}` : ""}`,
+										disabled: busy,
+										onClick: save,
+										children: translate("dialog.save")
+									})
+								]
+							})
+						]
+					})
+				]
+			});
+		}
 
 		/** Index health. A stale or lossy index must say so on the page. */
 		/**
@@ -1457,7 +1792,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/** The panel body: every section, each complete. */
-		function Body({ state, balance, site, onSelect, range, onRange, account, onAccount, translate, onRetry }) {
+		function Body({ state, balance, site, onSelect, range, onRange, account, onAccount, translate, onRetry, onConfigure }) {
 			if (state.status === "error") {
 				return jsxs("div", {
 					children: [
@@ -1471,6 +1806,11 @@ window.__ModuleLoader__.load({
 
 			const data = state.data;
 			const empty = (data.totals?.requests ?? 0) === 0;
+			// The account the balance card is showing — the host reads the first
+			// account when none is selected, and the dialog has to configure the
+			// SAME one the card names.
+			const accounts = data.accounts ?? [];
+			const currentAccount = accounts.find((a) => a.id === (account ?? accounts[0]?.id));
 
 			return jsxs("div", {
 				children: [
@@ -1482,7 +1822,13 @@ window.__ModuleLoader__.load({
 							onChange: onAccount,
 							translate
 						}),
-						children: jsx(BalanceCard, { state: balance, translate })
+						children: jsx(BalanceCard, {
+							state: balance,
+							translate,
+							onConfigure: () => {
+								if (currentAccount?.origin !== undefined) onConfigure(currentAccount);
+							}
+						})
 					}),
 					jsx(Section, {
 						title: translate("section.usage"),
@@ -1546,9 +1892,15 @@ window.__ModuleLoader__.load({
 			const [site, setSite] = react.useState(undefined);
 			const [account, setAccount] = react.useState(undefined);
 			const [nonce, setNonce] = react.useState(0);
+			// Moves only from the refresh button: a forced balance read skips the
+			// host's freshness window (never its rate-limit backoff). Every other
+			// re-render reads through the cache, which is what keeps a panel open
+			// from becoming a request.
+			const [forceNonce, setForceNonce] = react.useState(0);
+			const [dialogFor, setDialogFor] = react.useState(undefined);
 			const days = (RANGES.find((r) => r.id === range) ?? RANGES[2]).days();
 			const state = useUsage(open, days, site, nonce);
-			const balance = useBalance(open, account, nonce);
+			const balance = useBalance(open, account, nonce, forceNonce);
 			const reload = () => setNonce((n) => n + 1);
 			const translate = translateWith(t);
 
@@ -1622,7 +1974,10 @@ window.__ModuleLoader__.load({
 													...(busy ? { "data-busy": "" } : {}),
 													"aria-label": translate("action.refresh"),
 													onClick: () => {
-														if (!busy) reload();
+														if (!busy) {
+															reload();
+															setForceNonce((f) => f + 1);
+														}
 													},
 													children: jsx(primitives.IconRefreshOutline14, { size: 14 })
 												}),
@@ -1639,10 +1994,35 @@ window.__ModuleLoader__.load({
 								}),
 								jsx("div", {
 									className: S.body,
-									children: jsx(Body, { state, balance, site, onSelect: setSite, range, onRange: setRange, account, onAccount: setAccount, translate, onRetry: reload })
+									children: jsx(Body, {
+										state,
+										balance,
+										site,
+										onSelect: setSite,
+										range,
+										onRange: setRange,
+										account,
+										onAccount: setAccount,
+										translate,
+										onRetry: reload,
+										onConfigure: setDialogFor
+									})
 								})
 							]
-						})
+						}),
+						dialogFor === undefined
+							? null
+							: jsx(UserAuthDialog, {
+									account: dialogFor,
+									translate,
+									onClose: () => setDialogFor(undefined),
+									// Whatever was just saved or cleared, the host dropped that
+									// origin's cache; a plain reload reads the network.
+									onSaved: () => {
+										setDialogFor(undefined);
+										reload();
+									}
+								})
 				]
 			});
 		}
@@ -1713,6 +2093,7 @@ window.__ModuleLoader__.load({
 			"balance.unlimited": "不限额度",
 			"balance.quota": "{n} 额度",
 			"balance.spent": "已用",
+			"balance.spentAmount": "已用 {amount}",
 			"balance.expires": "{at} 到期",
 			"balance.unknownSoftware": "认不出这个中转站跑的是什么程序，读不了余额。",
 			"balance.unknownAccount": "找不到这个账户。",
@@ -1722,7 +2103,30 @@ window.__ModuleLoader__.load({
 			"balance.active": "账户可用",
 			"balance.inactive": "账户不可用",
 			"balance.granted": "其中赠送 {amount}",
+			"balance.grantedRecharge": "其中累计充值 {amount}",
+			"balance.failedPlain": "余额读取失败。",
+			"balance.setButton": "设置查询API",
+			"balance.rateLimited": "查询已限流，{at} 后可再试。",
+			"balance.stale": "已限流，{at} 前不刷新 · {ago}的结果",
 			"balance.unparsed": "接口答了，但认不出配额字段（{reason}）。可以把这句话反馈给我们。",
+			"dialog.title": "设置余额 — New API 个人账户",
+			"dialog.step1": "登录该中转站的网页控制台",
+			"dialog.step2": "个人设置 → 生成「系统访问令牌」(access_token)",
+			"dialog.step3": "个人设置 → 复制用户 ID（数字）",
+			"dialog.step4": "填入下方保存；面板改用个人钱包接口查询，不再消耗模型 key 的查询次数",
+			"dialog.note": "站点默认限流：20 分钟 5 次。面板会缓存并自适应重试，限流时沿用上次结果并以小字提示。同一站点的多条路由共用这份配置。",
+			"dialog.userId": "用户 ID",
+			"dialog.userIdPlaceholder": "用户ID",
+			"dialog.tokenLabel": "系统访问令牌 (access_token)",
+			"dialog.tokenPlaceholder": "粘贴令牌",
+			"dialog.keepToken": "已配置——留空保持不变",
+			"dialog.configured": "该站点已配置个人钱包查询。",
+			"dialog.save": "保存",
+			"dialog.remove": "清除",
+			"dialog.badUserId": "用户 ID 必须是正整数。",
+			"dialog.needToken": "请填写系统访问令牌。",
+			"dialog.saveFailed": "保存失败（{reason}）。",
+			"dialog.hostStale": "宿主还在运行旧版插件（接口不存在）。请完全退出 DeepSeek Harness 桌面应用（含托盘图标）后重新打开，再回到面板保存。",
 			"balance.window.session": "当前窗口",
 			"balance.window.daily": "每日窗口",
 			"balance.window.weekly": "每周窗口",
@@ -1809,6 +2213,7 @@ window.__ModuleLoader__.load({
 			"balance.unlimited": "Unlimited",
 			"balance.quota": "{n} quota",
 			"balance.spent": "spent",
+			"balance.spentAmount": "{amount} spent",
 			"balance.expires": "expires {at}",
 			"balance.unknownSoftware": "This relay runs software we do not recognise, so its balance cannot be read.",
 			"balance.unknownAccount": "No such account.",
@@ -1818,7 +2223,30 @@ window.__ModuleLoader__.load({
 			"balance.active": "Account active",
 			"balance.inactive": "Account inactive",
 			"balance.granted": "{amount} granted",
+			"balance.grantedRecharge": "of which recharged {amount}",
+			"balance.failedPlain": "Could not read the balance.",
+			"balance.setButton": "Set query API",
+			"balance.rateLimited": "Rate-limited; retry after {at}.",
+			"balance.stale": "rate-limited until {at} · showing {ago}",
 			"balance.unparsed": "The endpoint answered, but none of the quota fields were where they were expected ({reason}). Worth reporting.",
+			"dialog.title": "Set balance — New API wallet",
+			"dialog.step1": "Sign in to the relay's web console.",
+			"dialog.step2": "Personal settings → generate a System Access Token (access_token).",
+			"dialog.step3": "Personal settings → copy your numeric user ID.",
+			"dialog.step4": "Fill in below; the panel then reads your personal wallet and stops spending the key's query budget.",
+			"dialog.note": "Sites throttle console reads (default 5 per 20 minutes). The panel caches and backs off adaptively, showing the previous result with a small note while limited. Routes on one site share this entry.",
+			"dialog.userId": "User ID",
+			"dialog.userIdPlaceholder": "user ID",
+			"dialog.tokenLabel": "System access token (access_token)",
+			"dialog.tokenPlaceholder": "paste token",
+			"dialog.keepToken": "configured — leave empty to keep",
+			"dialog.configured": "This site is configured for wallet queries.",
+			"dialog.save": "Save",
+			"dialog.remove": "Clear",
+			"dialog.badUserId": "The user ID must be a positive integer.",
+			"dialog.needToken": "Paste the system access token.",
+			"dialog.saveFailed": "Could not save ({reason}).",
+			"dialog.hostStale": "The host is still running the previous plugin build (route missing). Fully quit the DeepSeek Harness desktop app — including the tray icon — and reopen it, then save again.",
 			"balance.window.session": "Current window",
 			"balance.window.daily": "Daily",
 			"balance.window.weekly": "Weekly",
@@ -1872,6 +2300,28 @@ window.__ModuleLoader__.load({
 		 */
 		function apply(ctx) {
 			console.info("[tokenledger] apply() called; registering the footer seat");
+			// Warm the wallet cache at PAGE LOAD, once: one passive read per
+			// configured site, so the first panel open finds the host's cache
+			// hot and renders instantly instead of waiting on the network. The
+			// host's freshness window and throttle backoff govern warm reads
+			// exactly like panel-opened ones.
+			let warmed = false;
+			const warmWallets = () => {
+				if (warmed || typeof fetch !== "function") return;
+				warmed = true;
+				fetchJson(`${USERAUTH_PATH}`)
+					.then((payload) =>
+						Promise.all(
+							Object.entries(payload.origins ?? {})
+								.filter(([, entry]) => entry.hasToken === true)
+								.map(([origin]) =>
+									fetchJson(`${BALANCE_PATH}?origin=${encodeURIComponent(origin)}`).catch(() => undefined)
+								)
+						)
+					)
+					.catch(() => undefined);
+			};
+			warmWallets();
 			try {
 				ctx.effect(() => ctx.locale.register(NS, { zh, en }), "tokenledger: dictionaries");
 			} catch (error) {
@@ -1906,10 +2356,13 @@ window.__ModuleLoader__.load({
 		exports.ActivityStrip = ActivityStrip;
 		exports.ModelTable = ModelTable;
 		exports.BalanceCard = BalanceCard;
+		exports.SetBalanceButton = SetBalanceButton;
+		exports.UserAuthDialog = UserAuthDialog;
 		exports.QuotaWindows = QuotaWindows;
 		exports.AccountPicker = AccountPicker;
 		exports.Footer = Footer;
 		exports.agoLabel = agoLabel;
+		exports.fmtClock = fmtClock;
 		exports.translateWith = translateWith;
 		exports.buildQuery = buildQuery;
 		exports.makeLevelScale = makeLevelScale;

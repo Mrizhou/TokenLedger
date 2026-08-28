@@ -158,17 +158,31 @@ test("everything that floats asks for the overlay ground, with the page ground a
 	// own text. The failure is invisible to us because the default theme leaves
 	// both tokens opaque, so only a test keeps this from being reverted by the
 	// next person who reaches for the token they see everywhere else.
+	//
+	// The floating grounds are now FROSTED — `color-mix` thinning the overlay
+	// colour over a backdrop blur — which still asks the overlay token first
+	// and still falls back to the page ground; the contract is the token
+	// chain, not the literal background declaration.
 	const { dom } = await loadBundle();
 	const css = dom.head.children[0].textContent;
 
-	for (const selector of ["tkl_panel", "tkl_header", "tkl_tip"]) {
+	const overlayGround = /background:[^;]*var\(--dsw-alias-bg-overlay,var\(--dsw-alias-bg-base\)\)/;
+	// The header is NOT in this list any more: it is a child of the frosted
+	// pane and is deliberately transparent, so the pane's ground shows through.
+	for (const selector of ["tkl_panel", "tkl_tip"]) {
 		const rule = css.match(new RegExp(`\\.${selector}\\{[^}]*\\}`))[0];
 		assert.match(
 			rule,
-			/background:var\(--dsw-alias-bg-overlay,var\(--dsw-alias-bg-base\)\)/,
+			overlayGround,
 			`.${selector} floats, so it must not paint itself with the page's ground`
 		);
 	}
+
+	// The frosted pane is the panel's whole point now: the ground is thinned
+	// and a backdrop blur keeps text readable over busy content.
+	const panel = css.match(/\.tkl_panel\{[^}]*\}/)[0];
+	assert.match(panel, /color-mix\(in srgb,var\(--dsw-alias-bg-overlay,var\(--dsw-alias-bg-base\)\) \d+%/, "the pane is thinned, not opaque");
+	assert.match(panel, /backdrop-filter:blur/, "the blur is what keeps thinned text readable");
 
 	// The fallback is the whole point: a theme defining no overlay token has to
 	// render exactly as it did before.
@@ -598,6 +612,65 @@ test("a relay balance renders through the same card as the vendor's", async () =
 	);
 	assert.ok(quotaOnly.includes("balance.quota:4,000,000"));
 	assert.equal(quotaOnly.includes("¥"), false, "money must not be invented from an unknown scale");
+});
+
+test("a spent figure rides under the status when the amount is what is left", async () => {
+	const { exports, render } = await loadBundle();
+	const wallet = textOf(
+		render(exports.BalanceCard, {
+			state: {
+				status: "ready",
+				data: {
+					ok: true,
+					displayName: "r.example",
+					scheme: "newapi",
+					supported: true,
+					fetched: true,
+					isAvailable: true,
+					currency: "CNY",
+					total: 40,
+					used: 180,
+					userToken: true
+				}
+			},
+			translate: T
+		})
+	);
+	assert.ok(wallet.includes("balance.spentAmount:¥180.00"), "已用 rides in the meta beside the status");
+
+	// An unlimited key's card LEADS with the spent figure — a second line
+	// would say it twice.
+	const unlimited = textOf(
+		render(exports.BalanceCard, {
+			state: {
+				status: "ready",
+				data: {
+					ok: true,
+					displayName: "r.example",
+					scheme: "newapi",
+					supported: true,
+					fetched: true,
+					unlimited: true,
+					used: 180,
+					currency: "CNY"
+				}
+			},
+			translate: T
+		})
+	);
+	assert.equal(unlimited.split("balance.spent").length - 1, 1, "the spent figure is not stated twice");
+});
+
+test("a failure with no reason never renders empty parentheses", async () => {
+	const { exports, render } = await loadBundle();
+	const empty = textOf(
+		render(exports.BalanceCard, {
+			state: { status: "ready", data: { ok: true, scheme: "newapi", supported: true, fetched: false, reason: "" } },
+			translate: T
+		})
+	);
+	assert.ok(empty.includes("balance.failedPlain"), "the plain failure line is used");
+	assert.equal(empty.includes("balance.failed:"), false, "an empty reason must not print （）");
 });
 
 test("an unrecognised route is its own row, not folded into direct", async () => {

@@ -106,7 +106,11 @@ test("the panel's routes register against the service the host actually provides
 	try {
 		assert.equal(fiber.state, ACTIVE);
 		const paths = httpServer.routes.map((route) => route.path).sort();
-		assert.deepEqual(paths, ["/api/tokenledger/balance", "/api/tokenledger/usage"]);
+		assert.deepEqual(paths, [
+			"/api/tokenledger/balance",
+			"/api/tokenledger/usage",
+			"/api/tokenledger/userauth"
+		]);
 		for (const route of httpServer.routes) {
 			assert.equal(route.kind, "exact", "an exact route wins over the RPC prefix; a prefix route would not");
 			assert.equal(typeof route.handler, "function");
@@ -177,7 +181,7 @@ test("either real name for the host's route registry works", async () => {
 			assert.equal(fiber.state, ACTIVE, name);
 			assert.deepEqual(
 				server.routes.map((route) => route.path).sort(),
-				["/api/tokenledger/balance", "/api/tokenledger/usage"],
+				["/api/tokenledger/balance", "/api/tokenledger/usage", "/api/tokenledger/userauth"],
 				`no routes registered against ${name}`
 			);
 		} finally {
@@ -207,7 +211,11 @@ test("only one registration happens when both names are present", async () => {
 	const httpServer = httpServerStub();
 	const { ctx } = await boot(plugin, { sessionPersistence: persistence, webServer, httpServer });
 	try {
-		assert.equal(webServer.routes.length + httpServer.routes.length, 2, "registered twice, which the host rejects");
+		assert.equal(
+			webServer.routes.length + httpServer.routes.length,
+			3,
+			"registered twice, which the host rejects (usage, balance, userauth — one each)"
+		);
 	} finally {
 		await ctx.fiber?.dispose?.();
 	}

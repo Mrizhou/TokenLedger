@@ -34,12 +34,14 @@
  */
 
 import { DIRECT, UNKNOWN, UNROUTED, applyUsageDelta, dayKey } from "./usage.js";
-import { RelaySiteRegistry, SITE_TYPES, createSiteResolver, domainOf } from "./relay-sites.js";
+import { RelaySiteRegistry, SITE_TYPES, createSiteResolver, domainOf, normalizeOrigin } from "./relay-sites.js";
 import { createFingerprintRegistry } from "./fingerprints.js";
 import { describeProject, readProjectTitles, workspaceRegistry } from "./projects.js";
 import { discoverFromContext, mergeSites, withKnownSoftware } from "./discovery.js";
 import { createBalanceReader, listAccounts } from "./balance.js";
+import { forgetWallet, readNewApiWallet, shouldUseWallet } from "./newapi-user.js";
 import { VERSION, registerRoutes } from "./http.js";
+
 import { LedgerStore } from "./store.js";
 import { RateTable, priceRows } from "./pricing.js";
 import { num, renderReport, table } from "./report.js";
@@ -775,6 +777,7 @@ export function apply(ctx, userConfig = {}) {
 	// dynamically and its absence costs exactly itself.
 	let settingsScope;
 	let settingsRemove;
+	let settingsRemoveUserAuth;
 	let settingsFailure;
 
 	// `settings` is WAITED FOR, not sampled.
@@ -811,6 +814,7 @@ export function apply(ctx, userConfig = {}) {
 					if (!live || registered === undefined) return;
 					settingsScope = registered.scope;
 					settingsRemove = registered.remove;
+					settingsRemoveUserAuth = registered.removeUserAuth;
 					settingsFailure = undefined;
 					// Relay discovery reads provider profiles THROUGH this service, so
 					// the sweep that ran at startup — before the service existed — found
@@ -926,7 +930,139 @@ export function apply(ctx, userConfig = {}) {
 	// The read-only surface the browser panel reads. Registering it is optional
 	// in both directions: a composition with no web server keeps collecting, and
 	// a deployment that never opens the panel pays only for the registration.
+	//
+	// The balance read is wrapped, not replaced: an origin whose 设置余额 entry
+	// exists reads the USER WALLET (per-user, adaptive-cache, no key query to
+	// spend the site's rate budget on), and every other account falls through
+	// to the per-key readers exactly as before.
 	try {
+		/** The per-key readers, unchanged underneath the wallet override. */
+		const baseBalance = createBalanceReader(ctx, {
+			softwareOf: fingerprints.software,
+			// A lazily detected relay program is remembered, so the probe
+			// happens once per site rather than once per balance read.
+			learnSoftware: fingerprints.learn,
+			// `config.detect`, not a bare `detect`. Lifting the fingerprint
+			// registry out of apply() removed the local binding this used to
+			// close over, and the leftover reference threw a ReferenceError
+			// the moment `registerRoutes` was called — swallowed by the catch
+			// below into a warning nobody reads, so the HTTP routes silently
+			// stopped registering and the panel 404'd for every install after
+			// that refactor.
+			detect: config.detect,
+			// Read through `config` rather than captured once, so editing a
+			// declaration takes effect on the next read instead of at the
+			// next restart — the whole point of registering the namespace.
+			get endpoints() {
+				return config.endpoints;
+			}
+		});
+
+		const balance = async (id, force, warmOrigin) => {
+			const accounts = listAccounts(ctx, { softwareOf: fingerprints.software });
+			// A WARM request names an origin, not an account: the browser fires
+			// one per configured site at page load, before any account is picked.
+			const account =
+				warmOrigin !== undefined
+					? accounts.find((a) => a.origin === warmOrigin)
+					: id === undefined
+						? accounts[0]
+						: accounts.find((a) => a.id === id);
+			const auth = account === undefined ? undefined : config.userAuth?.[account.origin];
+			if (!shouldUseWallet(account, auth)) {
+				// Warming an account WITHOUT credentials must never fall through
+				// to the per-key read: that spends the site's query budget the
+				// wallet exists to save, and a page load would pay it every time.
+				if (warmOrigin !== undefined) return { ok: true, warmed: false };
+				return baseBalance(id);
+			}
+			try {
+				const card = await readNewApiWallet({
+					origin: account.origin,
+					userId: auth.userId,
+					token: auth.token,
+					force
+				});
+				return { ok: true, account: account.id, displayName: account.displayName, warmed: warmOrigin !== undefined, ...card };
+			} catch (error) {
+				// A throttle with no previous card to show is the only failure the
+				// wallet reports as such; every other refusal keeps its reason.
+				// (A throttle WITH a previous card never gets here — the reader
+				// answers with that card and a stale flag itself.)
+				const reason =
+					error?.kind === "rate-limited"
+						? "rate-limited"
+						: error?.kind === "upstream-auth"
+							? `upstream-${error.status ?? "error"}`
+							: error?.kind === "upstream"
+								? `http-${error.status ?? "error"}`
+								: error?.kind === "timeout"
+									? "timeout"
+									: error?.kind === "invalid-response"
+										? "invalid-response"
+										: "unreachable";
+				return {
+					ok: true,
+					account: account.id,
+					displayName: account.displayName,
+					supported: true,
+					fetched: false,
+					scheme: "newapi",
+					reason,
+					...(error?.retryAt === undefined ? {} : { retryAt: error.retryAt })
+				};
+			}
+		};
+
+		/** The stored credentials as the dialog may SEE them: never the token. */
+		const userAuth = (origin) => {
+			const all = config.userAuth ?? {};
+			const view = (entry) => ({
+				userId: typeof entry?.userId === "number" ? entry.userId : undefined,
+				hasToken: typeof entry?.token === "string" && entry.token !== ""
+			});
+			if (origin !== undefined) {
+				const hit = all[origin];
+				return hit === undefined ? {} : { [origin]: view(hit) };
+			}
+			return Object.fromEntries(Object.entries(all).map(([key, entry]) => [key, view(entry)]));
+		};
+
+		/** Save or clear one origin's entry, from the dialog's POST. */
+		const saveUserAuth = async (body) => {
+			if (body === null || typeof body !== "object") throw new Error("invalid-body");
+			const origin = normalizeOrigin(body.origin);
+			if (origin === undefined) throw new Error("invalid-origin");
+			if (body.remove === true) {
+				if (settingsRemoveUserAuth === undefined) throw new Error("settings-not-ready");
+				await settingsRemoveUserAuth(origin);
+				// Mirror the change into `config` NOW: the settings watch fires
+				// asynchronously, and the panel's reload lands before it does — a
+				// read in that gap must see the credentials as gone, not stale.
+				const next = { ...(config.userAuth ?? {}) };
+				delete next[origin];
+				config.userAuth = next;
+			} else {
+				if (settingsScope === undefined) throw new Error("settings-not-ready");
+				const userId = body.userId;
+				if (typeof userId !== "number" || !Number.isInteger(userId) || userId <= 0) {
+					throw new Error("invalid-user-id");
+				}
+				// An empty token means "keep what is stored" — the dialog prefills
+				// nothing for a configured site, so editing the user id alone
+				// must not demand retyping the secret.
+				const previous = config.userAuth?.[origin];
+				const token = typeof body.token === "string" && body.token !== "" ? body.token : previous?.token;
+				if (typeof token !== "string" || token === "") throw new Error("invalid-token");
+				// Same mirror, same reason: the panel re-reads the moment the save
+				// answers, and the wallet — not the per-key fallback — must answer.
+				config.userAuth = { ...(config.userAuth ?? {}), [origin]: { userId, token } };
+				await settingsScope.update({ userAuth: config.userAuth });
+			}
+			// Whatever just changed, the next read starts from the network.
+			forgetWallet(origin);
+		};
+
 		const served = registerRoutes(ctx, {
 			store,
 			sites: () => directory.sites,
@@ -936,26 +1072,9 @@ export function apply(ctx, userConfig = {}) {
 			accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 			projectTitles: () => projectTitles,
 			lastSweepAt: () => lastSweepAt,
-			balance: createBalanceReader(ctx, {
-				softwareOf: fingerprints.software,
-				// A lazily detected relay program is remembered, so the probe
-				// happens once per site rather than once per balance read.
-				learnSoftware: fingerprints.learn,
-				// `config.detect`, not a bare `detect`. Lifting the fingerprint
-				// registry out of apply() removed the local binding this used to
-				// close over, and the leftover reference threw a ReferenceError
-				// the moment `registerRoutes` was called — swallowed by the catch
-				// below into a warning nobody reads, so the HTTP routes silently
-				// stopped registering and the panel 404'd for every install after
-				// that refactor.
-				detect: config.detect,
-				// Read through `config` rather than captured once, so editing a
-				// declaration takes effect on the next read instead of at the
-				// next restart — the whole point of registering the namespace.
-				get endpoints() {
-					return config.endpoints;
-				}
-			}),
+			balance,
+			userAuth,
+			saveUserAuth,
 			logger
 		});
 		if (!served) logger?.info?.("tokenledger: no web server in this composition; the panel will not be served");
