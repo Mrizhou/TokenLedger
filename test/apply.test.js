@@ -36,8 +36,16 @@ const turn = (seq, route) => ({
  * at mount time.
  */
 function fakeContext(options = {}) {
-	const { providers = [], section = {}, events = [], settings = undefined, settingsReadyAfter = 0 } = options;
+	const {
+		providers = [],
+		section = {},
+		events = [],
+		settings = undefined,
+		settingsReadyAfter = 0,
+		services = {}
+	} = options;
 	const disposers = [];
+	const getCalls = [];
 	let ticks = 0;
 
 	const llm = { listConfigurableProviders: () => providers };
@@ -46,8 +54,10 @@ function fakeContext(options = {}) {
 	const ctx = {
 		logger: () => ({ info() {}, warn() {}, error() {} }),
 		get(name) {
+			getCalls.push(name);
 			if (name === "llm") return llm;
 			if (name === "settings") return ticks >= settingsReadyAfter ? settingsService : undefined;
+			if (Object.hasOwn(services, name)) return services[name];
 			return undefined;
 		},
 		inject(deps, callback) {
@@ -77,7 +87,7 @@ function fakeContext(options = {}) {
 		}
 	};
 
-	return { ctx, tick: () => ticks++, dispose: () => Promise.all(disposers.map((d) => d())) };
+	return { ctx, getCalls, tick: () => ticks++, dispose: () => Promise.all(disposers.map((d) => d())) };
 }
 
 const piAi = (route) => ({
@@ -157,6 +167,44 @@ test("apply preserves the exact legacy service and publishes a separate V1 face"
 	assert.equal(typeof v1.current, "function");
 	assert.equal(typeof v1.subscribe, "function");
 	assert.equal(typeof v1.execute, "function");
+	await dispose();
+});
+
+test("the legacy tokenledger command remains enabled by default", async () => {
+	const registered = [];
+	const commands = { register: (spec) => (registered.push(spec), () => {}) };
+	const { ctx, dispose } = fakeContext({ services: { commands } });
+
+	apply(ctx, { database: ":memory:", sweepIntervalMs: 0, sweepOnStart: false });
+
+	assert.equal(registered.length, 1);
+	assert.equal(registered[0].name, "tokenledger");
+	assert.equal(typeof registered[0].handler, "function");
+	await dispose();
+});
+
+test("disabling the legacy command leaves HTTP and public services intact", async () => {
+	const registered = [];
+	const routes = [];
+	const commands = { register: (spec) => (registered.push(spec), () => {}) };
+	const httpServer = { register: (spec) => (routes.push(spec), () => {}) };
+	const { ctx, dispose, getCalls } = fakeContext({ services: { commands, httpServer } });
+	const published = captureServices(ctx);
+
+	apply(ctx, {
+		database: ":memory:",
+		sweepIntervalMs: 0,
+		sweepOnStart: false,
+		commandEnabled: false
+	});
+
+	assert.equal(getCalls.includes("commands"), false, "a disabled command must not probe or invoke the registry");
+	assert.deepEqual(registered, []);
+	assert.deepEqual([...published.keys()], ["tokenLedger", "tokenLedgerV1"]);
+	assert.deepEqual(
+		routes.map((route) => route.path).sort(),
+		["/api/tokenledger/balance", "/api/tokenledger/usage", "/api/tokenledger/userauth"]
+	);
 	await dispose();
 });
 
@@ -320,6 +368,8 @@ test("a settings service that mounts after this plugin is still used", async () 
 	assert.deepEqual(registered, [], "nothing to register against yet");
 	await settle();
 	const api = services.get("tokenLedger");
+	const publicApi = services.get("tokenLedgerV1");
+	const initialRevision = publicApi.current().revision;
 	assert.deepEqual(api.sites(), [], "the startup sweep genuinely cannot see relays yet");
 
 	tick(); // the settings service mounts, after this plugin already did
@@ -329,6 +379,10 @@ test("a settings service that mounts after this plugin is still used", async () 
 	await waitFor(() => registered.length > 0);
 
 	assert.deepEqual(registered, ["tokenledger"], "the namespace was never registered");
+	assert.ok(publicApi.current().revision > initialRevision, "settings readiness did not advance the public revision");
+	const configuration = await publicApi.getConfiguration({ requestId: "late-settings-ready" });
+	assert.equal(configuration.revision, publicApi.current().revision);
+	assert.equal(configuration.value.settings.available, true);
 	// Discovery reads provider profiles through that same service, so arriving
 	// late must re-run it. Leaving it to the next timer tick showed a real
 	// install "no relays" while its own report listed one.

@@ -34,13 +34,13 @@ export function buildSchema(z) {
 	// thing that can express it — or as an object when something needs
 	// overriding. Both forms mean the same site.
 	const relay = z.union([
-		z.string(),
+		z.string().description("接口地址"),
 		z.object({
-			baseUrl: z.string(),
-			id: z.string(),
-			displayName: z.string(),
-			type: z.string()
-		})
+			baseUrl: z.string().description("接口地址"),
+			id: z.string().description("站点 ID"),
+			displayName: z.string().description("显示名称"),
+			type: z.string().description("中转软件类型")
+		}).description("中转路由")
 	]);
 
 	// One declared window. `kind` and `minutes` are values; every other field is
@@ -48,31 +48,31 @@ export function buildSchema(z) {
 	// name and length are facts about the plan, and everything else is a
 	// location in a document only the user has seen.
 	const declaredWindow = z.object({
-		kind: z.string(),
-		minutes: z.number(),
-		usedPercent: z.string(),
-		usedRatio: z.string(),
-		remainingPercent: z.string(),
-		used: z.string(),
-		limit: z.string(),
-		resetsAt: z.string(),
-		resetInSeconds: z.string()
-	});
+		kind: z.string().description("窗口类型"),
+		minutes: z.number().description("窗口分钟数"),
+		usedPercent: z.string().description("已用百分比路径"),
+		usedRatio: z.string().description("已用比例路径"),
+		remainingPercent: z.string().description("剩余百分比路径"),
+		used: z.string().description("已用量路径"),
+		limit: z.string().description("限额路径"),
+		resetsAt: z.string().description("重置时间路径"),
+		resetInSeconds: z.string().description("剩余秒数路径")
+	}).description("限额窗口");
 
 	// A balance endpoint for a vendor with no built-in reader. See
 	// `declarative.js` for the boundary this runs inside — in particular, the
 	// request goes to the matching ACCOUNT's origin, and `origin` here is only
 	// the key used to find that account.
 	const declaredEndpoint = z.object({
-		origin: z.string(),
-		displayName: z.string(),
-		path: z.string(),
+		origin: z.string().description("站点源地址"),
+		displayName: z.string().description("显示名称"),
+		path: z.string().description("接口路径"),
 		/** Send the key without the `Bearer` prefix, as some console APIs want. */
-		raw: z.boolean().default(false),
+		raw: z.boolean().default(false).description("直接发送令牌"),
 		/** Dotted paths for `total`, `granted`, `used`, `currency`, `plan`. */
-		fields: z.dict(z.string()),
-		windows: z.array(declaredWindow)
-	});
+		fields: z.dict(z.string()).description("响应字段路径"),
+		windows: z.array(declaredWindow).description("限额窗口")
+	}).description("自定义余额端点");
 
 	return z.object({
 		/**
@@ -80,7 +80,9 @@ export function buildSchema(z) {
 		 * table does not cover. Consulted only where nothing else could answer, so
 		 * an entry can add a vendor and can never change how a known one is read.
 		 */
-		endpoints: z.array(declaredEndpoint),
+		endpoints: z.array(declaredEndpoint)
+			.description("自定义余额端点")
+			.comment("为内置读取器未覆盖的供应商配置余额或配额接口"),
 		/**
 		 * New API console credentials, keyed by ORIGIN — one entry per relay site,
 		 * written by the panel's 设置余额 dialog. `/api/user/self` reads the site
@@ -91,33 +93,45 @@ export function buildSchema(z) {
 		userAuth: z.dict(
 			z.object({
 				/** The numeric 用户ID from 个人设置. */
-				userId: z.number().step(1).min(1),
+				userId: z.number().step(1).min(1).description("用户 ID"),
 				/** The 系统访问令牌; sent as a header, never echoed back out. */
-				token: z.string()
+				token: z.string().role("secret").description("访问令牌")
 			})
-		),
+		)
+			.description("站点钱包凭据")
+			.comment("按站点源地址保存 New API 用户 ID 和访问令牌"),
 		/**
 		 * Relay overrides, keyed by DSH provider route. Normally empty: sites are
 		 * discovered from the host's own provider configuration. An entry here is
 		 * for what discovery cannot see — a composition with no settings provider,
 		 * or a provider mounted by an agent preset.
 		 */
-		relays: z.dict(relay),
+		relays: z.dict(relay)
+			.description("中转路由")
+			.comment("按 DSH provider route 覆盖中转站地址与类型"),
 		/** Origins that are a vendor's own endpoint, so not a relay site. */
-		officialOrigins: z.array(z.string()),
+		officialOrigins: z.array(z.string())
+			.description("官方站点源地址")
+			.comment("这些地址属于供应商官方接口，不计为中转站"),
 		/**
 		 * Probe each relay to identify its software. Off by default: the answer
 		 * only labels the site in diagnostics, so leaving it
 		 * on means unauthenticated requests to a third party for a column nothing
 		 * currently reads.
 		 */
-		fingerprint: z.boolean().default(false),
+		fingerprint: z.boolean().default(false)
+			.description("探测中转软件")
+			.comment("向中转站发起匿名探测以识别软件类型"),
 		/** Rollup database path. */
-		database: z.string().default("tokenledger.sqlite"),
+		database: z.string().default("tokenledger.sqlite")
+			.description("数据库路径")
+			.comment("TokenLedger 汇总数据库文件"),
 		/** Milliseconds between background sweeps; 0 disables the timer. */
-		sweepIntervalMs: z.number().step(1).min(0).default(60_000),
+		sweepIntervalMs: z.number().step(1).min(0).default(60_000)
+			.description("后台汇总间隔（毫秒）")
+			.comment("设为 0 可关闭定时汇总"),
 		/** Whether to sweep once at startup. */
-		sweepOnStart: z.boolean().default(true),
+		sweepOnStart: z.boolean().default(true).description("启动时汇总"),
 		/**
 		 * Rate table for cost estimation. Left unvalidated on purpose: rates are a
 		 * nested, evolving shape owned by `pricing.js`, which already reports a
@@ -125,6 +139,8 @@ export function buildSchema(z) {
 		 * schema here would be a second, drifting definition of the same thing.
 		 */
 		rates: z.any()
+			.description("价格表")
+			.comment("用于成本估算的模型费率 JSON")
 	});
 }
 

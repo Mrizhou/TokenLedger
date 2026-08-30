@@ -103,7 +103,8 @@ export const inject = ["sessionPersistence"];
 const DEFAULTS = {
 	database: "tokenledger.sqlite",
 	sweepIntervalMs: 60_000,
-	sweepOnStart: true
+	sweepOnStart: true,
+	commandEnabled: true
 };
 
 /**
@@ -803,6 +804,9 @@ export function apply(ctx, userConfig = {}) {
 			scoped.on?.("dispose", () => {
 				live = false;
 				settingsScope = undefined;
+				settingsRemove = undefined;
+				settingsRemoveUserAuth = undefined;
+				publicService?.notifyChanged(true);
 			});
 			void import("./settings-schema.js")
 				.then(({ registerNamespace }) =>
@@ -811,7 +815,7 @@ export function apply(ctx, userConfig = {}) {
 								// A resolved value replaces the entry config wholesale;
 								// the directory picks the change up on the next sweep.
 								Object.assign(config, next);
-								publicService?.notifyChanged();
+								publicService?.notifyChanged(true);
 							})
 						: undefined
 				)
@@ -826,7 +830,7 @@ export function apply(ctx, userConfig = {}) {
 					// nothing. Re-discover now instead of leaving the directory empty
 					// until the next timer tick.
 					refreshDirectory();
-					publicService?.notifyChanged();
+					publicService?.notifyChanged(true);
 					logger?.info?.("tokenledger: settings namespace registered; configuration can be saved");
 				})
 				.catch((error) => {
@@ -834,6 +838,7 @@ export function apply(ctx, userConfig = {}) {
 					// different, and a message that names the wrong one sends whoever
 					// reads it to the wrong place.
 					settingsFailure = error?.message ?? String(error);
+					publicService?.notifyChanged(true);
 					logger?.warn?.(
 						"tokenledger: could not register the settings namespace (%s); using entry config only",
 						settingsFailure
@@ -889,7 +894,11 @@ export function apply(ctx, userConfig = {}) {
 	// `/tokenledger [days] [site]` — a report in the conversation stream. The
 	// command is a shell over the same queries the future UI page will use, so
 	// nothing here is throwaway when that page lands.
-	const commands = typeof ctx.get === "function" ? ctx.get("commands") : undefined;
+	// Blue contributes its own renderer-native `/tokenledger` overlay command.
+	// Its composition disables this text command explicitly so the profile has
+	// one unambiguous entry point; ordinary Harness and Web compositions retain
+	// the legacy command because `commandEnabled` defaults to true.
+	const commands = config.commandEnabled === false || typeof ctx.get !== "function" ? undefined : ctx.get("commands");
 	if (commands !== undefined) {
 		try {
 			ctx.effect(function* () {
@@ -928,22 +937,22 @@ export function apply(ctx, userConfig = {}) {
 			probeStatus: fingerprints.status,
 			// Present only once the namespace registered; `runCommand` says so
 			// rather than failing, because the report half still works without it.
-			saveRelays:
-				settingsScope === undefined
-					? undefined
-					: async (relays) => {
-						await settingsScope.update({ relays });
-						refreshDirectory();
-						publicService?.notifyChanged();
-					},
-			removeRelay:
-				settingsRemove === undefined
-					? undefined
-					: async (route) => {
-						await settingsRemove(route);
-						refreshDirectory();
-						publicService?.notifyChanged();
-					},
+				saveRelays:
+					settingsScope === undefined
+						? undefined
+						: async (relays) => {
+							await settingsScope.update({ relays });
+							refreshDirectory();
+							publicService?.notifyChanged(true);
+						},
+				removeRelay:
+					settingsRemove === undefined
+						? undefined
+						: async (route) => {
+							await settingsRemove(route);
+							refreshDirectory();
+							publicService?.notifyChanged(true);
+						},
 			saveUnavailableBecause: settingsFailure
 		});
 
@@ -997,6 +1006,7 @@ export function apply(ctx, userConfig = {}) {
 			await settingsScope.update({ userAuth: config.userAuth });
 		}
 		walletReader.forget(origin);
+		publicService?.notifyChanged(true);
 	};
 
 	try {
