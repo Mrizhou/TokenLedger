@@ -13,6 +13,7 @@ import test from "node:test";
 import {
 	BASE_TTL_MS,
 	MIN_BACKOFF_MS,
+	createNewApiWalletReader,
 	readNewApiWallet,
 	shouldUseWallet,
 	unitFromStatus,
@@ -106,6 +107,55 @@ test("a fresh cache answers with no request at all — the panel opens instantly
 	assert.equal(calls.length, 2, "one status + one wallet, nothing more");
 	assert.equal(again.cached, true);
 	assert.equal(again.total, 40);
+});
+
+test("plugin-owned wallet readers do not share cache state", async () => {
+	const origin = site();
+	const { calls, fetch } = recorder([
+		["/api/user/self", okJson(selfBody)],
+		["/api/status", okJson(statusBody)]
+	]);
+	const first = createNewApiWalletReader();
+	const second = createNewApiWalletReader();
+	await first.read({ origin, userId: 42, token: "tok", fetch, now: 1_000 });
+	await first.read({ origin, userId: 42, token: "tok", fetch, now: 2_000 });
+	assert.equal(calls.length, 2, "one reader reuses its own status and wallet cache");
+	await second.read({ origin, userId: 42, token: "tok", fetch, now: 2_000 });
+	assert.equal(calls.length, 4, "a second plugin instance starts with an empty cache");
+	assert.equal(first.snapshot().length, 1);
+	assert.equal(first.snapshot()[0].state, undefined, "diagnostics never expose the wallet value");
+	first.dispose();
+	assert.equal(first.snapshot().length, 0);
+	await assert.rejects(first.read({ origin, userId: 42, token: "tok", fetch }), (error) => error.kind === "aborted");
+	second.dispose();
+});
+
+test("an external AbortSignal cancels a wallet read without filling the cache", async () => {
+	const reader = createNewApiWalletReader();
+	const abort = new AbortController();
+	const fetch = async (_url, init) =>
+		new Promise((_resolve, reject) => {
+			init.signal.addEventListener("abort", () => reject(Object.assign(new Error("stopped"), { name: "AbortError" })), { once: true });
+		});
+	const pending = reader.read({ origin: site(), userId: 42, token: "tok", fetch, signal: abort.signal });
+	abort.abort();
+	await assert.rejects(pending, (error) => error.kind === "aborted");
+	assert.deepEqual(reader.snapshot(), []);
+	reader.dispose();
+});
+
+test("disposing a reader rejects and clears an uncooperative late result", async () => {
+	const reader = createNewApiWalletReader();
+	const gate = Promise.withResolvers();
+	const fetch = async (url) => {
+		await gate.promise;
+		return url.includes("/api/status") ? okJson(statusBody) : okJson(selfBody);
+	};
+	const pending = reader.read({ origin: site(), userId: 42, token: "tok", fetch });
+	reader.dispose();
+	gate.resolve();
+	await assert.rejects(pending, (error) => error.kind === "aborted");
+	assert.deepEqual(reader.snapshot(), [], "a late response cannot repopulate a disposed instance");
 });
 
 test("force skips the freshness window but never a backoff", async () => {

@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { apply } from "../src/plugin.js";
+import { LedgerStore } from "../src/store.js";
 
 const DAY = Date.parse("2026-08-15T10:00:00");
 
@@ -76,7 +77,7 @@ function fakeContext(options = {}) {
 		}
 	};
 
-	return { ctx, tick: () => ticks++, dispose: () => disposers.forEach((d) => d()) };
+	return { ctx, tick: () => ticks++, dispose: () => Promise.all(disposers.map((d) => d())) };
 }
 
 const piAi = (route) => ({
@@ -88,17 +89,33 @@ const piAi = (route) => ({
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** Capture every reflected service by its stable Cordis name. */
+function captureServices(ctx) {
+	const services = new Map();
+	ctx.reflect.provide = (name, value) => void services.set(name, value);
+	return services;
+}
+
+/** Wait a bounded number of event-loop turns for a dynamically imported seam. */
+async function waitFor(predicate, turns = 100) {
+	for (let turn = 0; turn < turns; turn++) {
+		if (await predicate()) return true;
+		await settle();
+	}
+	return false;
+}
+
 test("a relay is discovered and its traffic attributed, with no configuration at all", async () => {
 	const { ctx } = fakeContext({
 		providers: [piAi("api99")],
 		section: { providers: { api99: { baseURL: "https://api.relay-one.example/v1" } } },
 		events: [turn(1, "api99")]
 	});
-	let api;
-	ctx.reflect.provide = (_name, value) => void (api = value);
+	const services = captureServices(ctx);
 
 	apply(ctx, { database: ":memory:", sweepIntervalMs: 0, detect: async () => ({ billingAvailable: false }) });
 	await settle();
+	const api = services.get("tokenLedger");
 
 	assert.deepEqual(
 		api.sites().map((s) => s.id),
@@ -107,14 +124,155 @@ test("a relay is discovered and its traffic attributed, with no configuration at
 	assert.equal(api.bySite({}).find((r) => r.site === "api.relay-one.example")?.tokens, 1100);
 });
 
+test("apply preserves the exact legacy service and publishes a separate V1 face", async () => {
+	const { ctx, dispose } = fakeContext({ events: [turn(1, "deepseek")] });
+	const services = captureServices(ctx);
+
+	apply(ctx, { database: ":memory:", sweepIntervalMs: 0, sweepOnStart: false });
+
+	assert.deepEqual([...services.keys()], ["tokenLedger", "tokenLedgerV1"]);
+	const legacy = services.get("tokenLedger");
+	const v1 = services.get("tokenLedgerV1");
+	assert.deepEqual(Object.keys(legacy).sort(), [
+		"byDay",
+		"byModel",
+		"bySite",
+		"diagnostics",
+		"reindex",
+		"sites",
+		"store",
+		"sweep",
+		"totals"
+	]);
+	assert.ok(legacy.store instanceof LedgerStore, "the legacy raw-store escape hatch changed identity");
+	assert.deepEqual(legacy.totals({}), legacy.store.totals({}));
+	assert.deepEqual(legacy.byDay({}), legacy.store.byDay({}));
+	assert.deepEqual(legacy.byModel({}), legacy.store.byModel({}));
+	assert.deepEqual(legacy.bySite({}), legacy.store.bySite({}));
+	assert.deepEqual(legacy.diagnostics(), legacy.store.diagnostics());
+
+	for (const key of ["store", "sweep", "totals", "byDay", "byModel", "bySite", "sites", "diagnostics", "reindex"]) {
+		assert.equal(v1[key], undefined, `tokenLedgerV1 leaked the legacy ${key} member`);
+	}
+	assert.equal(typeof v1.current, "function");
+	assert.equal(typeof v1.subscribe, "function");
+	assert.equal(typeof v1.execute, "function");
+	await dispose();
+});
+
+test("tokenLedgerV1 is immutable, actionable, and exposes no store or credentials", async () => {
+	const { ctx, dispose } = fakeContext({ events: [turn(1, "deepseek")] });
+	const services = captureServices(ctx);
+
+	apply(ctx, {
+		database: ":memory:",
+		sweepIntervalMs: 0,
+		sweepOnStart: false,
+		userAuth: { "https://relay.example": { userId: 42, token: "top-secret" } }
+	});
+	const api = services.get("tokenLedgerV1");
+
+	assert.equal(api.store, undefined, "the mutable SQLite owner must not cross the service boundary");
+	assert.equal(api.current().revision, 1);
+	assert.equal(Object.isFrozen(api.current()), true);
+	const replayed = [];
+	api.subscribe((snapshot) => replayed.push(snapshot.revision));
+	const refreshed = await api.execute({
+		requestId: "refresh",
+		expectedRevision: 1,
+		action: { type: "usage.refresh" }
+	});
+	assert.equal(refreshed.status, "applied");
+	assert.equal(refreshed.snapshot.totals.selected.tokens, 1100);
+	assert.deepEqual(replayed, [1, 2]);
+	const exported = await api.execute({
+		requestId: "export",
+		expectedRevision: 2,
+		action: { type: "usage.export", format: "json" }
+	});
+	assert.equal(exported.revision, 2, "a readonly action does not invent a new projection revision");
+	assert.equal(exported.data.format, "json");
+	assert.ok(exported.data.content.includes("deepseek"));
+	await assert.rejects(
+		api.execute({
+			requestId: "no-settings",
+			action: { type: "settings.relay.set", route: "relay", baseUrl: "https://relay.example/v1" }
+		}),
+		(error) => error.code === "UNAVAILABLE"
+	);
+
+	const configuration = await api.getConfiguration({ requestId: "configuration" });
+	assert.equal(configuration.value.wallets["https://relay.example"].hasToken, true);
+	assert.equal(JSON.stringify(configuration).includes("top-secret"), false);
+	assert.equal(Object.isFrozen(configuration.value), true);
+
+	await dispose();
+	assert.throws(() => api.subscribe(() => {}), (error) => error.code === "UNAVAILABLE");
+});
+
+test("structured settings and balance actions use the existing domain seams", async () => {
+	const updates = [];
+	const mutations = [];
+	let section = {};
+	let watch;
+	const settings = {
+		get: () => ({}),
+		register: () => ({
+			get: () => section,
+			watch: (listener) => void (watch = listener),
+			update: async (patch) => {
+				updates.push(patch);
+				section = { ...section, ...patch };
+				watch?.(section);
+			}
+		}),
+		mutate: async (_namespace, operations) => void mutations.push(...operations)
+	};
+	const { ctx, dispose } = fakeContext({ settings });
+	const services = captureServices(ctx);
+	apply(ctx, { database: ":memory:", sweepIntervalMs: 0, sweepOnStart: false });
+	const api = services.get("tokenLedgerV1");
+	assert.equal(
+		await waitFor(async () => (await api.getConfiguration({ requestId: `ready-${Date.now()}` })).value.settings.available === true),
+		true,
+		"settings namespace did not become available"
+	);
+
+	const execute = (requestId, action) => api.execute({
+		requestId,
+		expectedRevision: api.current().revision,
+		action
+	});
+	await execute("relay-set", { type: "settings.relay.set", route: "relay", baseUrl: "https://relay.example/v1" });
+	assert.deepEqual(updates.at(-1).relays, { relay: "https://relay.example/v1" });
+	await execute("relay-remove", { type: "settings.relay.remove", route: "relay" });
+	assert.deepEqual(mutations.at(-1), { op: "unset", path: ["relays", "relay"] });
+
+	await execute("wallet-set", {
+		type: "settings.wallet.set",
+		origin: "https://relay.example/v1",
+		userId: 42,
+		token: "top-secret"
+	});
+	const configuration = await api.getConfiguration({ requestId: "configured-wallet" });
+	assert.equal(configuration.value.wallets["https://relay.example"].hasToken, true);
+	assert.equal(JSON.stringify(configuration).includes("top-secret"), false);
+	const balance = await execute("balance", { type: "balance.refresh" });
+	assert.equal(balance.data.reason, "no-provider-directory");
+	assert.equal(balance.revision, api.current().revision, "balance is a readonly action");
+
+	await execute("wallet-clear", { type: "settings.wallet.clear", origin: "https://relay.example" });
+	assert.deepEqual(mutations.at(-1), { op: "unset", path: ["userAuth", "https://relay.example"] });
+	await dispose();
+});
+
 test("a fingerprint answer survives the next sweep", async () => {
 	// The regression a real install showed as a site permanently reading 未识别.
 	const { ctx, tick } = fakeContext({
 		providers: [piAi("api99")],
 		section: { providers: { api99: { baseURL: "https://api.relay-one.example/v1" } } }
 	});
-	let api;
-	ctx.reflect.provide = (_name, value) => void (api = value);
+	const services = captureServices(ctx);
 
 	let asks = 0;
 	apply(ctx, {
@@ -128,6 +286,7 @@ test("a fingerprint answer survives the next sweep", async () => {
 		}
 	});
 	await settle();
+	const api = services.get("tokenLedger");
 	assert.equal(api.sites()[0].type, "newapi");
 
 	tick();
@@ -155,17 +314,19 @@ test("a settings service that mounts after this plugin is still used", async () 
 		}
 	});
 
-	let api;
-	ctx.reflect.provide = (_name, value) => void (api = value);
+	const services = captureServices(ctx);
 
 	apply(ctx, { database: ":memory:", sweepIntervalMs: 0, detect: async () => ({ billingAvailable: false }) });
 	assert.deepEqual(registered, [], "nothing to register against yet");
 	await settle();
+	const api = services.get("tokenLedger");
 	assert.deepEqual(api.sites(), [], "the startup sweep genuinely cannot see relays yet");
 
 	tick(); // the settings service mounts, after this plugin already did
-	// Let the waiting fiber notice it and the dynamic import resolve.
-	for (let i = 0; i < 8; i++) await settle();
+	// Let the waiting fiber notice it and the dynamic import resolve. Dynamic
+	// import completion is not specified in a fixed number of timer turns, so
+	// wait for the observable contract with a hard upper bound.
+	await waitFor(() => registered.length > 0);
 
 	assert.deepEqual(registered, ["tokenledger"], "the namespace was never registered");
 	// Discovery reads provider profiles through that same service, so arriving
@@ -183,14 +344,38 @@ test("a store that cannot be opened does not stop DSH from booting", () => {
 	assert.doesNotThrow(() => apply(ctx, { database: "/nonexistent-dir/x/y.sqlite", sweepIntervalMs: 0 }));
 });
 
+test("a V1 projection failure leaves the legacy service alive and the store Fiber-owned", async () => {
+	const { ctx, dispose } = fakeContext({});
+	const services = new Map();
+	let closed = false;
+	ctx.reflect.provide = (name, value) => {
+		services.set(name, value);
+		if (name !== "tokenLedger") return;
+		value.store.byProject = () => {
+			throw new Error("projection failed");
+		};
+		const close = value.store.close.bind(value.store);
+		value.store.close = () => {
+			closed = true;
+			close();
+		};
+	};
+
+	assert.doesNotThrow(() => apply(ctx, { database: ":memory:", sweepIntervalMs: 0, sweepOnStart: false }));
+	assert.ok(services.get("tokenLedger").store instanceof LedgerStore);
+	assert.equal(services.has("tokenLedgerV1"), false);
+	await dispose();
+	assert.equal(closed, true, "the fallback path leaked the host-owned store");
+});
+
 test("no llm and no settings still collects, attributing everything to direct", async () => {
 	const { ctx } = fakeContext({ events: [turn(1, "whatever")] });
 	ctx.get = () => undefined;
-	let api;
-	ctx.reflect.provide = (_name, value) => void (api = value);
+	const services = captureServices(ctx);
 
 	apply(ctx, { database: ":memory:", sweepIntervalMs: 0 });
 	await settle();
+	const api = services.get("tokenLedger");
 
 	assert.deepEqual(api.sites(), []);
 	assert.equal(api.totals({}).outputTokens, 100, "usage accounting does not depend on knowing the site");

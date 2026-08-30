@@ -24,6 +24,7 @@
     "./quota": "./src/quota.js",
     "./relay-sites": "./src/relay-sites.js",
     "./report": "./src/report.js",
+    "./service": "./src/service.js",
     "./store": "./src/store.js",
     "./subscriptions": "./src/subscriptions.js",
     "./usage": "./src/usage.js"
@@ -34,6 +35,7 @@
     "LICENSE",
     "NOTICE",
     "README.md",
+    "docs/BLUE-MIGRATION.md",
     "docs/images"
   ],
   "engines": {
@@ -73,6 +75,7 @@
     }
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^3.18.1"
   }
 }

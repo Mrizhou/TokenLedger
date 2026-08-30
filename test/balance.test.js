@@ -97,6 +97,22 @@ test("an http error and an unreachable host read differently", async () => {
 	);
 });
 
+test("an external AbortSignal cancels the balance request distinctly from timeout", async () => {
+	const abort = new AbortController();
+	const pending = readBalance({
+		scheme: "deepseek",
+		origin: "https://api.deepseek.com",
+		apiKey: "sk-secret",
+		signal: abort.signal,
+		fetch: async (_url, init) =>
+			new Promise((_resolve, reject) => {
+				init.signal.addEventListener("abort", () => reject(Object.assign(new Error("stopped"), { name: "AbortError" })), { once: true });
+			})
+	});
+	abort.abort();
+	assert.deepEqual(await pending, { supported: true, fetched: false, scheme: "deepseek", reason: "aborted" });
+});
+
 // --- per-vendor shapes -------------------------------------------------------
 
 test("DeepSeek prefers CNY, and an unreported balance is absent rather than zero", async () => {

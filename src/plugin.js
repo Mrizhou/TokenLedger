@@ -39,8 +39,9 @@ import { createFingerprintRegistry } from "./fingerprints.js";
 import { describeProject, readProjectTitles, workspaceRegistry } from "./projects.js";
 import { discoverFromContext, mergeSites, withKnownSoftware } from "./discovery.js";
 import { createBalanceReader, listAccounts } from "./balance.js";
-import { forgetWallet, readNewApiWallet, shouldUseWallet } from "./newapi-user.js";
-import { VERSION, registerRoutes } from "./http.js";
+import { createNewApiWalletReader, shouldUseWallet } from "./newapi-user.js";
+import { VERSION, registerRoutes, usagePayload } from "./http.js";
+import { TokenLedgerError, TokenLedgerService } from "./service.js";
 
 import { LedgerStore } from "./store.js";
 import { RateTable, priceRows } from "./pricing.js";
@@ -598,9 +599,9 @@ function routeAttributionReport(store, directory) {
 /**
  * Cordis plugin entry.
  *
- * Publishes `ctx.tokenLedger` so a UI row or a tool can read the index without
- * reopening the database, and disposes both the timer and the store with the
- * fiber.
+ * Preserves the legacy `ctx.tokenLedger` service and publishes the bounded
+ * `ctx.tokenLedgerV1` service for renderer-neutral consumers. Both services,
+ * the timer, and the store remain owned by this plugin Fiber.
  */
 export function apply(ctx, userConfig = {}) {
 	const config = { ...DEFAULTS, ...userConfig };
@@ -621,6 +622,8 @@ export function apply(ctx, userConfig = {}) {
 		logger?.error?.("tokenledger: could not open %s: %s", config.database, error?.message ?? error);
 		return;
 	}
+	let publicService;
+	const walletReader = createNewApiWalletReader();
 
 	// --- the site directory -------------------------------------------------
 	//
@@ -650,6 +653,7 @@ export function apply(ctx, userConfig = {}) {
 		// already succeeded.
 		onLearn: (software) => {
 			directory = { ...directory, sites: withKnownSoftware(directory.sites, software) };
+			publicService?.notifyChanged();
 		}
 	});
 
@@ -807,6 +811,7 @@ export function apply(ctx, userConfig = {}) {
 								// A resolved value replaces the entry config wholesale;
 								// the directory picks the change up on the next sweep.
 								Object.assign(config, next);
+								publicService?.notifyChanged();
 							})
 						: undefined
 				)
@@ -821,6 +826,7 @@ export function apply(ctx, userConfig = {}) {
 					// nothing. Re-discover now instead of leaving the directory empty
 					// until the next timer tick.
 					refreshDirectory();
+					publicService?.notifyChanged();
 					logger?.info?.("tokenledger: settings namespace registered; configuration can be saved");
 				})
 				.catch((error) => {
@@ -838,35 +844,47 @@ export function apply(ctx, userConfig = {}) {
 		settingsFailure = "这个 Cordis 没有 ctx.inject";
 	}
 
-	const api = {
+	// The original public face is a published compatibility contract. Keep its
+	// identity and behavior unchanged while new renderers migrate to the bounded
+	// `tokenLedgerV1` face below; in particular, this legacy object still exposes
+	// the store because removing it here would turn an additive migration into a
+	// breaking release.
+	const legacyApi = {
 		store,
 		sweep: runSweep,
 		totals: (range, site) => store.totals(range, site),
 		byDay: (range, site) => store.byDay(range, site),
 		byModel: (range, site) => store.byModel(range, site),
 		bySite: (range) => store.bySite(range),
-		sites: () => directory.sites.map((s) => ({ ...s })),
+		sites: () => directory.sites.map((site) => ({ ...site })),
 		diagnostics: () => store.diagnostics(),
-		/** Discard the index; the next sweep rebuilds it from seq 0. */
 		reindex: async () => {
 			store.reset();
 			return runSweep();
 		}
 	};
-
-	// Cordis refuses a bare assignment to an undeclared service ("cannot set
-	// property without provide"). Publishing is a convenience for a UI row or a
-	// tool, not a prerequisite for collecting, so an upstream rc that moves this
-	// API costs the service and nothing else.
 	try {
 		if (typeof ctx.reflect?.provide === "function") {
-			ctx.reflect.provide("tokenLedger", api);
+			ctx.reflect.provide("tokenLedger", legacyApi);
 		} else {
-			logger?.warn?.("tokenledger: no reflect.provide on this Cordis; collecting without publishing a service");
+			logger?.warn?.("tokenledger: no reflect.provide on this Cordis; collecting without publishing services");
 		}
 	} catch (error) {
-		logger?.warn?.("tokenledger: could not publish the service: %s", error?.message ?? error);
+		logger?.warn?.("tokenledger: could not publish the legacy service: %s", error?.message ?? error);
 	}
+
+	/** Sweep and replay the changed summary to renderer-neutral consumers. */
+	const runSweepAndPublish = async () => {
+		const result = await runSweep();
+		publicService?.notifyChanged();
+		return result;
+	};
+
+	/** Discard the derived index; the next sweep rebuilds it from seq 0. */
+	const reindexAndPublish = async () => {
+		store.reset();
+		return runSweepAndPublish();
+	};
 
 	// `/tokenledger [days] [site]` — a report in the conversation stream. The
 	// command is a shell over the same queries the future UI page will use, so
@@ -897,8 +915,8 @@ export function apply(ctx, userConfig = {}) {
 		runCommand(rawInput, {
 			store,
 			config,
-			sweep: runSweep,
-			reindex: api.reindex,
+			sweep: runSweepAndPublish,
+			reindex: reindexAndPublish,
 			logger,
 			sites: () => directory.sites,
 			// The whole directory, not just its sites: diagnostics needs the
@@ -914,16 +932,18 @@ export function apply(ctx, userConfig = {}) {
 				settingsScope === undefined
 					? undefined
 					: async (relays) => {
-							await settingsScope.update({ relays });
-							refreshDirectory();
-						},
+						await settingsScope.update({ relays });
+						refreshDirectory();
+						publicService?.notifyChanged();
+					},
 			removeRelay:
 				settingsRemove === undefined
 					? undefined
 					: async (route) => {
-							await settingsRemove(route);
-							refreshDirectory();
-						},
+						await settingsRemove(route);
+						refreshDirectory();
+						publicService?.notifyChanged();
+					},
 			saveUnavailableBecause: settingsFailure
 		});
 
@@ -935,6 +955,50 @@ export function apply(ctx, userConfig = {}) {
 	// exists reads the USER WALLET (per-user, adaptive-cache, no key query to
 	// spend the site's rate budget on), and every other account falls through
 	// to the per-key readers exactly as before.
+	let balance;
+
+	/** The stored credentials as a renderer may SEE them: never the token. */
+	const userAuth = (origin) => {
+		const all = config.userAuth ?? {};
+		const view = (entry) => ({
+			userId: typeof entry?.userId === "number" ? entry.userId : undefined,
+			hasToken: typeof entry?.token === "string" && entry.token !== ""
+		});
+		if (origin !== undefined) {
+			const hit = all[origin];
+			return hit === undefined ? {} : { [origin]: view(hit) };
+		}
+		return Object.fromEntries(Object.entries(all).map(([key, entry]) => [key, view(entry)]));
+	};
+
+	/** Save or clear one origin's entry through the existing settings seam. */
+	const saveUserAuth = async (body) => {
+		if (body === null || typeof body !== "object") throw new Error("invalid-body");
+		const origin = normalizeOrigin(body.origin);
+		if (origin === undefined) throw new Error("invalid-origin");
+		if (body.remove === true) {
+			if (settingsRemoveUserAuth === undefined) throw new Error("settings-not-ready");
+			await settingsRemoveUserAuth(origin);
+			// Mirror the change now: the settings watch is asynchronous and a read
+			// immediately after this write must not see the removed credential.
+			const next = { ...(config.userAuth ?? {}) };
+			delete next[origin];
+			config.userAuth = next;
+		} else {
+			if (settingsScope === undefined) throw new Error("settings-not-ready");
+			const userId = body.userId;
+			if (typeof userId !== "number" || !Number.isInteger(userId) || userId <= 0) {
+				throw new Error("invalid-user-id");
+			}
+			const previous = config.userAuth?.[origin];
+			const token = typeof body.token === "string" && body.token !== "" ? body.token : previous?.token;
+			if (typeof token !== "string" || token === "") throw new Error("invalid-token");
+			config.userAuth = { ...(config.userAuth ?? {}), [origin]: { userId, token } };
+			await settingsScope.update({ userAuth: config.userAuth });
+		}
+		walletReader.forget(origin);
+	};
+
 	try {
 		/** The per-key readers, unchanged underneath the wallet override. */
 		const baseBalance = createBalanceReader(ctx, {
@@ -958,7 +1022,7 @@ export function apply(ctx, userConfig = {}) {
 			}
 		});
 
-		const balance = async (id, force, warmOrigin) => {
+		balance = async (id, force, warmOrigin, request = {}) => {
 			const accounts = listAccounts(ctx, { softwareOf: fingerprints.software });
 			// A WARM request names an origin, not an account: the browser fires
 			// one per configured site at page load, before any account is picked.
@@ -974,14 +1038,15 @@ export function apply(ctx, userConfig = {}) {
 				// to the per-key read: that spends the site's query budget the
 				// wallet exists to save, and a page load would pay it every time.
 				if (warmOrigin !== undefined) return { ok: true, warmed: false };
-				return baseBalance(id);
+				return baseBalance(id, { signal: request.signal });
 			}
 			try {
-				const card = await readNewApiWallet({
+				const card = await walletReader.read({
 					origin: account.origin,
 					userId: auth.userId,
 					token: auth.token,
-					force
+					force,
+					signal: request.signal
 				});
 				return { ok: true, account: account.id, displayName: account.displayName, warmed: warmOrigin !== undefined, ...card };
 			} catch (error) {
@@ -1014,59 +1079,10 @@ export function apply(ctx, userConfig = {}) {
 			}
 		};
 
-		/** The stored credentials as the dialog may SEE them: never the token. */
-		const userAuth = (origin) => {
-			const all = config.userAuth ?? {};
-			const view = (entry) => ({
-				userId: typeof entry?.userId === "number" ? entry.userId : undefined,
-				hasToken: typeof entry?.token === "string" && entry.token !== ""
-			});
-			if (origin !== undefined) {
-				const hit = all[origin];
-				return hit === undefined ? {} : { [origin]: view(hit) };
-			}
-			return Object.fromEntries(Object.entries(all).map(([key, entry]) => [key, view(entry)]));
-		};
-
-		/** Save or clear one origin's entry, from the dialog's POST. */
-		const saveUserAuth = async (body) => {
-			if (body === null || typeof body !== "object") throw new Error("invalid-body");
-			const origin = normalizeOrigin(body.origin);
-			if (origin === undefined) throw new Error("invalid-origin");
-			if (body.remove === true) {
-				if (settingsRemoveUserAuth === undefined) throw new Error("settings-not-ready");
-				await settingsRemoveUserAuth(origin);
-				// Mirror the change into `config` NOW: the settings watch fires
-				// asynchronously, and the panel's reload lands before it does — a
-				// read in that gap must see the credentials as gone, not stale.
-				const next = { ...(config.userAuth ?? {}) };
-				delete next[origin];
-				config.userAuth = next;
-			} else {
-				if (settingsScope === undefined) throw new Error("settings-not-ready");
-				const userId = body.userId;
-				if (typeof userId !== "number" || !Number.isInteger(userId) || userId <= 0) {
-					throw new Error("invalid-user-id");
-				}
-				// An empty token means "keep what is stored" — the dialog prefills
-				// nothing for a configured site, so editing the user id alone
-				// must not demand retyping the secret.
-				const previous = config.userAuth?.[origin];
-				const token = typeof body.token === "string" && body.token !== "" ? body.token : previous?.token;
-				if (typeof token !== "string" || token === "") throw new Error("invalid-token");
-				// Same mirror, same reason: the panel re-reads the moment the save
-				// answers, and the wallet — not the per-key fallback — must answer.
-				config.userAuth = { ...(config.userAuth ?? {}), [origin]: { userId, token } };
-				await settingsScope.update({ userAuth: config.userAuth });
-			}
-			// Whatever just changed, the next read starts from the network.
-			forgetWallet(origin);
-		};
-
 		const served = registerRoutes(ctx, {
 			store,
 			sites: () => directory.sites,
-			sweep: runSweep,
+			sweep: runSweepAndPublish,
 			priced: (range, site) =>
 				config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates),
 			accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
@@ -1087,14 +1103,203 @@ export function apply(ctx, userConfig = {}) {
 		logger?.error?.("tokenledger: could not register the HTTP routes: %s", error?.stack ?? error?.message ?? error);
 	}
 
-	if (config.sweepOnStart) void runSweep();
+	const usageDeps = {
+		store,
+		sites: () => directory.sites,
+		priced: (range, site) =>
+			config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates),
+		accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
+		projectTitles: () => projectTitles,
+		lastSweepAt: () => lastSweepAt
+	};
+	const readUsage = (query) => usagePayload(usageDeps, query);
+	const requiredText = (action, key, requestId, max = 256) => {
+		const value = typeof action?.[key] === "string" ? action[key].trim() : "";
+		if (value === "" || value.length > max) {
+			throw new TokenLedgerError("INVALID_REQUEST", `${key} must contain 1-${max} characters`, { requestId });
+		}
+		return value;
+	};
+	const optionalText = (action, key, max = 256) => {
+		const value = typeof action?.[key] === "string" ? action[key].trim() : "";
+		return value === "" ? undefined : value.slice(0, max);
+	};
+	const actionQuery = (action) => {
+		const date = /^\d{4}-\d{2}-\d{2}$/;
+		const range = {};
+		if (typeof action?.range?.from === "string" && date.test(action.range.from)) range.from = action.range.from;
+		if (typeof action?.range?.to === "string" && date.test(action.range.to)) range.to = action.range.to;
+		return { range, site: optionalText(action, "site") };
+	};
+	const unavailable = (message, requestId) => {
+		throw new TokenLedgerError("UNAVAILABLE", message, { requestId });
+	};
+
+	const publicImplementation = {
+		readUsage,
+		readConfiguration: () => ({
+			version: VERSION,
+			settings: { available: settingsScope !== undefined, failure: settingsFailure },
+			relays: config.relays ?? {},
+			officialOrigins: config.officialOrigins ?? [],
+			fingerprint: config.fingerprint === true,
+			sweepIntervalMs: config.sweepIntervalMs,
+			sweepOnStart: config.sweepOnStart,
+			endpoints: config.endpoints ?? [],
+			rates: config.rates ?? null,
+			wallets: userAuth(),
+			walletCache: walletReader.snapshot()
+		}),
+		runAction: async (action, request) => {
+			const { commit, requestId, signal } = request;
+			switch (action.type) {
+				case "usage.refresh": {
+					commit();
+					const stats = await runSweep();
+					return { ok: true, changed: true, message: "usage refreshed", data: stats ?? {} };
+				}
+				case "index.rebuild": {
+					commit(() => store.reset());
+					const stats = await runSweep();
+					return { ok: true, changed: true, message: "index rebuilt", data: stats ?? {} };
+				}
+				case "balance.refresh": {
+					if (balance === undefined) unavailable("tokenledger balance reader is unavailable", requestId);
+					const accountId = optionalText(action, "accountId", 256);
+					const data = await balance(accountId, true, undefined, { signal });
+					if (signal.aborted) throw new TokenLedgerError("ABORTED", "balance refresh was aborted", { requestId });
+					return { ok: true, changed: false, message: "balance refreshed", data };
+				}
+				case "usage.export": {
+					const format = action.format === "csv" ? "csv" : action.format === undefined || action.format === "json" ? "json" : undefined;
+					if (format === undefined) {
+						throw new TokenLedgerError("INVALID_REQUEST", "format must be json or csv", { requestId });
+					}
+					const { range, site } = actionQuery(action);
+					const content = format === "csv"
+						? store.exportCsv(range, site)
+						: JSON.stringify(store.exportJson(range, site), null, 1);
+					return {
+						ok: true,
+						changed: false,
+						message: "usage exported",
+						data: {
+							format,
+							content,
+							fileName: `tokenledger.${format}`,
+							mimeType: format === "csv" ? "text/csv" : "application/json"
+						}
+					};
+				}
+				case "settings.relay.set": {
+					if (settingsScope === undefined) unavailable("tokenledger settings are not ready", requestId);
+					const route = requiredText(action, "route", requestId);
+					if (route === "__proto__" || route === "prototype" || route === "constructor") {
+						throw new TokenLedgerError("INVALID_REQUEST", "route is reserved", { requestId });
+					}
+					const baseUrl = requiredText(action, "baseUrl", requestId, 2048);
+					let parsed;
+					try {
+						parsed = new URL(baseUrl);
+					} catch {
+						throw new TokenLedgerError("INVALID_REQUEST", "baseUrl must be an absolute URL", { requestId });
+					}
+					if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+						throw new TokenLedgerError("INVALID_REQUEST", "baseUrl must use http or https", { requestId });
+					}
+					const relayType = optionalText(action, "relayType", 64);
+					const id = optionalText(action, "id");
+					const displayName = optionalText(action, "displayName");
+					const value = relayType === undefined && id === undefined && displayName === undefined
+						? baseUrl
+						: { baseUrl, ...(relayType === undefined ? {} : { type: relayType }), ...(id === undefined ? {} : { id }), ...(displayName === undefined ? {} : { displayName }) };
+					const relays = { ...(config.relays ?? {}), [route]: value };
+					commit();
+					await settingsScope.update({ relays });
+					config.relays = relays;
+					refreshDirectory();
+					return { ok: true, changed: true, message: "relay saved", data: { route } };
+				}
+				case "settings.relay.remove": {
+					if (settingsRemove === undefined) unavailable("tokenledger settings cannot remove relays", requestId);
+					const route = requiredText(action, "route", requestId);
+					commit();
+					await settingsRemove(route);
+					const relays = { ...(config.relays ?? {}) };
+					delete relays[route];
+					config.relays = relays;
+					refreshDirectory();
+					return { ok: true, changed: true, message: "relay removed", data: { route } };
+				}
+				case "settings.wallet.set": {
+					if (settingsScope === undefined) unavailable("tokenledger settings are not ready", requestId);
+					const origin = requiredText(action, "origin", requestId, 2048);
+					const normalizedOrigin = normalizeOrigin(origin);
+					if (normalizedOrigin === undefined) {
+						throw new TokenLedgerError("INVALID_REQUEST", "origin must be an absolute http or https URL", { requestId });
+					}
+					const userId = action.userId;
+					if (!Number.isSafeInteger(userId) || userId <= 0) {
+						throw new TokenLedgerError("INVALID_REQUEST", "userId must be a positive safe integer", { requestId });
+					}
+					const token = typeof action.token === "string" ? action.token : "";
+					if (token.length > 32 * 1024) {
+						throw new TokenLedgerError("INVALID_REQUEST", "token exceeded its size limit", { requestId });
+					}
+					if (token === "" && typeof config.userAuth?.[normalizedOrigin]?.token !== "string") {
+						throw new TokenLedgerError("INVALID_REQUEST", "token is required for an unconfigured origin", { requestId });
+					}
+					commit();
+					await saveUserAuth({ origin, userId, token });
+					return { ok: true, changed: true, message: "wallet settings saved", data: { origin: normalizedOrigin } };
+				}
+				case "settings.wallet.clear": {
+					if (settingsRemoveUserAuth === undefined) unavailable("tokenledger settings cannot clear wallet credentials", requestId);
+					const origin = requiredText(action, "origin", requestId, 2048);
+					const normalizedOrigin = normalizeOrigin(origin);
+					if (normalizedOrigin === undefined) {
+						throw new TokenLedgerError("INVALID_REQUEST", "origin must be an absolute http or https URL", { requestId });
+					}
+					commit();
+					await saveUserAuth({ origin, remove: true });
+					return { ok: true, changed: true, message: "wallet settings cleared", data: { origin: normalizedOrigin } };
+				}
+				default:
+					throw new TokenLedgerError("INVALID_REQUEST", "unknown tokenledger action type", { requestId });
+			}
+		},
+		dispose: () => walletReader.dispose()
+	};
+	try {
+		publicService = new TokenLedgerService(publicImplementation);
+	} catch (error) {
+		// The additive renderer-neutral face must never make collection, the
+		// legacy service, or the Web UI fail to boot.
+		logger?.warn?.("tokenledger: could not initialize tokenLedgerV1: %s", error?.message ?? error);
+	}
+
+	// The new face is additive. Blue and other renderer-neutral consumers use it;
+	// existing consumers keep resolving the untouched `tokenLedger` object.
+	try {
+		if (publicService !== undefined && typeof ctx.reflect?.provide === "function") {
+			ctx.reflect.provide("tokenLedgerV1", publicService);
+		} else if (publicService !== undefined) {
+			logger?.warn?.("tokenledger: no reflect.provide on this Cordis; collecting without publishing tokenLedgerV1");
+		}
+	} catch (error) {
+		logger?.warn?.("tokenledger: could not publish tokenLedgerV1: %s", error?.message ?? error);
+	}
+
+	if (config.sweepOnStart) void runSweepAndPublish();
 
 	const timer =
-		config.sweepIntervalMs > 0 ? setInterval(() => void runSweep(), config.sweepIntervalMs) : undefined;
+		config.sweepIntervalMs > 0 ? setInterval(() => void runSweepAndPublish(), config.sweepIntervalMs) : undefined;
 	timer?.unref?.();
 
-	ctx.on("dispose", () => {
+	ctx.on("dispose", async () => {
 		if (timer !== undefined) clearInterval(timer);
+		if (publicService === undefined) walletReader.dispose();
+		else await publicService.dispose();
 		try {
 			store.close();
 		} catch {

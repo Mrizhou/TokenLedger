@@ -601,6 +601,10 @@ export const SCHEMES = {
  */
 export async function readBalance(options = {}) {
 	const { scheme, origin, timeoutMs = 15_000 } = options;
+	const externalSignal = options.signal;
+	if (externalSignal?.aborted === true) {
+		return { supported: true, fetched: false, scheme, reason: "aborted" };
+	}
 	// A compiled declaration is passed in rather than registered, because
 	// registering it would let it collide with — or replace — a built-in name.
 	const spec = options.spec ?? SCHEMES[scheme];
@@ -613,12 +617,18 @@ export async function readBalance(options = {}) {
 	if ((typeof apiKey !== "string" || apiKey === "") && spec.localCredential !== undefined) {
 		apiKey = await spec.localCredential(options).catch(() => undefined);
 	}
+	if (externalSignal?.aborted === true) {
+		return { supported: true, fetched: false, scheme, reason: "aborted" };
+	}
 	if (typeof apiKey !== "string" || apiKey === "") {
 		return { supported: true, fetched: false, reason: "no-credential" };
 	}
 
 	const doFetch = options.fetch ?? globalThis.fetch;
 	const controller = new AbortController();
+	const onAbort = () => controller.abort(externalSignal?.reason);
+	if (externalSignal?.aborted === true) controller.abort(externalSignal.reason);
+	else externalSignal?.addEventListener("abort", onAbort, { once: true });
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	/**
 	 * @param options - `{ anonymous }` sends no credential at all; `{ raw }`
@@ -660,6 +670,9 @@ export async function readBalance(options = {}) {
 
 	try {
 		const read = await spec.read({ origin, get, vendor: vendorOf(origin) });
+		if (externalSignal?.aborted === true) {
+			return { supported: true, fetched: false, scheme, reason: "aborted" };
+		}
 		// Normalized here rather than in each reader, so a scheme describes what
 		// its vendor sent ("a ratio", "seconds from now") and never has to get
 		// the arithmetic right a fifth time. `windows` stays absent when there
@@ -683,7 +696,7 @@ export async function readBalance(options = {}) {
 							error?.kind === "cross-origin-redirect" || error?.kind === "too-large" || error?.kind === "declaration"
 							? error.kind
 							: error?.name === "AbortError"
-								? "timeout"
+								? (externalSignal?.aborted === true ? "aborted" : "timeout")
 								: "unreachable";
 		// A scheme whose endpoint wants a different credential from the one the
 		// route carries says so, rather than leaving the card on a bare 401 that
@@ -692,6 +705,7 @@ export async function readBalance(options = {}) {
 		return { supported: true, fetched: false, scheme, reason, ...(hint === undefined ? {} : { hint }) };
 	} finally {
 		clearTimeout(timer);
+		externalSignal?.removeEventListener("abort", onAbort);
 	}
 }
 
@@ -799,7 +813,9 @@ export function listAccounts(ctx, options = {}) {
  *   lazily detected one so the next read skips the probe.
  */
 export function createBalanceReader(ctx, options = {}) {
-	return async (id) => {
+	return async (id, request = {}) => {
+		const signal = request.signal;
+		if (signal?.aborted === true) return { ok: true, supported: true, fetched: false, reason: "aborted" };
 		const accounts = listAccounts(ctx, options);
 		if (accounts.length === 0) return { ok: true, supported: false, reason: "no-provider-directory" };
 
@@ -821,6 +837,7 @@ export function createBalanceReader(ctx, options = {}) {
 			} catch {
 				// Leave it unknown; the answer below says so.
 			}
+			if (signal?.aborted === true) return { ok: true, account: account.id, supported: true, fetched: false, reason: "aborted" };
 		}
 		// A user declaration is the last thing consulted, never the first. It
 		// cannot shadow a built-in scheme, so declaring an endpoint can add a
@@ -842,12 +859,13 @@ export function createBalanceReader(ctx, options = {}) {
 				: await Promise.resolve(credentials.resolve?.(reference))
 						.then((hit) => hit?.value ?? hit)
 						.catch(() => undefined);
+		if (signal?.aborted === true) return { ok: true, account: account.id, supported: true, fetched: false, reason: "aborted" };
 
 		return {
 			ok: true,
 			account: account.id,
 			displayName: account.displayName,
-			...(await readBalance({ scheme, spec: declared, origin: account.origin, apiKey, fetch: options.fetch })),
+			...(await readBalance({ scheme, spec: declared, origin: account.origin, apiKey, fetch: options.fetch, signal })),
 			// So the card can say the numbers came out of paths the user wrote.
 			// A wrong path is a configuration mistake, and that has to be
 			// distinguishable from the plugin getting a known vendor wrong.

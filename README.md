@@ -5,8 +5,9 @@
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Token 用量算清楚，并归属到**实际服务这次请求的中转站**——不用配置，不用凭据。
 
-Token-usage accounting for the DeepSeek Harness Web GUI (`dsh web`), attributed
-to the relay site that served each request. Zero configuration.
+Token-usage accounting for DeepSeek Harness, attributed to the relay site that
+served each request. The existing Web GUI (`dsh web`) and renderer-neutral
+consumers share the same host-owned aggregation. Zero configuration.
 
 ![TokenLedger 面板](docs/images/panel.png)
 
@@ -233,6 +234,62 @@ import { foldUsage, bySite, byModel } from "dsh-tokenledger";
 import { LedgerStore } from "dsh-tokenledger/store";
 import { readBalance } from "dsh-tokenledger/balance";
 ```
+
+### Renderer-neutral service
+
+宿主插件会同时发布两个服务面：
+
+- `ctx.tokenLedger` 是为现有消费者原样保留的 legacy 接口，仍包含 `store`、
+  `sweep`、`totals`、`byDay`、`byModel`、`bySite`、`sites`、`diagnostics` 和
+  `reindex`。新代码不应再依赖这个 raw-store 边界。
+- `ctx.tokenLedgerV1` 是供 Blue 等新 renderer 使用的安全接口。它不暴露 SQLite
+  store、Cordis context、Session/Agent、凭据或 renderer 对象；快照和返回值都
+  经过大小限制、凭据字段过滤、深拷贝与冻结。
+
+The host preserves `ctx.tokenLedger` as the legacy, raw-store-compatible face
+and publishes `ctx.tokenLedgerV1` for new renderer-neutral consumers. New
+integrations should depend only on `tokenLedgerV1`.
+
+Web 面板仍走上面的回环 HTTP API；Web 与 V1 聚合都调用同一个
+`usagePayload()`，没有第二套 totals/day/model/project 口径。
+
+```js
+const ledger = ctx.get("tokenLedgerV1");
+
+const stop = ledger.subscribe((snapshot) => {
+  // Immediate replay, then monotonic snapshot.revision updates.
+  console.log(snapshot.totals, snapshot.models, snapshot.projects);
+});
+
+const detail = await ledger.queryUsage({
+  requestId: "usage-30d",
+  range: { from: "2026-08-01", to: "2026-08-30" }
+});
+
+const refreshed = await ledger.execute({
+  requestId: "refresh",
+  expectedRevision: ledger.current().revision,
+  action: { type: "usage.refresh" }
+});
+
+stop();
+```
+
+`execute()` 的 action types：
+
+| Type | 用途 |
+| --- | --- |
+| `usage.refresh` | 扫描新增 session log 并发布新快照 |
+| `index.rebuild` | 丢弃派生索引后从 durable log 重建 |
+| `balance.refresh` | 刷新指定 `accountId` 的余额/配额 |
+| `usage.export` | 返回有上限的 `json` / `csv` 内容 |
+| `settings.relay.set` / `settings.relay.remove` | 写入或删除 relay override |
+| `settings.wallet.set` / `settings.wallet.clear` | 写入或清除 New API wallet 凭据；凭据不进入结果或快照 |
+
+同一个 `requestId` 的新请求会 supersede 旧请求；调用方 abort、stale revision、
+unavailable capability、超限和内部隔离分别以稳定的 `TokenLedgerError.code`
+返回。完整迁移边界与尚未完成的 Blue TUI 工作见
+[`docs/BLUE-MIGRATION.md`](docs/BLUE-MIGRATION.md)。
 
 ## 开发 / Development
 
