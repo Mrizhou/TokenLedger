@@ -34,19 +34,22 @@ The current TUI is Simplified Chinese only. Canonical Blue core renders the
 `●`/`○` navigation markers from plain tab labels; active state also uses a
 changing surface title, explicit current-page labels, and `‹ ›` candidate
 brackets. `Tab` / `Shift+Tab` switches only between
-tab levels such as the main and breakdown navigation; Left/Right moves within
-that level, Down enters content, Up/Down browses content, Enter/Space confirms,
-and PageUp/PageDown pages the focused content group. Lists, actions, pagination,
-and forms do not enter the Tab cycle. Every page keeps this Chinese guide
-visible. English localization is planned separately.
+tab levels such as the main and breakdown navigation; Left/Right immediately
+switches the page within that level, Down enters content, Up/Down browses
+content, Enter/Space selects or activates content, and PageUp/PageDown pages the
+focused content group. Lists, actions, pagination, and forms do not enter the
+Tab cycle. Every page keeps this Chinese guide visible. English localization is
+planned separately.
 
 The dashboard includes today/month/all-time ranges, the WebUI-equivalent
 371-day activity heatmap, relay filtering, paged
 site/model/project/provider/activity detail, account balance and quota windows,
 usage refresh, derived-index rebuild, and complete paged JSON/CSV export
 content. Each heatmap day uses a two-column terminal cell with a one-column gap;
-wide layouts show the full history in blocks and narrow layouts show the latest
-weeks. Relay and personal-wallet settings remain available through
+zero days are muted and all non-zero levels are green. The overview keeps one
+chronological data row and fills it with the latest days that fit at three
+columns each; the complete 371-day history remains under Activity in Breakdown.
+Relay and personal-wallet settings remain available through
 `/settings` and the domain's public compatibility API.
 
 TokenLedger's initial public views are bounded. When rows are omitted, the TUI

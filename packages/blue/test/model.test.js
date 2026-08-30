@@ -301,62 +301,81 @@ test("every main page keeps the Chinese keyboard guide and exposes no settings t
 	assert.deepEqual(TOKEN_LEDGER_BLUE_MODEL.tabs.map((item) => item.id), ["overview", "breakdown", "accounts", "export"]);
 	for (const tab of TOKEN_LEDGER_BLUE_MODEL.tabs) {
 		const rendered = JSON.stringify(buildTokenLedgerView(state({ tab: tab.id })));
-			assert.match(rendered, /Tab\/Shift\+Tab 切换标签层级/);
-			assert.match(rendered, /←\/→ 切换本层标签/);
-			assert.match(rendered, /↓ 进入内容/);
-			assert.match(rendered, /↑\/↓ 浏览内容/);
-			assert.match(rendered, /Enter\/Space 确认/);
-			assert.match(rendered, /PgUp\/PgDn 翻页/);
+		assert.match(rendered, /Tab\/Shift\+Tab 切换标签层级/);
+		assert.match(rendered, /←\/→ 直接切换本层标签页/);
+		assert.match(rendered, /↓ 进入内容/);
+		assert.match(rendered, /↑\/↓ 浏览内容/);
+		assert.match(rendered, /Enter\/Space 选择内容项/);
+		assert.match(rendered, /PgUp\/PgDn 翻页/);
 		assert.doesNotMatch(rendered, /tokenledger\.(?:settings|relays|wallets|relay-form|wallet-form)/);
 	}
 });
 
 test("overview migrates the WebUI daily activity heatmap with the same quantile levels", () => {
 	assert.equal(TOKEN_LEDGER_BLUE_MODEL.activityDays, 371);
-	assert.equal(TOKEN_LEDGER_BLUE_MODEL.narrowActivityWeeks, 10);
-	const rendered = JSON.stringify(buildTokenLedgerView(state()));
-	assert.match(rendered, /按日活动热力图 · 最近 371 天/u);
-	assert.match(rendered, /按日活动热力图 · 最近 10 周/u);
-	assert.match(rendered, /按日活动热力图 · 最近 8 周/u);
-	assert.match(rendered, /按日活动热力图 · 最近 4 周/u);
+	assert.equal(TOKEN_LEDGER_BLUE_MODEL.activityCellWidth, 3);
+	assert.equal(TOKEN_LEDGER_BLUE_MODEL.narrowActivityWeeks, undefined);
+	const view = buildTokenLedgerView(state());
+	const rendered = JSON.stringify(view);
+	assert.match(rendered, /按日活动热力图/u);
 	assert.match(rendered, /完整 371 天见“明细 → 活动”/u);
-	assert.match(rendered, /"minWidth":64/u);
-	assert.match(rendered, /"maxWidth":63/u);
+	assert.doesNotMatch(rendered, /按日活动热力图 · 续|最近 \d+ 周/u);
 	for (const glyph of ["░░", "▒▒", "▓▓", "██"]) assert.match(rendered, new RegExp(glyph, "u"));
-	assert.match(rendered, /"text":"▒▒","tone":"muted"/u);
-	assert.match(rendered, /"text":"▒▒","tone":"accent"/u);
 	assert.doesNotMatch(rendered, /[□▫▪▣■]/u);
-	const dayGlyphs = (root) => {
-		const glyphs = [];
+	const activityVariants = (root) => {
+		let result;
 		const collect = (value) => {
 			if (value === null || typeof value !== "object") return;
-			if (value.kind === "rich-text" && /^[一二三四五六日] /u.test(value.spans?.[0]?.text ?? "")) {
-				for (const span of value.spans.slice(1)) {
-					if (typeof span.text === "string" && /[░▒▓█]/u.test(span.text)) glyphs.push(span.text);
-				}
+			if (value.kind === "stack" && value.children?.length === 32
+				&& value.children.every((child) => child.when !== undefined && child.node?.kind === "rich-text")) {
+				assert.equal(result, undefined, "one responsive heatmap stack");
+				result = value;
 			}
 			for (const child of Object.values(value)) collect(child);
 		};
 		collect(root);
-		return glyphs;
+		assert.ok(result, "responsive heatmap variants");
+		return result.children;
 	};
-	const glyphSpans = dayGlyphs(buildTokenLedgerView(state()));
-	assert.ok(glyphSpans.length > 371, "responsive variants retain a complete 371-day grid");
-	assert.equal(glyphSpans.every((value) => /^(?:░░|▒▒|▓▓|██)$/u.test(value)), true, "one day is exactly two terminal cells");
-	const assertNoRepeatedActivityCaption = (value) => {
-		if (value === null || typeof value !== "object") return;
-		if (Array.isArray(value.children)) {
-			for (let index = 1; index < value.children.length; index += 1) {
-				const previous = value.children[index - 1]?.node;
-				const current = value.children[index]?.node;
-				if (previous?.kind === "text" && current?.kind === "text" && /\d{4}-\d{2}-\d{2} - \d{4}-\d{2}-\d{2}/u.test(previous.content)) {
-					assert.notEqual(current.content, previous.content, "one heatmap block renders its range/description caption once");
-				}
-			}
+	const variants = activityVariants(view);
+	assert.equal(variants.length, 32);
+	for (const [index, variant] of variants.entries()) {
+		const visibleDays = index + 1;
+		const minWidth = visibleDays * TOKEN_LEDGER_BLUE_MODEL.activityCellWidth + 4;
+		assert.deepEqual(variant.when, visibleDays === 1
+			? { maxWidth: minWidth + TOKEN_LEDGER_BLUE_MODEL.activityCellWidth - 1 }
+			: visibleDays === variants.length
+				? { minWidth }
+				: { minWidth, maxWidth: minWidth + TOKEN_LEDGER_BLUE_MODEL.activityCellWidth - 1 });
+		const dataRow = variant.node;
+		assert.equal(dataRow.spans.length, visibleDays);
+		assert.equal(dataRow.spans.map((span) => span.text).join("").length, visibleDays * TOKEN_LEDGER_BLUE_MODEL.activityCellWidth);
+		for (const span of dataRow.spans) {
+			assert.match(span.text, /^(?:░░|▒▒|▓▓|██) $/u);
+			assert.ok(span.tone === "muted" || span.tone === "success");
+			assert.notEqual(span.tone, "accent");
 		}
-		for (const child of Object.values(value)) assertNoRepeatedActivityCaption(child);
-	};
-	assertNoRepeatedActivityCaption(buildTokenLedgerView(state()));
+	}
+
+	const recentView = normalizeTokenLedgerView(usage({
+		generatedAt: Date.UTC(2026, 7, 30, 12),
+		activity: [
+			{ day: "2026-08-29", tokens: 1, requests: 1 },
+			{ day: "2026-08-30", tokens: 2, requests: 1 }
+		]
+	}));
+	const recentVariants = activityVariants(buildTokenLedgerView(state({ view: recentView, viewRevision: 3 })));
+	assert.match(JSON.stringify(buildTokenLedgerView(state({ view: recentView, viewRevision: 3 }))), /截止 2026-08-30/u);
+	assert.deepEqual(recentVariants[0].node.spans, [{ text: "██ ", tone: "success" }]);
+	assert.deepEqual(recentVariants[1].node.spans, [
+		{ text: "░░ ", tone: "success" },
+		{ text: "██ ", tone: "success" }
+	]);
+	assert.deepEqual(recentVariants[2].node.spans, [
+		{ text: "░░ ", tone: "muted" },
+		{ text: "░░ ", tone: "success" },
+		{ text: "██ ", tone: "success" }
+	]);
 
 	const steady = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 	const withSpike = activityLevelScale([...steady, 1_000_000]);
@@ -374,9 +393,15 @@ test("overview migrates the WebUI daily activity heatmap with the same quantile 
 		generatedAt: Date.UTC(2026, 7, 30, 12),
 		activity: []
 	}));
-	const idleGlyphs = dayGlyphs(buildTokenLedgerView(state({ view: idleView, viewRevision: 3 })));
-	assert.ok(idleGlyphs.length > 371);
-	assert.equal(idleGlyphs.every((value) => value === "░░"), true);
+	const idleSpans = activityVariants(buildTokenLedgerView(state({ view: idleView, viewRevision: 3 })))
+		.flatMap((variant) => variant.node.spans);
+	assert.equal(idleSpans.length, 32 * 33 / 2);
+	assert.equal(idleSpans.every((span) => span.text === "░░ " && span.tone === "muted"), true);
+	assert.deepEqual([20, 40, 80, 100].map((width) => variants.find((variant) => {
+		const minimum = variant.when.minWidth ?? 1;
+		const maximum = variant.when.maxWidth ?? Number.POSITIVE_INFINITY;
+		return width >= minimum && width <= maximum;
+	})?.node.spans.length), [5, 12, 25, 32]);
 });
 
 test("main and breakdown navigation leave canonical markers to the Blue renderer", () => {

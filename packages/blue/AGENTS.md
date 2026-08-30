@@ -69,22 +69,26 @@ markers, so compiled rows must never contain `● ●` or `○ ○`. Form submit
 and loading cancel
 controls must remain Chinese without leaking internal `tokenledger.*` ids. The
 shared surface body always explains that Tab/Shift-Tab switches only between
-tab levels, Left/Right moves the current tab candidate, Down enters content,
-Up/Down browses content, Enter/Space confirms, and PageUp/PageDown pages the
-focused control group. Lists, actions, pagination, and forms must never enter
+tab levels, Left/Right immediately switches the page in the current tab level,
+Down enters content, Up/Down browses content, Enter/Space selects or activates
+content controls, and PageUp/PageDown pages the focused control group. Tabs
+must ignore Enter/Space. Lists, actions, pagination, and forms must never enter
 the Tab cycle. Pagination actions are not focusable and carry an explicit
 `shortcutFor` control id.
 Overview renders the WebUI's 371-day activity heatmap with the same quantile
 scale. One day is two adjacent terminal cells (`░░`, `▒▒`, `▓▓`, or `██`) plus
-one blank column, which approximates the Web square-cell grid. Wide layouts
-show the complete history in blocks; narrow layouts show the most recent
-10/8/4 weeks and point to `明细 -> 活动` for the complete paged history. The
+one blank column, which approximates the Web square-cell grid. Zero days use
+the muted tone; all four non-zero levels use the success tone and differ only
+by glyph density. The overview is always one chronological data row. Bounded
+responsive variants select the latest number of days that fit at three columns
+per day after the overlay frame and padding are deducted; `明细 -> 活动` remains
+the complete 371-day paged history. The
 managed overlay request carries no title because the returned dynamic overlay
 surface owns the single frame.
 Keyboard fixture evidence must cover Tab/Shift-Tab between main and breakdown
-tab levels, Left/Right candidate movement, Down content entry, Tab return from
-content, Enter/Space selection, and PageUp/PageDown scoped paging through the
-real public compiler.
+tab levels, immediate Left/Right tab changes, Enter/Space no-op on tabs, Down
+content entry, Tab return from content, Enter/Space content selection, and
+PageUp/PageDown scoped paging through the real public compiler.
 
 Run `node --test "test/*.test.js"`, syntax-check both `lib/*.js` entries, run
 oxlint from the Blue checkout, and validate with

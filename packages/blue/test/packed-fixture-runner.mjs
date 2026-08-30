@@ -428,15 +428,15 @@ await scenario("host.single-command-overlay-admission", async () => {
 	const view = rendered(node);
 	ensure(/TokenLedger · 总览/u.test(view) && /当前页：总览/u.test(view) && /"activeId":"overview"/u.test(view), "FIXTURE_OVERLAY_RENDER", "overlay did not expose its Chinese page state to the canonical renderer");
 	ensure(!/(?:●|○) (?:总览|明细|账户|导出|站点|模型|项目|提供方|活动)/u.test(view), "FIXTURE_OVERLAY_RAW_TAB_MARKER", "wire tab labels duplicated renderer-owned active markers");
-	ensure(/Tab\/Shift\+Tab 切换标签层级/u.test(view) && /←\/→ 切换本层标签/u.test(view) && /↓ 进入内容/u.test(view) && /↑\/↓ 浏览内容/u.test(view) && /Enter\/Space 确认/u.test(view) && /PgUp\/PgDn 翻页/u.test(view), "FIXTURE_OVERLAY_GUIDE", "overlay did not render the persistent Chinese keyboard guide");
+	ensure(/Tab\/Shift\+Tab 切换标签层级/u.test(view) && /←\/→ 直接切换本层标签页/u.test(view) && /↓ 进入内容/u.test(view) && /↑\/↓ 浏览内容/u.test(view) && /Enter\/Space 选择内容项/u.test(view) && /PgUp\/PgDn 翻页/u.test(view), "FIXTURE_OVERLAY_GUIDE", "overlay did not render the persistent Chinese keyboard guide");
 	ensure(!/● 设置|○ 设置|运行设置|tokenledger\.(?:settings|relays|wallets|relay-form|wallet-form)/u.test(view), "FIXTURE_OVERLAY_SETTINGS", "overlay retained its retired settings surface");
 	ensure(domainFixture.configurationReads === 0, "FIXTURE_OVERLAY_CONFIGURATION_READ", "overlay read the retired companion configuration surface");
 });
 
 await scenario("renderer.keyboard-navigation-visible-state", async () => {
 	const overlay = overlayContribution().request;
-	// The keyboard probe renders the complete 371-day overview so focus paint is
-	// observable below the heatmap. Width/normal-height behavior has a separate
+	// The keyboard probe uses a tall viewport so focus paint remains observable
+	// below the single-row heatmap. Width/normal-height behavior has a separate
 	// 20/40/80/120 width-scan scenario.
 	const viewport = { columns: 100, rows: 120 };
 	const compileSurface = (events) => {
@@ -483,16 +483,15 @@ await scenario("renderer.keyboard-navigation-visible-state", async () => {
 	compiled.focusTarget.handleInput?.("\x1b[Z");
 	const tabFocused = rows(compiled);
 	ensure(/‹ ● 总览 ›/u.test(tabFocused) && !/→[^\n]*‹ ● 总览 ›/u.test(tabFocused), "FIXTURE_SHIFT_TAB_GROUP_VISIBLE", "Shift+Tab from content did not restore the remembered tab group");
+	compiled.focusTarget.handleInput?.("\r");
+	compiled.focusTarget.handleInput?.(" ");
+	ensure(events.length === 0, "FIXTURE_TAB_CONFIRM_NOOP", "Enter/Space emitted an event from a tab instead of leaving switching to Left/Right");
 	compiled.focusTarget.handleInput?.("\x1b[C");
 	const rightFocused = rows(compiled);
-	ensure(/→[^\n]*○ 明细/u.test(rightFocused), "FIXTURE_RIGHT_FOCUS_VISIBLE", "Right did not visibly move focus to 明细");
-	compiled.focusTarget.handleInput?.("\x1b[D");
-	const leftFocused = rows(compiled);
-	ensure(/‹ ● 总览 ›/u.test(leftFocused) && !/→[^\n]*‹ ● 总览 ›/u.test(leftFocused), "FIXTURE_LEFT_FOCUS_VISIBLE", "Left did not visibly restore focus to 总览");
-	compiled.focusTarget.handleInput?.("\x1b[C");
-	compiled.focusTarget.handleInput?.("\r");
-	ensure(events.length === 1 && events[0]?.kind === "tab-change" && events[0]?.tabId === "breakdown", "FIXTURE_KEYBOARD_TAB_EVENT", "keyboard confirmation did not select the 明细 tab");
-	const switched = await overlay.onEvent(events[0], { signal: new AbortController().signal });
+	const mainTabEvent = events.at(-1);
+	ensure(identity(compiled)?.itemId === "breakdown" && !/→[^\n]*○ 明细/u.test(rightFocused), "FIXTURE_RIGHT_NO_ARROW", "Right did not target 明细 without drawing a redundant arrow");
+	ensure(events.length === 1 && mainTabEvent?.kind === "tab-change" && mainTabEvent.tabId === "breakdown", "FIXTURE_KEYBOARD_TAB_EVENT", "Right did not immediately select the 明细 tab");
+	const switched = await overlay.onEvent(mainTabEvent, { signal: new AbortController().signal });
 	ensure(switched.ok, "FIXTURE_KEYBOARD_TAB_SWITCH", switched.message ?? "keyboard tab switch failed");
 	events = [];
 	compiled = replaceAfterRefresh(compiled, events, "FIXTURE_MAIN_TAB_REDRAW");
@@ -503,20 +502,22 @@ await scenario("renderer.keyboard-navigation-visible-state", async () => {
 
 	compiled.focusTarget.handleInput?.("\t");
 	ensure(/‹ ● 站点 ›/u.test(rows(compiled)) && !/→[^\n]*‹ ● 站点 ›/u.test(rows(compiled)), "FIXTURE_NESTED_TAB_FOCUS", "Tab did not visibly reach the active 站点 detail tab");
+	compiled.focusTarget.handleInput?.("\r");
+	compiled.focusTarget.handleInput?.(" ");
+	ensure(events.length === 0, "FIXTURE_NESTED_TAB_CONFIRM_NOOP", "Enter/Space emitted an event from the detail tab level");
 	compiled.focusTarget.handleInput?.("\x1b[B");
 	ensure(/→[^\n]*直连 \/ 官方/u.test(rows(compiled)), "FIXTURE_NESTED_DOWN_CONTENT", "Down from the detail tab group did not enter the site list");
 	compiled.focusTarget.handleInput?.("\t");
 	ensure(/‹ ● 站点 ›/u.test(rows(compiled)) && !/→[^\n]*‹ ● 站点 ›/u.test(rows(compiled)), "FIXTURE_CONTENT_TAB_RETURN", "Tab from detail content did not restore the remembered detail tab group");
 	compiled.focusTarget.handleInput?.("\x1b[C");
-	ensure(/→[^\n]*○ 模型/u.test(rows(compiled)), "FIXTURE_NESTED_RIGHT_FOCUS", "Right did not visibly focus 模型");
-	compiled.focusTarget.handleInput?.(" ");
 	const nestedEvent = events.at(-1);
-	ensure(nestedEvent?.kind === "tab-change" && nestedEvent.tabId === "models", "FIXTURE_NESTED_TAB_EVENT", "Space confirmation did not select the 模型 detail tab");
+	ensure(identity(compiled)?.itemId === "models" && !/→[^\n]*○ 模型/u.test(rows(compiled)), "FIXTURE_NESTED_RIGHT_NO_ARROW", "Right did not target 模型 without drawing a redundant arrow");
+	ensure(events.length === 1 && nestedEvent?.kind === "tab-change" && nestedEvent.tabId === "models", "FIXTURE_NESTED_TAB_EVENT", "Right did not immediately select the 模型 detail tab");
 	const nestedSwitched = await overlay.onEvent(nestedEvent, { signal: new AbortController().signal });
 	ensure(nestedSwitched.ok, "FIXTURE_NESTED_TAB_SWITCH", nestedSwitched.message ?? "detail tab switch failed");
 	events = [];
 	compiled = replaceAfterRefresh(compiled, events, "FIXTURE_DETAIL_TAB_REDRAW");
-	ensure(/当前明细：模型/u.test(rows(compiled)) && /‹ ● 模型 ›/u.test(rows(compiled)), "FIXTURE_NESTED_ACTIVE_STATE", "selected detail was not visibly reflected after Space and redraw");
+	ensure(/当前明细：模型/u.test(rows(compiled)) && /‹ ● 模型 ›/u.test(rows(compiled)), "FIXTURE_NESTED_ACTIVE_STATE", "selected detail was not visibly reflected after Right and redraw");
 	ensure(identity(compiled)?.controlId === "tokenledger.breakdown.tabs" && identity(compiled)?.itemId === "models", "FIXTURE_DETAIL_TAB_FOCUS_PERSIST", "detail-tab selection reset focus after redraw");
 	assertCanonicalMarkers(rows(compiled), "FIXTURE_DETAIL_TAB_SINGLE_MARKERS");
 
@@ -524,9 +525,8 @@ await scenario("renderer.keyboard-navigation-visible-state", async () => {
 	// a genuinely pending query and a replacement canonical focus target.
 	compiled.focusTarget.handleInput?.("\x1b[Z");
 	compiled.focusTarget.handleInput?.("\x1b[D");
-	compiled.focusTarget.handleInput?.("\r");
 	const overviewEvent = events.at(-1);
-	ensure(overviewEvent?.kind === "tab-change" && overviewEvent.tabId === "overview", "FIXTURE_RANGE_OVERVIEW_EVENT", "keyboard navigation did not return to 总览");
+	ensure(overviewEvent?.kind === "tab-change" && overviewEvent.tabId === "overview", "FIXTURE_RANGE_OVERVIEW_EVENT", "Left did not immediately return to 总览");
 	ensure((await overlay.onEvent(overviewEvent, { signal: new AbortController().signal })).ok, "FIXTURE_RANGE_OVERVIEW_SWITCH", "overview tab switch failed");
 	events = [];
 	compiled = replaceAfterRefresh(compiled, events, "FIXTURE_RANGE_OVERVIEW_REDRAW");
@@ -563,9 +563,8 @@ await scenario("renderer.keyboard-navigation-visible-state", async () => {
 	// the matching list scope owns focus; the paging actions never enter focus.
 	compiled.focusTarget.handleInput?.("\t");
 	compiled.focusTarget.handleInput?.("\x1b[C");
-	compiled.focusTarget.handleInput?.("\r");
 	const breakdownEvent = events.at(-1);
-	ensure(breakdownEvent?.kind === "tab-change" && breakdownEvent.tabId === "breakdown", "FIXTURE_PAGING_BREAKDOWN_EVENT", "could not return to 明细 for scoped paging");
+	ensure(breakdownEvent?.kind === "tab-change" && breakdownEvent.tabId === "breakdown", "FIXTURE_PAGING_BREAKDOWN_EVENT", "Right did not return to 明细 for scoped paging");
 	ensure((await overlay.onEvent(breakdownEvent, { signal: new AbortController().signal })).ok, "FIXTURE_PAGING_BREAKDOWN_SWITCH", "breakdown tab switch failed");
 	events = [];
 	compiled = replaceAfterRefresh(compiled, events, "FIXTURE_PAGING_BREAKDOWN_REDRAW");
@@ -739,9 +738,30 @@ await scenario("renderer.width-scan-20-40-80-120", async () => {
 	await surface.onEvent({ kind: "tab-change", controlId: "tokenledger.tabs", tabId: "overview" }, { signal: new AbortController().signal });
 	const overviewNode = surface.render();
 	const overviewWire = rendered(overviewNode);
-	ensure(/按日活动热力图 · 最近 371 天/u.test(overviewWire), "FIXTURE_ACTIVITY_HEATMAP", "overview did not retain the WebUI-equivalent 371-day activity heatmap");
-	ensure(/"text":"░░"/u.test(overviewWire) && /"text":"██"/u.test(overviewWire), "FIXTURE_ACTIVITY_LEVELS", "activity heatmap did not expose the double-cell intensity ramp");
+	ensure(/按日活动热力图/u.test(overviewWire) && /完整 371 天见“明细 → 活动”/u.test(overviewWire), "FIXTURE_ACTIVITY_HEATMAP", "overview did not retain the responsive activity heatmap and complete-history route");
+	ensure(/"text":"░░ ","tone":"muted"/u.test(overviewWire) && /"text":"██ ","tone":"success"/u.test(overviewWire), "FIXTURE_ACTIVITY_LEVELS", "activity heatmap did not expose muted zero days and green double-cell activity");
+	ensure(!/"text":"(?:░░|▒▒|▓▓|██) ","tone":"accent"/u.test(overviewWire), "FIXTURE_ACTIVITY_TONE", "activity heatmap retained a non-green activity level");
+	ensure(/"maxWidth":9/u.test(overviewWire) && /"minWidth":10,"maxWidth":12/u.test(overviewWire) && /"minWidth":100/u.test(overviewWire), "FIXTURE_ACTIVITY_RESPONSIVE", "activity heatmap did not deduct overlay chrome from its three-column responsive day variants");
+	ensure(!/按日活动热力图 · 续|最近 \d+ 周/u.test(overviewWire), "FIXTURE_ACTIVITY_ONE_ROW", "activity heatmap retained weekday blocks instead of one chronological row");
 	ensure(core.visibleWidth("░░") === 2 && core.visibleWidth("░░ ") === 3, "FIXTURE_ACTIVITY_CELL_WIDTH", "one activity day is not two terminal columns plus one gap");
+	const activityStacks = [];
+	const inspectActivity = (value) => {
+		if (Array.isArray(value)) {
+			for (const item of value) inspectActivity(item);
+			return;
+		}
+		if (value === null || typeof value !== "object") return;
+		if (value.kind === "stack" && value.children?.length === 32
+			&& value.children.every((child) => child.node?.kind === "rich-text" && child.when !== undefined)) activityStacks.push(value.children);
+		for (const child of Object.values(value)) inspectActivity(child);
+	};
+	inspectActivity(overviewNode);
+	ensure(activityStacks.length === 1, "FIXTURE_ACTIVITY_VARIANT_STACK", "overview did not expose exactly one bounded responsive heatmap stack");
+	const activityDayCounts = Object.fromEntries([[20, 5], [40, 12], [80, 25], [100, 32]].map(([width, expected]) => {
+		const matching = activityStacks[0].filter((variant) => width >= (variant.when.minWidth ?? 1) && width <= (variant.when.maxWidth ?? Number.POSITIVE_INFINITY));
+		ensure(matching.length === 1 && matching[0].node.spans.length === expected, "FIXTURE_ACTIVITY_COLUMN_FIT", `${String(width)} columns did not select ${String(expected)} complete day cells`);
+		return [String(width), matching[0].node.spans.length];
+	}));
 	const nodes = [["overview", overviewNode]];
 	await surface.onEvent({ kind: "tab-change", controlId: "tokenledger.tabs", tabId: "breakdown" }, { signal: new AbortController().signal });
 	for (const tabId of ["sites", "models", "projects", "providers", "activity"]) {
@@ -756,7 +776,7 @@ await scenario("renderer.width-scan-20-40-80-120", async () => {
 	nodes.push(["export", surface.render()]);
 	nodes.push(["loading", companion.buildTokenLedgerView({ serviceAvailable: true, tab: "overview", range: "all", pages: {}, loading: true })]);
 	for (const [label, node] of nodes) scanUi(label, node, widths);
-	report.observations.push({ scenario: "renderer.width-scan-20-40-80-120", widths, views: nodes.map(([label]) => label), surface: "command-opened-overlay" });
+	report.observations.push({ scenario: "renderer.width-scan-20-40-80-120", widths, views: nodes.map(([label]) => label), surface: "command-opened-overlay", overlayMaxColumns: 100, activityDayCounts });
 });
 
 await scenario("consumer.unload-and-cleanup", async () => {

@@ -37,7 +37,9 @@ const MAX_OBJECT_KEY_LENGTH = 64;
 const LABEL_LIMIT = 240;
 const DETAIL_LIMIT = 600;
 const ACTIVITY_DAYS = 371;
-const NARROW_ACTIVITY_WEEKS = 10;
+const ACTIVITY_CELL_WIDTH = 3;
+const ACTIVITY_MAX_VISIBLE_DAYS = 32;
+const ACTIVITY_SURFACE_COLUMNS = 4;
 const DAY_MS = 86_400_000;
 const TABS = [
 	{ id: "overview", label: "总览" },
@@ -67,12 +69,11 @@ const MODEL_SORTS = [
 ];
 const ACTIVITY_LEVELS = [
 	{ glyph: "░", tone: "muted" },
-	{ glyph: "▒", tone: "muted" },
-	{ glyph: "▒", tone: "accent" },
+	{ glyph: "░", tone: "success" },
+	{ glyph: "▒", tone: "success" },
 	{ glyph: "▓", tone: "success" },
-	{ glyph: "█", tone: "success", emphasis: "strong" }
+	{ glyph: "█", tone: "success" }
 ];
-const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
 
 function deepFreeze(value, seen = new WeakSet()) {
 	if (value === null || typeof value !== "object" || seen.has(value)) return value;
@@ -408,64 +409,18 @@ function activityCells(source) {
 		const day = calendarDayUtc(end - offset * DAY_MS);
 		values.push({ day, tokens: totals.get(day) ?? 0 });
 	}
-	const startWeekday = (new Date(end - (ACTIVITY_DAYS - 1) * DAY_MS).getUTCDay() + 6) % 7;
-	const endWeekday = (new Date(end).getUTCDay() + 6) % 7;
-	return [
-		...Array.from({ length: startWeekday }, () => undefined),
-		...values,
-		...Array.from({ length: 6 - endWeekday }, () => undefined)
-	];
+	return values;
 }
 
-function appendActivitySpan(spans, span) {
-	const previous = spans.at(-1);
-	if (previous !== undefined && previous.tone === span.tone && previous.emphasis === span.emphasis) {
-		previous.text += span.text;
-		return;
-	}
-	spans.push({ ...span });
-}
-
-function activityGrid(cells, weeksPerBlock, title, description, visibleWeeks) {
-	const visible = visibleWeeks === undefined ? cells : cells.slice(-visibleWeeks * 7);
-	const levelAt = activityLevelScale(cells.flatMap((cell) => cell === undefined ? [] : [cell.tokens]));
-	const totalWeeks = Math.ceil(visible.length / 7);
-	const blocks = [];
-	for (let firstWeek = 0; firstWeek < totalWeeks; firstWeek += weeksPerBlock) {
-		const blockWeeks = Math.min(weeksPerBlock, totalWeeks - firstWeek);
-		const block = visible.slice(firstWeek * 7, (firstWeek + blockWeeks) * 7);
-		const dated = block.filter(Boolean);
-		const range = dated.length === 0 ? "" : `${dated[0].day} - ${dated.at(-1).day}`;
-		blocks.push({ kind: "divider", label: firstWeek === 0 ? title : "按日活动热力图 · 续" });
-		blocks.push(message(`${range}${description === undefined ? "" : ` · ${description}`}`, "muted"));
-		for (const [weekdayIndex, weekday] of WEEKDAYS.entries()) {
-			const spans = [{ text: `${weekday} `, tone: "muted", emphasis: "strong" }];
-			for (let week = 0; week < blockWeeks; week += 1) {
-				const cell = block[week * 7 + weekdayIndex];
-				if (cell === undefined) appendActivitySpan(spans, { text: "   " });
-				else {
-					const level = ACTIVITY_LEVELS[levelAt(cell.tokens)];
-					appendActivitySpan(spans, { text: level.glyph.repeat(2), tone: level.tone, ...(level.emphasis === undefined ? {} : { emphasis: level.emphasis }) });
-					appendActivitySpan(spans, { text: " " });
-				}
-			}
-			blocks.push({ kind: "rich-text", spans });
-		}
-	}
-	return column([
-		...blocks,
-		{
-			kind: "rich-text",
-			spans: [
-				{ text: "少 ", tone: "muted" },
-				...ACTIVITY_LEVELS.flatMap((level) => [
-					{ text: level.glyph.repeat(2), tone: level.tone, ...(level.emphasis === undefined ? {} : { emphasis: level.emphasis }) },
-					{ text: " " }
-				]),
-				{ text: " 多", tone: "muted" }
-			]
-		}
-	], 0);
+function activityStrip(cells, visibleDays, levelAt) {
+	const visible = cells.slice(-visibleDays);
+	return {
+		kind: "rich-text",
+		spans: visible.map((cell) => {
+			const level = ACTIVITY_LEVELS[levelAt(cell.tokens)];
+			return { text: `${level.glyph}${level.glyph} `, tone: level.tone };
+		})
+	};
 }
 
 function activityHeatmap(source) {
@@ -475,18 +430,31 @@ function activityHeatmap(source) {
 		message("暂无可绘制的活动日期。", "muted")
 	], 0);
 	const zone = text(record(source.timeZone).id || record(source.timeZone).offset, 120) || "宿主时区";
-	return {
-		kind: "stack",
-		direction: "column",
-		gap: 0,
-		children: [
-			{ node: activityGrid(cells, 28, "按日活动热力图 · 最近 371 天", zone), when: { minWidth: 96 } },
-			{ node: activityGrid(cells, 18, "按日活动热力图 · 最近 371 天", zone), when: { minWidth: 64, maxWidth: 95 } },
-			{ node: activityGrid(cells, 10, "按日活动热力图 · 最近 10 周", `${zone} · 完整 371 天见“明细 → 活动”`, 10), when: { minWidth: 40, maxWidth: 63 } },
-			{ node: activityGrid(cells, 8, "按日活动热力图 · 最近 8 周", `${zone} · 完整 371 天见“明细 → 活动”`, 8), when: { minWidth: 31, maxWidth: 39 } },
-			{ node: activityGrid(cells, 4, "按日活动热力图 · 最近 4 周", `${zone} · 完整 371 天见“明细 → 活动”`, 4), when: { maxWidth: 30 } }
-		]
-	};
+	const levelAt = activityLevelScale(cells.map((cell) => cell.tokens));
+	const variants = Array.from({ length: ACTIVITY_MAX_VISIBLE_DAYS }, (_, index) => {
+		const visibleDays = index + 1;
+		const minWidth = visibleDays * ACTIVITY_CELL_WIDTH + ACTIVITY_SURFACE_COLUMNS;
+		return {
+			node: activityStrip(cells, visibleDays, levelAt),
+			when: {
+				...(visibleDays === 1 ? {} : { minWidth }),
+				...(visibleDays === ACTIVITY_MAX_VISIBLE_DAYS ? {} : { maxWidth: minWidth + ACTIVITY_CELL_WIDTH - 1 })
+			}
+		};
+	});
+	return column([
+		{ kind: "divider", label: "按日活动热力图" },
+		message(`截止 ${cells.at(-1).day} · ${zone} · 按宽度显示最近日期 · 完整 371 天见“明细 → 活动”`, "muted"),
+		{ kind: "stack", direction: "column", gap: 0, children: variants },
+		{
+			kind: "rich-text",
+			spans: [
+				{ text: "少 ", tone: "muted" },
+				...ACTIVITY_LEVELS.map((level) => ({ text: `${level.glyph}${level.glyph} `, tone: level.tone })),
+				{ text: "多", tone: "muted" }
+			]
+		}
+	], 0);
 }
 
 function pricedRows(priced) {
@@ -919,7 +887,7 @@ export function buildTokenLedgerView(stateInput) {
 	const content = column([
 		{ kind: "tabs", id: "tokenledger.tabs", activeId: activeTab, items: TABS },
 		{ kind: "divider", label: `当前页：${pageLabel}` },
-		message("操作：Tab/Shift+Tab 切换标签层级 · ←/→ 切换本层标签 · ↓ 进入内容 · ↑/↓ 浏览内容 · Enter/Space 确认 · PgUp/PgDn 翻页", "muted"),
+		message("操作：Tab/Shift+Tab 切换标签层级 · ←/→ 直接切换本层标签页 · ↓ 进入内容 · ↑/↓ 浏览内容 · Enter/Space 选择内容项 · PgUp/PgDn 翻页", "muted"),
 		state.error ? message(state.error, "danger") : undefined,
 		state.loading === true && state.view === undefined ? cancelableLoader("正在加载 TokenLedger") : undefined,
 		body
@@ -943,7 +911,7 @@ export const TOKEN_LEDGER_BLUE_MODEL = Object.freeze({
 	pageSize: PAGE_SIZE,
 	exportPageChars: EXPORT_PAGE_CHARS,
 	activityDays: ACTIVITY_DAYS,
-	narrowActivityWeeks: NARROW_ACTIVITY_WEEKS,
+	activityCellWidth: ACTIVITY_CELL_WIDTH,
 	tabs: deepFreeze(TABS),
 	breakdownTabs: deepFreeze(BREAKDOWN_TABS),
 	ranges: deepFreeze(RANGE_ITEMS),

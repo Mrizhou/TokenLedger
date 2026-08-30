@@ -18,7 +18,7 @@ renderer-neutral consumers use
 | Domain | TokenLedger owns SQLite indexing, durable session-log replay, fork accounting, relay/project attribution, pricing, balance/quota readers, export, and settings persistence. It imports no Blue package. |
 | Projection | `ctx.tokenLedgerV1.current()` and `subscribe()` expose a bounded, deeply frozen summary with monotonic revisions and immediate replay. `queryUsage()` returns a bounded range/site view assembled by the same `usagePayload()` as Web. Every fixed collection reports `sourceCount`, `returnedCount`, and `omittedCount`; `boundaryTruncated` and bounded omission details make every other defensive reduction explicit. `queryCollection()` retrieves revision-fenced continuation pages. |
 | Action | `execute()` exposes refresh, rebuild, balance, export, relay settings, and wallet settings as request-id/revision-fenced structured actions with abort, supersede, unload, and late-result handling. |
-| Interaction model | `packages/blue/lib/model.js` maps public usage, balance, and export values to overlay forms, lists, actions, explicit Chinese navigation state, and a persistent keyboard guide. It owns no accounting or configuration state. |
+| Interaction model | `packages/blue/lib/model.js` maps public usage, balance, and export values to overlay forms, lists, actions, explicit Chinese navigation state, immediate Left/Right tab switching, a persistent keyboard guide, and a single-row responsive daily heatmap. It owns no accounting or configuration state. |
 | Renderer UI | `@dsh-blue/tokenledger` contributes renderer-neutral Blue nodes only. Blue core performs real compilation and owns pi-tui, width, focus, ANSI, and raw-terminal APIs. The only Blue entry is `/tokenledger`; it opens a managed overlay with total, breakdown, account, and export pages, delegates configuration to `/settings`, and registers no persistent pane or status item. |
 | Composition rows | `packages/blue/cordis.patch.yml` adds explicit domain and companion rows. The domain row sets `commandEnabled: false`, preventing its legacy text command from duplicating the companion command. The companion has its own v1 manifest and is not silently bundled beside another cost surface. |
 
@@ -74,10 +74,14 @@ contract covers public exports, capability absence/dynamic arrival, exactly one
 complete collection continuation, action abort/stale fencing, provider
 swap/fallback, unload/late-result rejection, cleanup, and real Blue compiler
 width scans at 20/40/80/120 columns. The compiler scenario exercises canonical
-single-marker tabs, Enter and Space confirmation, main/detail tab focus restore,
-the original asynchronous range-list focus regression, continued range
-selection without another Tab traversal, and scoped `PgUp`/`PgDn` escape-key
-dispatch with non-focusable paging actions.
+single-marker tabs, immediate Left/Right page switching, Enter/Space no-op on
+tabs, main/detail tab focus restore, the original asynchronous range-list focus
+regression, continued content selection without another Tab traversal, and
+scoped `PgUp`/`PgDn` escape-key dispatch with non-focusable paging actions.
+Heatmap evidence keeps the WebUI
+quantile scale, uses one three-column cell per latest visible day, reserves the
+muted tone for zero, uses the success tone for every non-zero level, and leaves
+the complete 371-day history under `明细 -> 活动`.
 
 The fixture deliberately contains no temporary Blue commit pin. Acceptance
 must pass `--blue-revision <full-clean-blue-commit>` explicitly; omitting it

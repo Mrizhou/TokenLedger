@@ -476,11 +476,12 @@ test("command requires a gesture, opens the complete overlay, and accepts range/
 	assert.match(rendered, /"activeId":"breakdown"/);
 	assert.match(rendered, /"id":"breakdown","label":"明细"/);
 	assert.doesNotMatch(rendered, /(?:●|○) (?:总览|明细|账户|导出)/u);
-		assert.match(rendered, /Tab\/Shift\+Tab 切换标签层级/);
-		assert.match(rendered, /↓ 进入内容/);
-		assert.match(rendered, /↑\/↓ 浏览内容/);
-		assert.match(rendered, /Enter\/Space 确认/);
-		assert.match(rendered, /PgUp\/PgDn 翻页/);
+	assert.match(rendered, /Tab\/Shift\+Tab 切换标签层级/);
+	assert.match(rendered, /←\/→ 直接切换本层标签页/);
+	assert.match(rendered, /↓ 进入内容/);
+	assert.match(rendered, /↑\/↓ 浏览内容/);
+	assert.match(rendered, /Enter\/Space 选择内容项/);
+	assert.match(rendered, /PgUp\/PgDn 翻页/);
 	context.dispose();
 });
 
