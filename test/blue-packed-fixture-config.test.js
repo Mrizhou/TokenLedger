@@ -6,8 +6,8 @@ import test from "node:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const fixture = resolve(packageRoot, "packages/blue/test/packed-fixture.mjs");
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const fixture = resolve(packageRoot, "test/blue-packed-fixture.mjs");
 
 function runFixture(args) {
 	const result = spawnSync(process.execPath, [fixture, "--install", ...args], {

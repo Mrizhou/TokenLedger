@@ -235,60 +235,20 @@ import { LedgerStore } from "dsh-tokenledger/store";
 import { readBalance } from "dsh-tokenledger/balance";
 ```
 
-### Renderer-neutral service
+### Harness 与 Blue
 
-宿主插件会同时发布两个服务面：
+`ctx.tokenLedger` 为现有消费者保留原有对象身份和九个成员：`store`、`sweep`、
+`totals`、`byDay`、`byModel`、`bySite`、`sites`、`diagnostics` 和 `reindex`。
 
-- `ctx.tokenLedger` 是为现有消费者原样保留的 legacy 接口，仍包含 `store`、
-  `sweep`、`totals`、`byDay`、`byModel`、`bySite`、`sites`、`diagnostics` 和
-  `reindex`。新代码不应再依赖这个 raw-store 边界。
-- `ctx.tokenLedgerV1` 是供 Blue 等新 renderer 使用的安全接口。它不暴露 SQLite
-  store、Cordis context、Session/Agent、凭据或 renderer 对象；快照和返回值都
-  经过大小限制、凭据字段过滤、深拷贝与冻结。
+Blue UI 与 Web UI 都包含在同一个 `dsh-tokenledger` npm 包中。安装该 bundle 后：
 
-The host preserves `ctx.tokenLedger` as the legacy, raw-store-compatible face
-and publishes `ctx.tokenLedgerV1` for new renderer-neutral consumers. New
-integrations should depend only on `tokenLedgerV1`.
+- 普通 Harness/Web 环境保留原文本 `/tokenledger` 命令和回环 HTTP 面板。
+- 检测到 Blue host 时，同一个插件 Fiber 挂载原生 dashboard，并以 Blue overlay
+  命令替换文本命令；Blue 卸载或拒绝注册时恢复文本命令。
+- Blue 通过 apply-local controller 读取同一个 `usagePayload()`，不会发布额外的
+  Cordis Service，也不会维护第二套用量口径。
 
-Web 面板仍走上面的回环 HTTP API；Web 与 V1 聚合都调用同一个
-`usagePayload()`，没有第二套 totals/day/model/project 口径。
-
-```js
-const ledger = ctx.get("tokenLedgerV1");
-
-const stop = ledger.subscribe((snapshot) => {
-  // Immediate replay, then monotonic snapshot.revision updates.
-  console.log(snapshot.totals, snapshot.models, snapshot.projects);
-});
-
-const detail = await ledger.queryUsage({
-  requestId: "usage-30d",
-  range: { from: "2026-08-01", to: "2026-08-30" }
-});
-
-const refreshed = await ledger.execute({
-  requestId: "refresh",
-  expectedRevision: ledger.current().revision,
-  action: { type: "usage.refresh" }
-});
-
-stop();
-```
-
-`execute()` 的 action types：
-
-| Type | 用途 |
-| --- | --- |
-| `usage.refresh` | 扫描新增 session log 并发布新快照 |
-| `index.rebuild` | 丢弃派生索引后从 durable log 重建 |
-| `balance.refresh` | 刷新指定 `accountId` 的余额/配额 |
-| `usage.export` | 返回有上限的 `json` / `csv` 内容 |
-| `settings.relay.set` / `settings.relay.remove` | 写入或删除 relay override |
-| `settings.wallet.set` / `settings.wallet.clear` | 写入或清除 New API wallet 凭据；凭据不进入结果或快照 |
-
-同一个 `requestId` 的新请求会 supersede 旧请求；调用方 abort、stale revision、
-unavailable capability、超限和内部隔离分别以稳定的 `TokenLedgerError.code`
-返回。完整迁移边界与尚未完成的 Blue TUI 工作见
+完整架构和验收记录见
 [`docs/BLUE-MIGRATION.md`](docs/BLUE-MIGRATION.md)。
 
 ## 开发 / Development
@@ -299,6 +259,19 @@ npm pack --dry-run
 ```
 
 浏览器半边**没有构建步骤**：它是一个手写的 `__ModuleLoader__` bundle，React 由宿主作为 peer 提供，样式手写注入。因此它能在 Node 里被加载和测试。
+
+Blue PR 验收不需要 clone Blue 仓库。从本仓库根目录安装固定版本的 Blue
+CLI，把当前插件快照加入它管理的 `blue` profile，然后启动：
+
+```bash
+npm install --global pnpm@11 @dsh-blue/blue-cli@0.1.2-alpha.1
+blue plugin add "file:$PWD"
+blue
+```
+
+进入 Blue 后执行 `/tokenledger`，检查真实用量、刷新、账户切换、分页和退出清理。
+修改插件源码后，重新执行 `blue plugin add "file:$PWD"` 再启动；`file:` 安装会物化
+插件自己的依赖闭包，不依赖开发者机器上的 TokenLedger 工作区链接。
 
 ## 致谢 / Credits
 

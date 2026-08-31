@@ -5,8 +5,10 @@ import test from "node:test";
 import { isProxy } from "node:util/types";
 
 import { Context, Service } from "@deepseek-ai/cordis";
-import { apply, inject, name } from "../lib/index.js";
-import { tokenLedgerAccountTabId } from "../lib/model.js";
+import { mountTokenLedgerBlue } from "../src/blue/index.js";
+import { tokenLedgerAccountTabId } from "../src/blue/model.js";
+
+const BLUE_NAME = "dsh-tokenledger";
 
 function usage(tokens = 100, overrides = {}) {
 	return {
@@ -181,6 +183,7 @@ function makeService(options = {}) {
 function makeHost(options = {}) {
 	const registered = { commands: [], status: [], panes: [], overlays: [], notifications: [] };
 	const handles = { commands: [], overlays: [] };
+	const overlayOpenOptions = [];
 	let sessionId = options.sessionId ?? "session-1";
 	let sessionListener;
 	const registration = (value, kind) => ({
@@ -198,15 +201,15 @@ function makeHost(options = {}) {
 	});
 	const api = {
 		commands: { register(value) { registered.commands.push(value); const handle = registration(value, "command"); handles.commands.push(handle); return { ok: true, value: handle }; } },
-		overlays: { open(value) { registered.overlays.push(value); const handle = registration(value, "overlay"); handles.overlays.push(handle); return { ok: true, value: handle }; } },
+		overlays: { open(value, openOptions) { registered.overlays.push(value); overlayOpenOptions.push(openOptions); const handle = registration(value, "overlay"); handles.overlays.push(handle); return { ok: true, value: handle }; } },
 		...(options.notifications === false ? {} : { notifications: { publish(value) { registered.notifications.push(value); return { ok: true, value: undefined }; } } }),
 		...(options.session === false ? {} : {
-			session: {
-				current() { return sessionId === null ? null : { revision: 1, id: sessionId, status: "idle", mode: "normal", cwd: "/fixture" }; },
-				subscribe(next) {
-					sessionListener = next;
-					next(this.current());
-					return { dispose() { if (sessionListener === next) sessionListener = undefined; } };
+				session: {
+					current() { return { ok: true, value: sessionId === null ? null : { revision: 1, sessionEpoch: 1, id: sessionId, status: "idle", mode: "normal", cwd: "/fixture" } }; },
+					subscribe(next) {
+						sessionListener = next;
+						next(this.current());
+						return { ok: true, value: { dispose() { if (sessionListener === next) sessionListener = undefined; } } };
 				}
 			}
 		})
@@ -215,15 +218,17 @@ function makeHost(options = {}) {
 		api,
 		registered,
 		handles,
+		overlayOpenOptions,
 		openFailure: options.openFailure,
 		open(_ctx, manifest) {
 			if (options.openFailure) return { ok: false, code: "BLUE_CAPABILITY_DENIED", message: "denied" };
-			assert.equal(manifest.id, name);
+			assert.equal(manifest.id, BLUE_NAME);
+			assert.equal(manifest.$schema, "https://dsh-blue.dev/schema/blue.plugin.v1.schema.json");
 			return { ok: true, value: { api, grants: [], unavailableOptional: [] } };
 		},
 		switchSession(next) {
 			sessionId = next;
-			sessionListener?.(next === null ? null : { revision: 2, id: next, status: "idle", mode: "normal", cwd: "/fixture" });
+			sessionListener?.({ ok: true, value: next === null ? null : { revision: 2, sessionEpoch: 2, id: next, status: "idle", mode: "normal", cwd: "/fixture" } });
 		},
 		get sessionListener() { return sessionListener; }
 	};
@@ -231,53 +236,26 @@ function makeHost(options = {}) {
 
 function makeContext(service, host = makeHost()) {
 	const rootCleanups = [];
-	let childCleanups = [];
-	let injection;
-	let currentService = service;
 	const base = {
+		__tokenLedgerController: service,
 		bluePluginHost: { open: host.open.bind(host) },
 		effect(factory) {
 			const cleanup = factory();
 			rootCleanups.push(cleanup);
 			return cleanup;
-		},
-		inject(dependencies, callback) {
-			assert.deepEqual(dependencies, ["tokenLedgerV1"]);
-			injection = callback;
-			if (currentService !== undefined) mount(currentService);
-			return { dispose() { unmount(); } };
 		}
 	};
-	function mount(nextService) {
-		childCleanups = [];
-		const scoped = {
-			...base,
-			tokenLedgerV1: nextService,
-			effect(factory) {
-				const cleanup = factory();
-				childCleanups.push(cleanup);
-				return cleanup;
-			}
-		};
-		injection?.(scoped);
-	}
-	function unmount() {
-		for (const cleanup of childCleanups.splice(0).reverse()) cleanup?.();
-	}
 	return {
 		context: base,
 		host,
-		provide(nextService) {
-			unmount();
-			currentService = nextService;
-			if (nextService !== undefined) mount(nextService);
-		},
 		dispose() {
-			unmount();
 			for (const cleanup of rootCleanups.splice(0).reverse()) cleanup?.();
-		},
-		get childCleanups() { return childCleanups; }
+		}
 	};
+}
+
+function apply(context) {
+	return mountTokenLedgerBlue(context, context.__tokenLedgerController);
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -309,9 +287,12 @@ function findControl(root, id) {
 	return visit(root);
 }
 
-test("entry identity and dependencies keep tokenLedgerV1 dynamically optional", () => {
-	assert.equal(name, "@dsh-blue/tokenledger");
-	assert.deepEqual(inject, ["bluePluginHost"]);
+test("the in-package adapter uses the root package identity", () => {
+	const fixture = makeService();
+	const context = makeContext(fixture.service);
+	assert.equal(apply(context.context), true);
+	assert.equal(context.host.registered.commands.length, 1);
+	context.dispose();
 });
 
 test("real Cordis trace proxies remain admissible without weakening public data copies", async () => {
@@ -327,7 +308,12 @@ test("real Cordis trace proxies remain admissible without weakening public data 
 	const ctx = new Context();
 	await ctx.plugin(TracedBluePluginHost);
 	assert.equal(isProxy(ctx.get("bluePluginHost")), true);
-	await ctx.plugin({ name, inject, apply });
+	const fixture = makeService();
+	await ctx.plugin({
+		name: "tokenledger-blue-test",
+		inject: ["bluePluginHost"],
+		apply(scoped) { mountTokenLedgerBlue(scoped, fixture.service); }
+	});
 	await tick();
 	assert.equal(host.registered.commands.length, 1);
 	assert.equal(host.registered.status.length, 0);
@@ -556,20 +542,17 @@ test("command requires a gesture, opens one complete overlay, and accepts range/
 	const result = await command.execute(["today", "relay.example"], { signal: signal(), userGesture: {} });
 	assert.equal(result.ok, true);
 	assert.equal(context.host.registered.overlays.length, 1);
-	assert.equal(context.host.registered.overlays[0].title, undefined, "动态 TokenLedger surface 必须独占唯一浮层边框");
+	assert.equal(context.host.registered.overlays[0].title, "TokenLedger 用量账本", "managed overlay metadata owns the single frame title");
 	assert.equal(context.host.registered.overlays[0].width, "96%");
 	assert.equal(context.host.registered.overlays[0].maxHeight, "96%");
-	assert.equal(context.host.registered.overlays[0].render().chrome, "overlay");
+	assert.equal(context.host.registered.overlays[0].render().chrome, "none");
+	assert.deepEqual(context.host.overlayOpenOptions[0], { userGesture: {} });
 	assert.equal(fixture.calls.queries.at(-1).request.site, "relay.example");
 	const rendered = JSON.stringify(context.host.registered.overlays[0].render());
-	assert.match(rendered, /TokenLedger 用量账本/);
 	assert.match(rendered, /"id":"tokenledger\.account-tabs"/);
 	assert.match(rendered, /"id":"tokenledger\.range-tabs","activeId":"today"/);
 	assert.doesNotMatch(rendered, /tokenledger\.(?:tabs|breakdown|export|rebuild|providers)/u);
-	assert.match(rendered, /Tab 切换账户\/区间/);
-	assert.match(rendered, /←\/→ 切换当前标签/);
-	assert.match(rendered, /↓ 进入内容/);
-	assert.match(rendered, /PgUp\/PgDn 项目翻页/);
+	assert.doesNotMatch(rendered, /Tab 切换账户\/区间|PgUp\/PgDn 项目翻页/u);
 	context.dispose();
 });
 
@@ -589,23 +572,21 @@ test("the overlay has no settings, export, rebuild, provider, or detail-page sur
 	context.dispose();
 });
 
-test("service absence and invalid service keep a visible plain fallback", async () => {
+test("missing or invalid internal controllers do not partially register Blue", () => {
 	const revoked = Proxy.revocable({}, {});
 	revoked.revoke();
 	for (const value of [undefined, { current() {} }, revoked.proxy]) {
 		const host = makeHost({ session: false, notifications: false });
 		const context = makeContext(value, host);
-		apply(context.context);
-		await tick();
+		assert.equal(apply(context.context), false);
+		assert.equal(host.registered.commands.length, 0);
 		assert.equal(host.registered.panes.length, 0);
 		assert.equal(host.registered.status.length, 0);
-		const surface = await openDashboard(context);
-		assert.match(JSON.stringify(surface.render()), /服务暂不可用|不符合公开 Service 契约/);
 		context.dispose();
 	}
 });
 
-test("service unload, replacement, and late callbacks cannot republish stale data", async () => {
+test("adapter unload fences late controller callbacks and a fresh mount reads the new controller", async () => {
 	const first = makeService({ tokens: 100 });
 	const second = makeService({ tokens: 200 });
 	const context = makeContext(first.service);
@@ -613,16 +594,19 @@ test("service unload, replacement, and late callbacks cannot republish stale dat
 	await tick();
 	const surface = await openDashboard(context);
 	const late = first.listener;
-	context.provide(undefined);
-	assert.match(JSON.stringify(surface.render()), /服务暂不可用/);
-	late?.(summary(99, 999));
-	assert.doesNotMatch(JSON.stringify(surface.render()), /999/);
-	context.provide(second.service);
-	await tick();
-	assert.match(JSON.stringify(surface.render()), /200/);
-	late?.(summary(100, 888));
-	assert.doesNotMatch(JSON.stringify(surface.render()), /888/);
 	context.dispose();
+	const afterDispose = JSON.stringify(surface.render());
+	late?.(summary(99, 999));
+	assert.equal(JSON.stringify(surface.render()), afterDispose);
+
+	const replacement = makeContext(second.service);
+	apply(replacement.context);
+	await tick();
+	const replacementSurface = await openDashboard(replacement);
+	assert.match(JSON.stringify(replacementSurface.render()), /200/);
+	late?.(summary(100, 888));
+	assert.doesNotMatch(JSON.stringify(replacementSurface.render()), /888/);
+	replacement.dispose();
 });
 
 test("caller abort and session swap fence in-flight reads and action results", async () => {

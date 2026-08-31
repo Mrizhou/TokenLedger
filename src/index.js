@@ -27,6 +27,17 @@
  * @module dsh-tokenledger
  */
 
-export { apply, inject, name } from "./plugin.js";
+import { apply as applyPlugin } from "./plugin.js";
+
+export const name = "tokenledger";
+export const inject = ["sessionPersistence"];
+
+/** Run the implementation inside an observable root-owned Cordis effect. */
+export function apply(ctx, config) {
+	return ctx.effect(() => {
+		applyPlugin(ctx, config);
+		return () => {};
+	}, "TokenLedger plugin");
+}
 
 export { byModel, bySite, foldUsage } from "./usage.js";

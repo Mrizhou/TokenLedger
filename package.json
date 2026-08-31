@@ -24,13 +24,13 @@
     "./quota": "./src/quota.js",
     "./relay-sites": "./src/relay-sites.js",
     "./report": "./src/report.js",
-    "./service": "./src/service.js",
     "./store": "./src/store.js",
     "./subscriptions": "./src/subscriptions.js",
     "./usage": "./src/usage.js"
   },
   "files": [
     "src",
+    "blue.plugin.json",
     "cordis.patch.yml",
     "LICENSE",
     "NOTICE",
@@ -42,7 +42,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\" \"packages/blue/test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "fixture:blue": "node test/blue-packed-fixture.mjs --install"
   },
   "keywords": [
     "dsh-plugin",
@@ -66,7 +67,11 @@
       ]
     }
   },
+  "blue": {
+    "manifest": "./blue.plugin.json"
+  },
   "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "peerDependenciesMeta": {
@@ -75,7 +80,7 @@
     }
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/schemastery": "^3.18.1"
   }
 }

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Independent packed-install fixture for the TokenLedger Blue companion.
+ * Independent packed-install fixture for TokenLedger's in-package Blue UI.
  *
- * The orchestrator packs TokenLedger, the companion, and the minimum local
- * Blue renderer closure with lifecycle scripts disabled. Runtime scenarios
+ * The orchestrator packs TokenLedger and the minimum local Blue renderer
+ * closure with lifecycle scripts disabled. Runtime scenarios
  * execute in a throwaway npm project and import package names only.
  *
- * @module @dsh-blue/tokenledger/packed-fixture
+ * @module dsh-tokenledger/blue-packed-fixture
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -25,8 +25,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const companionRoot = join(packageRoot, "packages/blue");
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const argumentsList = process.argv.slice(2);
 let blueRoot = process.env.BLUE_REPOSITORY;
 let expectedBlueRevision;
@@ -59,12 +58,12 @@ const harnessMatch = existsSync(harnessSource)
 	: null;
 const pinnedHarnessLine = harnessMatch?.[1];
 const requestedHarnessLine = harnessLine ?? pinnedHarnessLine;
-const reproduce = `node packages/blue/test/packed-fixture.mjs --blue-root <blue-repository> --blue-revision <full-clean-blue-commit> --install${harnessLine === undefined ? "" : ` --harness-line ${harnessLine}`}`;
+const reproduce = `node test/blue-packed-fixture.mjs --blue-root <blue-repository> --blue-revision <full-clean-blue-commit> --install${harnessLine === undefined ? "" : ` --harness-line ${harnessLine}`}`;
 const fixtureRoot = await mkdtemp(join(tmpdir(), "tokenledger-blue-fixture-"));
 const tarballRoot = join(fixtureRoot, "tarballs");
 
 const report = {
-	package: "@dsh-blue/tokenledger",
+	package: "dsh-tokenledger",
 	harnessLine: requestedHarnessLine ?? null,
 	peerResolution: "normal",
 	blueRepository: {
@@ -227,7 +226,6 @@ function summarizeHarness(instances) {
 
 	const localDirectories = [
 		{ directory: packageRoot, packageManager: "npm" },
-		{ directory: companionRoot, packageManager: "npm" },
 		{ directory: join(blueRoot, "packages/api"), packageManager: "pnpm" },
 		{ directory: join(blueRoot, "packages/ui"), packageManager: "pnpm" },
 		{ directory: join(blueRoot, "packages/frontend"), packageManager: "pnpm" },
@@ -326,9 +324,8 @@ function summarizeHarness(instances) {
 		const sentinel = "__TOKENLEDGER_BLUE_ENTRY_PROBE__";
 		const probePath = join(fixtureRoot, ".entry-probe.mjs");
 		writeFileSync(probePath, [
-			`const companion = await import(${JSON.stringify("@dsh-blue/tokenledger")})`,
-			`const domain = await import(${JSON.stringify("dsh-tokenledger/service")})`,
-			`process.stdout.write(${JSON.stringify(sentinel)} + JSON.stringify({ name: typeof companion.name, apply: typeof companion.apply, service: typeof domain.TokenLedgerService }) + "\\n")`,
+			`const plugin = await import(${JSON.stringify("dsh-tokenledger")})`,
+			`process.stdout.write(${JSON.stringify(sentinel)} + JSON.stringify({ name: plugin.name, apply: typeof plugin.apply }) + "\\n")`,
 			""
 		].join("\n"));
 		const startedAt = Date.now();
@@ -338,14 +335,14 @@ function summarizeHarness(instances) {
 			timeout: 5_000,
 			stdio: ["ignore", "pipe", "pipe"]
 		});
-		const expected = `${sentinel}{"name":"string","apply":"function","service":"function"}\n`;
+		const expected = `${sentinel}{"name":"tokenledger","apply":"function"}\n`;
 		ensure(probe.error === undefined && probe.signal === null && probe.status === 0, "FIXTURE_ENTRY_PROBE_FAILED", `entry probe ended with ${probe.error?.message ?? probe.signal ?? `exit ${String(probe.status)}`}`);
 		ensure(probe.stderr === "" && probe.stdout === expected, "FIXTURE_ENTRY_PROBE_STDIO", "entry probe emitted unexpected output");
 		report.observations.push({ scenario: "fixture.short-lived-public-entry-probe", timeoutMs: 5_000, durationMs: Date.now() - startedAt });
 	});
 
 	if (report.failures.length === 0) {
-		const runnerSource = join(companionRoot, "test/packed-fixture-runner.mjs");
+		const runnerSource = join(packageRoot, "test/blue-packed-fixture-runner.mjs");
 		const runnerPath = join(fixtureRoot, ".tokenledger-blue-runner.mjs");
 		copyFileSync(runnerSource, runnerPath);
 		const runner = spawnSync(process.execPath, [runnerPath], {

@@ -9,12 +9,10 @@ import {
 	buildTokenLedgerView,
 	copyPublicJson,
 	normalizeTokenLedgerBalance,
-	normalizeTokenLedgerConfiguration,
-	normalizeTokenLedgerExport,
 	normalizeTokenLedgerSummary,
 	normalizeTokenLedgerView,
 	tokenLedgerAccountTabId
-} from "../lib/model.js";
+} from "../src/blue/model.js";
 
 const many = (count, make) => Array.from({ length: count }, (_, index) => make(index));
 
@@ -91,7 +89,7 @@ function state(overrides = {}) {
 		modelSortDirection: "desc",
 		pages: {},
 		collectionPages: {},
-		serviceAvailable: true,
+		controllerAvailable: true,
 		snapshot: normalizeTokenLedgerSummary(summary()),
 		view: normalizeTokenLedgerView(usage()),
 		viewRevision: 3,
@@ -148,13 +146,11 @@ test("normalizers reject proxies and accessors without invoking them", () => {
 	const accessor = {};
 	Object.defineProperty(accessor, "revision", { get() { invoked = true; throw new Error("must not run"); } });
 	assert.equal(normalizeTokenLedgerSummary(accessor), undefined);
-	Object.defineProperty(accessor, "content", { get() { invoked = true; throw new Error("must not run"); } });
-	assert.equal(normalizeTokenLedgerExport(accessor), undefined);
 	assert.equal(invoked, false);
 
 	const revoked = Proxy.revocable({}, {});
 	revoked.revoke();
-	for (const normalize of [copyPublicJson, normalizeTokenLedgerView, normalizeTokenLedgerConfiguration, normalizeTokenLedgerBalance, normalizeTokenLedgerExport]) {
+	for (const normalize of [copyPublicJson, normalizeTokenLedgerView, normalizeTokenLedgerBalance]) {
 		assert.equal(normalize(revoked.proxy), undefined);
 	}
 });
@@ -192,8 +188,8 @@ test("one Chinese dashboard mirrors the Web section order and exposes only two t
 	const rendered = JSON.stringify(view);
 	auditWire(view);
 	assert.equal(view.kind, "surface");
-	assert.equal(view.chrome, "overlay");
-	assert.equal(view.title, "TokenLedger 用量账本");
+	assert.equal(view.chrome, "none");
+	assert.equal(view.title, undefined, "the managed overlay request owns the single frame title");
 
 	const order = ["余额", "Token 用量", "中转站分布", "按项目", "活跃度", "模型", "数据状态"];
 	let previous = -1;
@@ -208,8 +204,7 @@ test("one Chinese dashboard mirrors the Web section order and exposes only two t
 	assert.equal(tabs[0].activeId, tokenLedgerAccountTabId({ id: "account-0" }));
 	assert.equal(tabs[1].activeId, "all");
 	assert.deepEqual(tabs[1].items.map((item) => item.label), ["今日 1,000", "本月 20,000", "累计 40,500"]);
-	assert.match(rendered, /Tab 切换账户\/区间/);
-	assert.match(rendered, /←\/→ 切换当前标签/);
+	assert.doesNotMatch(rendered, /Tab 切换账户\/区间|PgUp\/PgDn 项目翻页/u, "Blue core owns contextual keyboard hints");
 	assert.doesNotMatch(rendered, /tokenledger\.(?:tabs|breakdown|export|rebuild|providers|activity-models)/u);
 	assert.doesNotMatch(rendered, /(?:Today|This month|All time|Overview|Breakdown|Export)/u);
 	assert.doesNotMatch(rendered, /[○●]/u, "tab state glyphs belong to the Blue renderer");
@@ -222,8 +217,10 @@ test("project paging keeps the rest of the dashboard stable and shows token, sha
 	assert.equal(firstProjects.items.length, 8);
 	assert.match(firstProjects.items[0].detail, /2,025 令牌 · 5\.0% · \/work\/project-0/u);
 	assert.match(JSON.stringify(first), /第 1 \/ 3 页 · 共 20 个项目/u);
-	assert.deepEqual(control(first, "tokenledger.page.projects").items.map((item) => item.shortcut), ["pageup", "pagedown"]);
-	assert.deepEqual(control(first, "tokenledger.page.projects").items.map((item) => item.shortcutFor), ["*", "*"]);
+	assert.deepEqual(control(first, "tokenledger.page.projects").items.map((item) => item.label), ["上一页", "下一页"]);
+	for (const item of control(first, "tokenledger.page.projects").items) {
+		assert.deepEqual(Object.keys(item).sort(), item.disabled === undefined ? ["id", "label"] : ["disabled", "id", "label"]);
+	}
 
 	const second = buildTokenLedgerView(state({ pages: { projects: 1 } }));
 	assert.equal(control(second, "tokenledger.projects").items[0].id, "project:0");
@@ -244,8 +241,7 @@ test("bounded site, model, and account collections use local pages without addin
 	for (const key of ["sites", "models", "accounts"]) {
 		const pager = control(view, `tokenledger.page.${key}`);
 		assert.ok(pager);
-		assert.equal(pager.items.every((item) => item.focusable === false), true);
-		assert.equal(pager.items[0].shortcutFor, key === "accounts" ? "tokenledger.account-tabs" : `tokenledger.${key}`);
+		assert.equal(pager.items.every((item) => item.shortcut === undefined && item.shortcutFor === undefined && item.focusable === undefined), true);
 	}
 });
 
@@ -327,16 +323,13 @@ test("activity uses a seven-row Web-style heatmap with bounded responsive weeks"
 	assert.equal(levelAt(1_000_000), 4);
 });
 
-test("fallback and loading states remain usable and exports stay a non-UI compatibility helper", () => {
-	const absent = buildTokenLedgerView(state({ serviceAvailable: false, snapshot: undefined, view: undefined }));
+test("fallback and loading states remain usable", () => {
+	const absent = buildTokenLedgerView(state({ controllerAvailable: false, snapshot: undefined, view: undefined }));
 	assert.match(JSON.stringify(absent), /服务暂不可用/u);
 	const loading = buildTokenLedgerView(state({ snapshot: undefined, view: undefined, loading: true }));
 	assert.match(JSON.stringify(loading), /取消加载/u);
 	auditWire(absent);
 	auditWire(loading);
 
-	const result = normalizeTokenLedgerExport({ format: "json", content: "complete", fileName: "tokenledger.json", mimeType: "application/json", token: "hidden" });
-	assert.deepEqual(result, { format: "json", content: "complete", fileName: "tokenledger.json", mimeType: "application/json" });
-	assert.equal(normalizeTokenLedgerExport({ content: "x".repeat(1_048_577) }), undefined);
 	assert.equal(normalizeTokenLedgerSummary({ revision: 0 }), undefined);
 });

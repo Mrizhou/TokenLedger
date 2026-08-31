@@ -41,7 +41,8 @@ import { discoverFromContext, mergeSites, withKnownSoftware } from "./discovery.
 import { createBalanceReader, listAccounts } from "./balance.js";
 import { createNewApiWalletReader, shouldUseWallet } from "./newapi-user.js";
 import { VERSION, registerRoutes, usagePayload } from "./http.js";
-import { TokenLedgerError, TokenLedgerService } from "./service.js";
+import { DashboardController, DashboardControllerError } from "./dashboard-controller.js";
+import { mountTokenLedgerBlue } from "./blue/index.js";
 
 import { LedgerStore } from "./store.js";
 import { RateTable, priceRows } from "./pricing.js";
@@ -600,9 +601,9 @@ function routeAttributionReport(store, directory) {
 /**
  * Cordis plugin entry.
  *
- * Preserves the legacy `ctx.tokenLedger` service and publishes the bounded
- * `ctx.tokenLedgerV1` service for renderer-neutral consumers. Both services,
- * the timer, and the store remain owned by this plugin Fiber.
+ * Preserves the legacy `ctx.tokenLedger` service and optionally mounts the Blue
+ * adapter. The dashboard controller, timer, caches, and store remain owned by
+ * this one plugin Fiber.
  */
 export function apply(ctx, userConfig = {}) {
 	const config = { ...DEFAULTS, ...userConfig };
@@ -623,7 +624,7 @@ export function apply(ctx, userConfig = {}) {
 		logger?.error?.("tokenledger: could not open %s: %s", config.database, error?.message ?? error);
 		return;
 	}
-	let publicService;
+	let dashboardController;
 	const walletReader = createNewApiWalletReader();
 
 	// --- the site directory -------------------------------------------------
@@ -654,7 +655,7 @@ export function apply(ctx, userConfig = {}) {
 		// already succeeded.
 		onLearn: (software) => {
 			directory = { ...directory, sites: withKnownSoftware(directory.sites, software) };
-			publicService?.notifyChanged();
+			dashboardController?.notifyChanged();
 		}
 	});
 
@@ -806,7 +807,7 @@ export function apply(ctx, userConfig = {}) {
 				settingsScope = undefined;
 				settingsRemove = undefined;
 				settingsRemoveUserAuth = undefined;
-				publicService?.notifyChanged(true);
+				dashboardController?.notifyChanged(true);
 			});
 			void import("./settings-schema.js")
 				.then(({ registerNamespace }) =>
@@ -815,7 +816,7 @@ export function apply(ctx, userConfig = {}) {
 								// A resolved value replaces the entry config wholesale;
 								// the directory picks the change up on the next sweep.
 								Object.assign(config, next);
-								publicService?.notifyChanged(true);
+								dashboardController?.notifyChanged(true);
 							})
 						: undefined
 				)
@@ -830,7 +831,7 @@ export function apply(ctx, userConfig = {}) {
 					// nothing. Re-discover now instead of leaving the directory empty
 					// until the next timer tick.
 					refreshDirectory();
-					publicService?.notifyChanged(true);
+					dashboardController?.notifyChanged(true);
 					logger?.info?.("tokenledger: settings namespace registered; configuration can be saved");
 				})
 				.catch((error) => {
@@ -838,7 +839,7 @@ export function apply(ctx, userConfig = {}) {
 					// different, and a message that names the wrong one sends whoever
 					// reads it to the wrong place.
 					settingsFailure = error?.message ?? String(error);
-					publicService?.notifyChanged(true);
+					dashboardController?.notifyChanged(true);
 					logger?.warn?.(
 						"tokenledger: could not register the settings namespace (%s); using entry config only",
 						settingsFailure
@@ -851,7 +852,7 @@ export function apply(ctx, userConfig = {}) {
 
 	// The original public face is a published compatibility contract. Keep its
 	// identity and behavior unchanged while new renderers migrate to the bounded
-	// `tokenLedgerV1` face below; in particular, this legacy object still exposes
+	// the internal dashboard controller below; in particular, this legacy object still exposes
 	// the store because removing it here would turn an additive migration into a
 	// breaking release.
 	const legacyApi = {
@@ -881,7 +882,7 @@ export function apply(ctx, userConfig = {}) {
 	/** Sweep and replay the changed summary to renderer-neutral consumers. */
 	const runSweepAndPublish = async () => {
 		const result = await runSweep();
-		publicService?.notifyChanged();
+		dashboardController?.notifyChanged();
 		return result;
 	};
 
@@ -890,35 +891,6 @@ export function apply(ctx, userConfig = {}) {
 		store.reset();
 		return runSweepAndPublish();
 	};
-
-	// `/tokenledger [days] [site]` — a report in the conversation stream. The
-	// command is a shell over the same queries the future UI page will use, so
-	// nothing here is throwaway when that page lands.
-	// Blue contributes its own renderer-native `/tokenledger` overlay command.
-	// Its composition disables this text command explicitly so the profile has
-	// one unambiguous entry point; ordinary Harness and Web compositions retain
-	// the legacy command because `commandEnabled` defaults to true.
-	const commands = config.commandEnabled === false || typeof ctx.get !== "function" ? undefined : ctx.get("commands");
-	if (commands !== undefined) {
-		try {
-			ctx.effect(function* () {
-				yield commands.register({
-					name: config.commandName ?? "tokenledger",
-					description: "Token usage by model and relay site",
-					input: { hint: "[days] [site] | site | export [csv] | diagnostics | reindex" },
-					handler: async (invocation) => {
-						try {
-							return { kind: "success", text: await handleCommand(invocation.rawInput ?? "") };
-						} catch (error) {
-							return { kind: "error", text: `tokenledger: ${error?.message ?? error}` };
-						}
-					}
-				});
-			}, "tokenledger command");
-		} catch (error) {
-			logger?.warn?.("tokenledger: could not register the command: %s", error?.message ?? error);
-		}
-	}
 
 	const handleCommand = (rawInput) =>
 		runCommand(rawInput, {
@@ -943,7 +915,7 @@ export function apply(ctx, userConfig = {}) {
 						: async (relays) => {
 							await settingsScope.update({ relays });
 							refreshDirectory();
-							publicService?.notifyChanged(true);
+							dashboardController?.notifyChanged(true);
 						},
 				removeRelay:
 					settingsRemove === undefined
@@ -951,10 +923,42 @@ export function apply(ctx, userConfig = {}) {
 						: async (route) => {
 							await settingsRemove(route);
 							refreshDirectory();
-							publicService?.notifyChanged(true);
+							dashboardController?.notifyChanged(true);
 						},
 			saveUnavailableBecause: settingsFailure
 		});
+
+	// The legacy command is the plain fallback. A live Blue adapter temporarily
+	// owns the same name and restores this effect when its host service unloads.
+	let legacyCommandEffect;
+	let disposing = false;
+	const stopLegacyCommand = () => {
+		const dispose = legacyCommandEffect;
+		legacyCommandEffect = undefined;
+		if (typeof dispose === "function") void dispose();
+	};
+	const startLegacyCommand = () => {
+		if (disposing || config.commandEnabled === false || legacyCommandEffect !== undefined || typeof ctx.get !== "function") return;
+		const commands = ctx.get("commands");
+		if (commands === undefined || typeof commands.register !== "function") return;
+		try {
+			legacyCommandEffect = ctx.effect(() => commands.register({
+				name: config.commandName ?? "tokenledger",
+				description: "Token usage by model and relay site",
+				input: { hint: "[days] [site] | site | export [csv] | diagnostics | reindex" },
+				handler: async (invocation) => {
+					try {
+						return { kind: "success", text: await handleCommand(invocation.rawInput ?? "") };
+					} catch (error) {
+						return { kind: "error", text: `tokenledger: ${error?.message ?? error}` };
+					}
+				}
+			}), "tokenledger legacy command");
+		} catch (error) {
+			logger?.warn?.("tokenledger: could not register the command: %s", error?.message ?? error);
+		}
+	};
+	startLegacyCommand();
 
 	// The read-only surface the browser panel reads. Registering it is optional
 	// in both directions: a composition with no web server keeps collecting, and
@@ -1006,7 +1010,7 @@ export function apply(ctx, userConfig = {}) {
 			await settingsScope.update({ userAuth: config.userAuth });
 		}
 		walletReader.forget(origin);
-		publicService?.notifyChanged(true);
+		dashboardController?.notifyChanged(true);
 	};
 
 	try {
@@ -1123,181 +1127,33 @@ export function apply(ctx, userConfig = {}) {
 		lastSweepAt: () => lastSweepAt
 	};
 	const readUsage = (query) => usagePayload(usageDeps, query);
-	const requiredText = (action, key, requestId, max = 256) => {
-		const value = typeof action?.[key] === "string" ? action[key].trim() : "";
-		if (value === "" || value.length > max) {
-			throw new TokenLedgerError("INVALID_REQUEST", `${key} must contain 1-${max} characters`, { requestId });
-		}
-		return value;
-	};
-	const optionalText = (action, key, max = 256) => {
-		const value = typeof action?.[key] === "string" ? action[key].trim() : "";
-		return value === "" ? undefined : value.slice(0, max);
-	};
-	const actionQuery = (action) => {
-		const date = /^\d{4}-\d{2}-\d{2}$/;
-		const range = {};
-		if (typeof action?.range?.from === "string" && date.test(action.range.from)) range.from = action.range.from;
-		if (typeof action?.range?.to === "string" && date.test(action.range.to)) range.to = action.range.to;
-		return { range, site: optionalText(action, "site") };
-	};
-	const unavailable = (message, requestId) => {
-		throw new TokenLedgerError("UNAVAILABLE", message, { requestId });
-	};
-
-	const publicImplementation = {
-		readUsage,
-		readConfiguration: () => ({
-			version: VERSION,
-			settings: { available: settingsScope !== undefined, failure: settingsFailure },
-			relays: config.relays ?? {},
-			officialOrigins: config.officialOrigins ?? [],
-			fingerprint: config.fingerprint === true,
-			sweepIntervalMs: config.sweepIntervalMs,
-			sweepOnStart: config.sweepOnStart,
-			endpoints: config.endpoints ?? [],
-			rates: config.rates ?? null,
-			wallets: userAuth(),
-			walletCache: walletReader.snapshot()
-		}),
-		runAction: async (action, request) => {
-			const { commit, requestId, signal } = request;
-			switch (action.type) {
-				case "usage.refresh": {
-					commit();
-					const stats = await runSweep();
-					return { ok: true, changed: true, message: "usage refreshed", data: stats ?? {} };
-				}
-				case "index.rebuild": {
-					commit(() => store.reset());
-					const stats = await runSweep();
-					return { ok: true, changed: true, message: "index rebuilt", data: stats ?? {} };
-				}
-				case "balance.refresh": {
-					if (balance === undefined) unavailable("tokenledger balance reader is unavailable", requestId);
-					const accountId = optionalText(action, "accountId", 256);
-					const data = await balance(accountId, action.force === true, undefined, { signal });
-					if (signal.aborted) throw new TokenLedgerError("ABORTED", "balance refresh was aborted", { requestId });
-					return { ok: true, changed: false, message: "balance refreshed", data };
-				}
-				case "usage.export": {
-					const format = action.format === "csv" ? "csv" : action.format === undefined || action.format === "json" ? "json" : undefined;
-					if (format === undefined) {
-						throw new TokenLedgerError("INVALID_REQUEST", "format must be json or csv", { requestId });
-					}
-					const { range, site } = actionQuery(action);
-					const content = format === "csv"
-						? store.exportCsv(range, site)
-						: JSON.stringify(store.exportJson(range, site), null, 1);
-					return {
-						ok: true,
-						changed: false,
-						message: "usage exported",
-						data: {
-							format,
-							content,
-							fileName: `tokenledger.${format}`,
-							mimeType: format === "csv" ? "text/csv" : "application/json"
-						}
-					};
-				}
-				case "settings.relay.set": {
-					if (settingsScope === undefined) unavailable("tokenledger settings are not ready", requestId);
-					const route = requiredText(action, "route", requestId);
-					if (route === "__proto__" || route === "prototype" || route === "constructor") {
-						throw new TokenLedgerError("INVALID_REQUEST", "route is reserved", { requestId });
-					}
-					const baseUrl = requiredText(action, "baseUrl", requestId, 2048);
-					let parsed;
-					try {
-						parsed = new URL(baseUrl);
-					} catch {
-						throw new TokenLedgerError("INVALID_REQUEST", "baseUrl must be an absolute URL", { requestId });
-					}
-					if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-						throw new TokenLedgerError("INVALID_REQUEST", "baseUrl must use http or https", { requestId });
-					}
-					const relayType = optionalText(action, "relayType", 64);
-					const id = optionalText(action, "id");
-					const displayName = optionalText(action, "displayName");
-					const value = relayType === undefined && id === undefined && displayName === undefined
-						? baseUrl
-						: { baseUrl, ...(relayType === undefined ? {} : { type: relayType }), ...(id === undefined ? {} : { id }), ...(displayName === undefined ? {} : { displayName }) };
-					const relays = { ...(config.relays ?? {}), [route]: value };
-					commit();
-					await settingsScope.update({ relays });
-					config.relays = relays;
-					refreshDirectory();
-					return { ok: true, changed: true, message: "relay saved", data: { route } };
-				}
-				case "settings.relay.remove": {
-					if (settingsRemove === undefined) unavailable("tokenledger settings cannot remove relays", requestId);
-					const route = requiredText(action, "route", requestId);
-					commit();
-					await settingsRemove(route);
-					const relays = { ...(config.relays ?? {}) };
-					delete relays[route];
-					config.relays = relays;
-					refreshDirectory();
-					return { ok: true, changed: true, message: "relay removed", data: { route } };
-				}
-				case "settings.wallet.set": {
-					if (settingsScope === undefined) unavailable("tokenledger settings are not ready", requestId);
-					const origin = requiredText(action, "origin", requestId, 2048);
-					const normalizedOrigin = normalizeOrigin(origin);
-					if (normalizedOrigin === undefined) {
-						throw new TokenLedgerError("INVALID_REQUEST", "origin must be an absolute http or https URL", { requestId });
-					}
-					const userId = action.userId;
-					if (!Number.isSafeInteger(userId) || userId <= 0) {
-						throw new TokenLedgerError("INVALID_REQUEST", "userId must be a positive safe integer", { requestId });
-					}
-					const token = typeof action.token === "string" ? action.token : "";
-					if (token.length > 32 * 1024) {
-						throw new TokenLedgerError("INVALID_REQUEST", "token exceeded its size limit", { requestId });
-					}
-					if (token === "" && typeof config.userAuth?.[normalizedOrigin]?.token !== "string") {
-						throw new TokenLedgerError("INVALID_REQUEST", "token is required for an unconfigured origin", { requestId });
-					}
-					commit();
-					await saveUserAuth({ origin, userId, token });
-					return { ok: true, changed: true, message: "wallet settings saved", data: { origin: normalizedOrigin } };
-				}
-				case "settings.wallet.clear": {
-					if (settingsRemoveUserAuth === undefined) unavailable("tokenledger settings cannot clear wallet credentials", requestId);
-					const origin = requiredText(action, "origin", requestId, 2048);
-					const normalizedOrigin = normalizeOrigin(origin);
-					if (normalizedOrigin === undefined) {
-						throw new TokenLedgerError("INVALID_REQUEST", "origin must be an absolute http or https URL", { requestId });
-					}
-					commit();
-					await saveUserAuth({ origin, remove: true });
-					return { ok: true, changed: true, message: "wallet settings cleared", data: { origin: normalizedOrigin } };
-				}
-				default:
-					throw new TokenLedgerError("INVALID_REQUEST", "unknown tokenledger action type", { requestId });
-			}
-		},
-		dispose: () => walletReader.dispose()
-	};
 	try {
-		publicService = new TokenLedgerService(publicImplementation);
+		dashboardController = new DashboardController({
+			readUsage,
+			refresh: async ({ signal }) => {
+				const stats = await runSweep();
+				if (signal.aborted) throw new DashboardControllerError("ABORTED", "Usage refresh was aborted");
+				return stats;
+			},
+			readBalance: async (action, { signal }) => {
+				if (balance === undefined) throw new DashboardControllerError("UNAVAILABLE", "Balance reader is unavailable");
+				const accountId = typeof action.accountId === "string" ? action.accountId.slice(0, 256) : undefined;
+				const data = await balance(accountId, action.force === true, undefined, { signal });
+				if (signal.aborted) throw new DashboardControllerError("ABORTED", "Balance refresh was aborted");
+				return data;
+			},
+			dispose: () => walletReader.dispose()
+		});
 	} catch (error) {
-		// The additive renderer-neutral face must never make collection, the
-		// legacy service, or the Web UI fail to boot.
-		logger?.warn?.("tokenledger: could not initialize tokenLedgerV1: %s", error?.message ?? error);
+		logger?.warn?.("tokenledger: could not initialize the Blue dashboard controller: %s", error?.message ?? error);
 	}
 
-	// The new face is additive. Blue and other renderer-neutral consumers use it;
-	// existing consumers keep resolving the untouched `tokenLedger` object.
-	try {
-		if (publicService !== undefined && typeof ctx.reflect?.provide === "function") {
-			ctx.reflect.provide("tokenLedgerV1", publicService);
-		} else if (publicService !== undefined) {
-			logger?.warn?.("tokenledger: no reflect.provide on this Cordis; collecting without publishing tokenLedgerV1");
-		}
-	} catch (error) {
-		logger?.warn?.("tokenledger: could not publish tokenLedgerV1: %s", error?.message ?? error);
+	if (dashboardController !== undefined && typeof ctx.inject === "function") {
+		ctx.inject(["bluePluginHost"], (scoped) => {
+			stopLegacyCommand();
+			const mounted = mountTokenLedgerBlue(scoped, dashboardController, { onDispose: startLegacyCommand });
+			if (!mounted) startLegacyCommand();
+		});
 	}
 
 	if (config.sweepOnStart) void runSweepAndPublish();
@@ -1307,9 +1163,11 @@ export function apply(ctx, userConfig = {}) {
 	timer?.unref?.();
 
 	ctx.on("dispose", async () => {
+		disposing = true;
+		stopLegacyCommand();
 		if (timer !== undefined) clearInterval(timer);
-		if (publicService === undefined) walletReader.dispose();
-		else await publicService.dispose();
+		if (dashboardController === undefined) walletReader.dispose();
+		else await dashboardController.dispose();
 		try {
 			store.close();
 		} catch {

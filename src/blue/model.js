@@ -1,11 +1,11 @@
 /**
- * Renderer-neutral TokenLedger interaction model and Blue wire-node builders.
+ * TokenLedger's internal interaction model and Blue wire-node builders.
  *
- * This module accepts only bounded public service values and emits plain Blue
+ * This module accepts only bounded controller values and emits plain Blue
  * UI data. It has no Cordis, Harness, terminal, DOM, React, ANSI, or width
  * dependency. Mutable selection and request ownership stay in `index.js`.
  *
- * @module @dsh-blue/tokenledger/model
+ * @module dsh-tokenledger/blue/model
  */
 
 import { isProxy } from "node:util/types";
@@ -72,19 +72,10 @@ function normalizedKey(key) {
 	return key.replaceAll(/[^a-z0-9]/gi, "").toLowerCase();
 }
 
-function dataProperty(value, key) {
-	try {
-		const descriptor = Object.getOwnPropertyDescriptor(value, key);
-		return descriptor !== undefined && "value" in descriptor ? descriptor.value : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
 /**
- * Copy untrusted service data without invoking accessors or proxy traps.
+ * Copy controller data without invoking accessors or proxy traps.
  *
- * @param {unknown} input public service value.
+ * @param {unknown} input controller value.
  * @returns {{ value: unknown, truncated: boolean } | undefined} safe copy.
  */
 export function copyPublicJson(input) {
@@ -219,20 +210,12 @@ export function normalizeTokenLedgerSummary(input) {
 	return deepFreeze({ ...value, revision, boundaryTruncated: copied.truncated || value.boundaryTruncated === true || value.reduced === true });
 }
 
-/** Normalize one full range/site view from the public service. */
+/** Normalize one full range/site view from the internal controller. */
 export function normalizeTokenLedgerView(input) {
 	const copied = copyPublicJson(input);
 	if (copied === undefined) return undefined;
 	const value = record(copied.value);
 	return deepFreeze({ ...value, boundaryTruncated: copied.truncated || value.boundaryTruncated === true || value.reduced === true });
-}
-
-/** Normalize the public sanitized configuration view. */
-export function normalizeTokenLedgerConfiguration(input) {
-	const copied = copyPublicJson(input);
-	if (copied === undefined) return undefined;
-	const value = record(copied.value);
-	return deepFreeze({ ...value, boundaryTruncated: copied.truncated || value.boundaryTruncated === true });
 }
 
 /** Normalize a balance action result without accepting credentials. */
@@ -241,24 +224,6 @@ export function normalizeTokenLedgerBalance(input) {
 	if (copied === undefined) return undefined;
 	const value = record(copied.value);
 	return deepFreeze({ ...value, boundaryTruncated: copied.truncated || value.boundaryTruncated === true });
-}
-
-/** Normalize one export result while keeping its complete bounded content. */
-export function normalizeTokenLedgerExport(input) {
-	if (input === null || typeof input !== "object" || isProxy(input)) return undefined;
-	try {
-		const value = (key) => dataProperty(input, key);
-		const content = value("content");
-		if (typeof content !== "string" || content.length > 1_048_576) return undefined;
-		return deepFreeze({
-			format: value("format") === "csv" ? "csv" : "json",
-			content,
-			fileName: text(value("fileName"), 256),
-			mimeType: text(value("mimeType"), 128)
-		});
-	} catch {
-		return undefined;
-	}
 }
 
 function fmt(value) {
@@ -485,15 +450,14 @@ function pricedRows(priced) {
 function pagination(key, state, total) {
 	const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 	const current = Math.min(integer(record(state.pages)[key]), pages - 1);
-	const shortcutFor = key === "projects" ? "*" : key === "accounts" ? "tokenledger.account-tabs" : `tokenledger.${key}`;
 	return {
 		page: current,
 		pages,
 		start: current * PAGE_SIZE,
 		end: Math.min(total, (current + 1) * PAGE_SIZE),
 		node: actionBar(`tokenledger.page.${key}`, [
-			{ id: `tokenledger.page.${key}.prev`, label: "PgUp 上一页", shortcut: "pageup", shortcutFor, focusable: false, disabled: current === 0 },
-			{ id: `tokenledger.page.${key}.next`, label: "PgDn 下一页", shortcut: "pagedown", shortcutFor, focusable: false, disabled: current + 1 >= pages }
+			{ id: `tokenledger.page.${key}.prev`, label: "上一页", disabled: current === 0 },
+			{ id: `tokenledger.page.${key}.next`, label: "下一页", disabled: current + 1 >= pages }
 		])
 	};
 }
@@ -750,8 +714,8 @@ export function buildTokenLedgerView(stateInput) {
 	const state = stateInput ?? {};
 	const source = state.view ?? state.snapshot ?? {};
 	let body;
-	if (state.serviceAvailable !== true) {
-		body = { kind: "empty", title: "TokenLedger 服务暂不可用", description: "Blue 正在等待 tokenLedgerV1；用量采集和原有 Web 界面不受影响。" };
+	if (state.controllerAvailable !== true) {
+		body = { kind: "empty", title: "TokenLedger 服务暂不可用", description: "Blue 仪表盘尚未就绪；用量采集和原有 Web 界面不受影响。" };
 	} else body = column([
 		boundaryNotice(source),
 		accountDashboard(state, source),
@@ -778,16 +742,13 @@ export function buildTokenLedgerView(stateInput) {
 	]);
 	return freezeNode({
 		kind: "surface",
-		title: "TokenLedger 用量账本",
 		subtitle: state.site === undefined ? "全部中转站" : `只看：${text(state.site)}`,
 		badges: [
 			{ text: state.range === "today" ? "今日" : state.range === "month" ? "本月" : "累计", tone: "accent" },
 			...(state.busyAction === undefined ? [] : [{ text: "处理中", tone: "warning" }])
 		],
-		chrome: "overlay",
-		padding: 1,
-		child: { kind: "scroll", child: content, follow: "none", scrollbar: true },
-		footer: message("Tab 切换账户/区间 · ←/→ 切换当前标签 · ↓ 进入内容 · PgUp/PgDn 项目翻页 · Esc 关闭", "muted")
+		chrome: "none",
+		child: { kind: "scroll", child: content, follow: "none", scrollbar: true }
 	});
 }
 

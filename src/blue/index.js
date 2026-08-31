@@ -1,13 +1,12 @@
 /**
- * Blue frontend entry for TokenLedger.
+ * Optional Blue frontend adapter for TokenLedger.
  *
- * The companion owns only frontend-tree selection, managed-surface
- * registrations, subscriptions, and request controllers. Accounting truth,
- * exports, balance reads, and every settings write remain behind the public
- * renderer-neutral `tokenLedgerV1` service. The existing Web client remains
- * the named fallback.
+ * The adapter owns only frontend-tree selection, managed-surface registrations,
+ * subscriptions, and request controllers. Accounting truth and balance reads
+ * come from the owning TokenLedger `apply()` through an internal controller.
+ * The existing Web client remains the named fallback.
  *
- * @module @dsh-blue/tokenledger
+ * @module dsh-tokenledger/blue
  */
 
 import { readFileSync } from "node:fs";
@@ -16,22 +15,14 @@ import {
 	buildTokenLedgerView,
 	copyPublicJson,
 	normalizeTokenLedgerBalance,
-	normalizeTokenLedgerConfiguration,
-	normalizeTokenLedgerExport,
 	normalizeTokenLedgerSummary,
 	normalizeTokenLedgerView,
 	tokenLedgerAccountTabId
 } from "./model.js";
 
-/** @typedef {import("@deepseek-ai/cordis").Context & { bluePluginHost: unknown, tokenLedgerV1?: unknown }} TokenLedgerBlueContext */
+/** @typedef {import("@deepseek-ai/cordis").Context & { bluePluginHost: unknown }} TokenLedgerBlueContext */
 
-/** Stable Cordis entry name. */
-export const name = "@dsh-blue/tokenledger";
-
-/** Blue is required; TokenLedger arrives dynamically so absence has a UI fallback. */
-export const inject = ["bluePluginHost"];
-
-const MANIFEST = Object.freeze(JSON.parse(readFileSync(new URL("../blue.plugin.json", import.meta.url), "utf8")));
+const MANIFEST = Object.freeze(JSON.parse(readFileSync(new URL("../../blue.plugin.json", import.meta.url), "utf8")));
 const RANGES = new Set(TOKEN_LEDGER_BLUE_MODEL.ranges.map((item) => item.id));
 const MODEL_SORTS = new Set(TOKEN_LEDGER_BLUE_MODEL.modelSorts.map((item) => item.id));
 const COLLECTION_PAGE_SPECS = Object.freeze({
@@ -145,7 +136,7 @@ function errorResult(error, fallback = "TokenLedger 操作失败") {
 	return fail("BLUE_ACTION_REJECTED", fallback);
 }
 
-function serviceFacade(value) {
+function controllerFacade(value) {
 	const current = method(value, "current");
 	const subscribe = method(value, "subscribe");
 	const queryUsage = method(value, "queryUsage");
@@ -271,18 +262,23 @@ function selectedProvider(state) {
 }
 
 /**
- * Register TokenLedger's complete renderer-neutral Blue companion.
+ * Mount TokenLedger's complete Blue adapter in its owning domain Fiber.
  *
  * @param {TokenLedgerBlueContext} ctx owning consumer Fiber.
+ * @param {object} controller trusted, apply-local dashboard controller.
+ * @param {{ onDispose?: () => void }} [lifecycle]
+ * @returns {boolean} whether Blue admitted the adapter and its command.
  */
-export function apply(ctx) {
+export function mountTokenLedgerBlue(ctx, controller, lifecycle = {}) {
+	const dashboard = controllerFacade(controller);
+	if (dashboard === undefined) return false;
 	const host = ctx.bluePluginHost;
 	const open = method(host, "open");
-	if (open === undefined) return;
+	if (open === undefined) return false;
 	const opened = resultValue(safeCall(() => open(ctx, MANIFEST), fail("BLUE_OWNER_UNAVAILABLE", "Blue 插件宿主不可用")));
-	if (!opened.ok) return;
-	const api = object(own(opened.value, "api")) ?? object(opened.value);
-	if (api === undefined) return;
+	if (!opened.ok) return false;
+	const api = object(own(opened.value, "api"));
+	if (api === undefined) return false;
 
 	const state = {
 		range: "all",
@@ -299,14 +295,14 @@ export function apply(ctx) {
 		viewRevision: 0,
 		balance: undefined,
 		balanceAccount: undefined,
-		service: undefined,
-		serviceAvailable: false,
+		controller: dashboard,
+		controllerAvailable: true,
 		sessionId: undefined,
 		loading: false,
 		busyAction: undefined,
 		error: "",
 		disposed: false,
-		serviceGeneration: 0,
+		controllerGeneration: 1,
 		requestEpoch: 0,
 		requestSerial: 0,
 		operations: new Map()
@@ -335,7 +331,7 @@ export function apply(ctx) {
 		const publish = method(notifications, "publish");
 		if (publish === undefined || state.disposed) return;
 		safeCall(() => publish({
-			id: `tokenledger.${String(state.serviceGeneration)}.${String(state.requestSerial)}`,
+			id: `tokenledger.${String(state.controllerGeneration)}.${String(state.requestSerial)}`,
 			view: { kind: "text", content: text(message) || "TokenLedger 操作已完成" },
 			tone
 		}), undefined);
@@ -359,7 +355,7 @@ export function apply(ctx) {
 			controller,
 			relay,
 			callerSignal,
-			serviceGeneration: state.serviceGeneration,
+			controllerGeneration: state.controllerGeneration,
 			requestEpoch: state.requestEpoch,
 			serial: ++state.requestSerial
 		};
@@ -368,7 +364,7 @@ export function apply(ctx) {
 	};
 
 	const operationCurrent = (operation) => !state.disposed
-		&& state.serviceGeneration === operation.serviceGeneration
+		&& state.controllerGeneration === operation.controllerGeneration
 		&& state.requestEpoch === operation.requestEpoch
 		&& state.operations.get(operation.kind) === operation
 		&& !operation.controller.signal.aborted;
@@ -378,8 +374,8 @@ export function apply(ctx) {
 		if (state.operations.get(operation.kind) === operation) state.operations.delete(operation.kind);
 	};
 
-	const setSnapshot = (value, generation = state.serviceGeneration) => {
-		if (state.disposed || generation !== state.serviceGeneration) return false;
+	const setSnapshot = (value, generation = state.controllerGeneration) => {
+		if (state.disposed || generation !== state.controllerGeneration) return false;
 		const snapshot = normalizeTokenLedgerSummary(value);
 		if (snapshot === undefined) {
 				state.error = "TokenLedger 返回了无效的摘要回放";
@@ -401,21 +397,21 @@ export function apply(ctx) {
 	};
 
 	const loadView = async (callerSignal) => {
-		const service = state.service;
-		if (service === undefined) return fail("BLUE_CAPABILITY_ABSENT", "TokenLedger 服务暂不可用");
+		const controller = state.controller;
+		if (controller === undefined) return fail("BLUE_CAPABILITY_ABSENT", "TokenLedger 服务暂不可用");
 		const operation = startOperation("view", callerSignal);
 		state.loading = true;
 		state.error = "";
 		refreshRegistrations();
 		try {
 			for (let attempt = 0; attempt < 2; attempt += 1) {
-				const requestId = `blue-view-${String(operation.serviceGeneration)}-${String(operation.requestEpoch)}-${String(operation.serial)}-${String(attempt + 1)}`;
+				const requestId = `blue-view-${String(operation.controllerGeneration)}-${String(operation.requestEpoch)}-${String(operation.serial)}-${String(attempt + 1)}`;
 				const expectedRevision = state.snapshot?.revision;
 				const provider = selectedProvider(state);
 				if (expectedRevision === undefined) return fail("BLUE_INVALID_CONTRIBUTION", "TokenLedger 没有有效的摘要版本");
 				let raw;
 				try {
-					raw = await service.queryUsage({
+					raw = await controller.queryUsage({
 						requestId,
 						range: rangeFor(state.range),
 						...(state.site === undefined ? {} : { site: state.site }),
@@ -463,10 +459,10 @@ export function apply(ctx) {
 	};
 
 	const loadCollectionPage = async (key, page, callerSignal) => {
-		const service = state.service;
+		const controller = state.controller;
 		const specification = COLLECTION_PAGE_SPECS[key];
-		if (service === undefined) return fail("BLUE_CAPABILITY_ABSENT", "TokenLedger 服务暂不可用");
-		if (service.queryCollection === undefined) {
+		if (controller === undefined) return fail("BLUE_CAPABILITY_ABSENT", "TokenLedger 服务暂不可用");
+		if (controller.queryCollection === undefined) {
 			return fail("BLUE_CAPABILITY_UNSUPPORTED", "当前 TokenLedger 服务无法读取初始边界以外的数据");
 		}
 		if (specification === undefined) return fail("BLUE_ACTION_REJECTED", "未知的 TokenLedger 集合页面");
@@ -475,13 +471,13 @@ export function apply(ctx) {
 		state.pendingPage = { key, page };
 		refreshRegistrations();
 		try {
-			const requestId = `blue-collection-${key}-${String(operation.serviceGeneration)}-${String(operation.requestEpoch)}-${String(operation.serial)}`;
+			const requestId = `blue-collection-${key}-${String(operation.controllerGeneration)}-${String(operation.requestEpoch)}-${String(operation.serial)}`;
 			const expectedRevision = state.viewRevision || state.snapshot?.revision;
 			if (expectedRevision === undefined) return fail("BLUE_INVALID_CONTRIBUTION", "TokenLedger 没有有效的集合版本");
 			const sortBy = key === "models" ? state.modelSort : specification.sortBy;
 			const direction = key === "models" ? state.modelSortDirection : specification.direction;
 			const provider = selectedProvider(state);
-			const raw = await service.queryCollection({
+			const raw = await controller.queryCollection({
 				requestId,
 				...(expectedRevision === undefined ? {} : { expectedRevision }),
 				collection: specification.collection,
@@ -520,17 +516,17 @@ export function apply(ctx) {
 	};
 
 	const executeAction = async (action, callerSignal, options = {}) => {
-		const service = state.service;
-		if (service === undefined) return fail("BLUE_CAPABILITY_ABSENT", "TokenLedger 服务暂不可用");
+		const controller = state.controller;
+		if (controller === undefined) return fail("BLUE_CAPABILITY_ABSENT", "TokenLedger 服务暂不可用");
 		const operation = startOperation("action", callerSignal);
 		state.busyAction = text(action.type, 80);
 		state.error = "";
 		refreshRegistrations();
 		try {
-			const requestId = `blue-action-${String(operation.serviceGeneration)}-${String(operation.requestEpoch)}-${String(operation.serial)}`;
+			const requestId = `blue-action-${String(operation.controllerGeneration)}-${String(operation.requestEpoch)}-${String(operation.serial)}`;
 			const expectedRevision = state.snapshot?.revision;
 			if (expectedRevision === undefined) return fail("BLUE_INVALID_CONTRIBUTION", "TokenLedger 没有有效的操作版本");
-			const raw = await service.execute({ requestId, ...(expectedRevision === undefined ? {} : { expectedRevision }), action }, { signal: operation.controller.signal });
+			const raw = await controller.execute({ requestId, ...(expectedRevision === undefined ? {} : { expectedRevision }), action }, { signal: operation.controller.signal });
 			if (!operationCurrent(operation)) return fail(operation.controller.signal.aborted ? "BLUE_ABORTED" : "BLUE_STALE", "TokenLedger 操作已过期");
 			const result = actionResult(raw, requestId);
 			if (!result.ok) {
@@ -548,7 +544,7 @@ export function apply(ctx) {
 				(currentRevision !== undefined && resultRevision < currentRevision) ||
 				(readOnly && resultRevision !== expectedRevision)
 			) return fail("BLUE_STALE", "TokenLedger 操作结果与当前版本不一致");
-			setSnapshot(result.value.snapshot, operation.serviceGeneration);
+			setSnapshot(result.value.snapshot, operation.controllerGeneration);
 			state.error = "";
 			if (options.balance === true) {
 				const balance = normalizeTokenLedgerBalance(result.value.data);
@@ -744,6 +740,7 @@ export function apply(ctx) {
 		safeCall(() => overlay?.close(), undefined);
 		const registered = registrationDispose(safeCall(() => openManagedOverlay({
 			id: "tokenledger.dashboard.overlay",
+			title: "TokenLedger 用量账本",
 			capturing: true,
 			dismissible: true,
 			anchor: "center",
@@ -759,6 +756,7 @@ export function apply(ctx) {
 
 	const commands = object(own(api, "commands"));
 	const registerCommand = method(commands, "register");
+	let commandRegistered = false;
 	if (registerCommand !== undefined) {
 		const registered = registrationDispose(safeCall(() => registerCommand({
 			id: "tokenledger",
@@ -773,7 +771,7 @@ export function apply(ctx) {
 				if (site !== undefined) state.site = site;
 				state.pages = {};
 				state.collectionPages = {};
-				if (state.serviceAvailable) {
+				if (state.controllerAvailable) {
 					const result = args.includes("--refresh")
 						? await executeAction({ type: "usage.refresh" }, signal, { reloadView: true })
 						: await loadView(signal);
@@ -783,67 +781,23 @@ export function apply(ctx) {
 				return openOverlay(userGesture);
 			}
 		}), fail("BLUE_INTERNAL_FAILURE", "TokenLedger 命令注册失败")));
-		if (registered.registration !== undefined) registrations.push(registered.registration);
-	}
-
-	const detachService = (identity) => {
-		if (identity !== undefined && state.service?.identity !== identity) return;
-		state.serviceGeneration += 1;
-		state.requestEpoch += 1;
-		abortOperations();
-		serviceDispose();
-		serviceDispose = () => {};
-		state.service = undefined;
-		state.serviceAvailable = false;
-		state.snapshot = undefined;
-		state.view = undefined;
-		state.viewRevision = 0;
-		state.collectionPages = {};
-		state.selectedAccountProvider = undefined;
-		state.balance = undefined;
-		state.balanceAccount = undefined;
-		state.pendingPage = undefined;
-		state.error = "";
-		refreshRegistrations();
-	};
-
-	const attachService = (rawService, scoped) => {
-		const service = serviceFacade(rawService);
-		if (service === undefined) {
-			state.error = "tokenLedgerV1 不符合公开 Service 契约";
-			refreshRegistrations();
-			return;
+		if (registered.registration !== undefined) {
+			registrations.push(registered.registration);
+			commandRegistered = true;
 		}
-		detachService();
-		state.serviceGeneration += 1;
-		const generation = state.serviceGeneration;
-		state.service = service;
-		state.serviceAvailable = true;
-		state.error = "";
-		setSnapshot(safeCall(() => service.current(), undefined), generation);
-		const lifetime = new AbortController();
-		const disposeSubscription = safeCall(() => service.subscribe((snapshot) => {
-			if (state.disposed || generation !== state.serviceGeneration) return;
-			if (
-				setSnapshot(snapshot, generation) &&
-				selectedProvider(state) !== undefined &&
-				!state.operations.has("view")
-			) void loadView();
-		}, { signal: lifetime.signal }), undefined);
-		serviceDispose = () => {
-			lifetime.abort();
-			if (typeof disposeSubscription === "function") safeCall(() => disposeSubscription(), undefined);
-		};
-		scoped.effect(() => () => detachService(rawService), "TokenLedger Blue service binding");
-		refreshRegistrations();
-		void loadView();
-	};
-
-	ctx.inject(["tokenLedgerV1"], (scoped) => {
+	}
+	if (!commandRegistered) return false;
+	setSnapshot(safeCall(() => dashboard.current(), undefined), state.controllerGeneration);
+	const lifetime = new AbortController();
+	const disposeSubscription = safeCall(() => dashboard.subscribe((snapshot) => {
 		if (state.disposed) return;
-		const serviceContext = /** @type {TokenLedgerBlueContext} */ (scoped);
-		attachService(serviceContext.tokenLedgerV1, scoped);
-	});
+		if (setSnapshot(snapshot) && selectedProvider(state) !== undefined && !state.operations.has("view")) void loadView();
+	}, { signal: lifetime.signal }), undefined);
+	serviceDispose = () => {
+		lifetime.abort();
+		if (typeof disposeSubscription === "function") safeCall(() => disposeSubscription(), undefined);
+	};
+	void loadView();
 
 	const session = object(own(api, "session"));
 	const setSession = (value) => {
@@ -856,7 +810,7 @@ export function apply(ctx) {
 		state.pendingPage = undefined;
 		state.error = "";
 		refreshRegistrations();
-		if (state.serviceAvailable) void loadView().then((result) => result.ok ? loadBalance(false, undefined, true) : result);
+		if (state.controllerAvailable) void loadView().then((result) => result.ok ? loadBalance(false, undefined, true) : result);
 	};
 	if (session !== undefined) {
 		const current = method(session, "current");
@@ -873,23 +827,14 @@ export function apply(ctx) {
 	ctx.effect(() => () => {
 		state.disposed = true;
 		if (eventRefreshTimer !== undefined) clearTimeout(eventRefreshTimer);
-		state.serviceGeneration += 1;
+		state.controllerGeneration += 1;
 		state.requestEpoch += 1;
 		abortOperations();
 		serviceDispose();
 		sessionDispose();
 		safeCall(() => overlay?.close(), undefined);
 		for (const registration of registrations.toReversed()) safeCall(() => registration.dispose(), undefined);
-	}, "TokenLedger Blue companion");
+		lifecycle.onDispose?.();
+	}, "TokenLedger Blue adapter");
+	return true;
 }
-
-export {
-	TOKEN_LEDGER_BLUE_MODEL,
-	buildTokenLedgerView,
-	copyPublicJson,
-	normalizeTokenLedgerBalance,
-	normalizeTokenLedgerConfiguration,
-	normalizeTokenLedgerExport,
-	normalizeTokenLedgerSummary,
-	normalizeTokenLedgerView
-};
