@@ -189,6 +189,12 @@ test("queries group by day, model, and site, and the site filter narrows them", 
 		assert.equal(store.totals({ from: "2026-08-15" }).inputTokens, 300);
 		assert.equal(store.totals({ to: "2026-08-14" }).inputTokens, 300);
 		assert.equal(store.totals({}, "sub").inputTokens, 200);
+		assert.equal(store.totals({}, undefined, "relayA").inputTokens, 100);
+		assert.deepEqual(store.byDay({}, undefined, "official").map((d) => [d.day, d.inputTokens]), [["2026-08-15", 300]]);
+		assert.deepEqual(store.bySite({}, "relayB").map((s) => [s.site, s.inputTokens]), [["sub", 200]]);
+		assert.deepEqual(store.byModel({}, undefined, "official").map((m) => [m.model, m.inputTokens]), [["flash", 300]]);
+		assert.deepEqual(store.byProvider({}, undefined, "relayA").map((p) => [p.provider, p.inputTokens]), [["relayA", 100]]);
+		assert.equal(store.byRoute({}, undefined, "relayB")[0].inputTokens, 200);
 	});
 });
 

@@ -183,7 +183,8 @@ test("collection continuation retrieves every row with explicit page counts", as
 	assert.equal(direct.items[0].model, "model-37");
 	assertDeepFrozen(direct);
 
-	const service = new TokenLedgerService(implementation({ readUsage: () => source }));
+	const queries = [];
+	const service = new TokenLedgerService(implementation({ readUsage: (query) => { queries.push(query); return source; } }));
 	const received = [];
 	let offset = 0;
 	while (true) {
@@ -211,6 +212,15 @@ test("collection continuation retrieves every row with explicit page counts", as
 	assert.equal(filtered.value.sourceCount, 75);
 	assert.equal(filtered.value.returnedCount, 75);
 	assert.ok(filtered.value.items.every((entry) => entry.day === "2026-08-30"));
+
+	await service.queryCollection({
+		requestId: "provider-page",
+		expectedRevision: 1,
+		collection: "models",
+		provider: " route-two ",
+		limit: 1
+	});
+	assert.deepEqual(queries.at(-1), { range: {}, site: undefined, provider: "route-two" });
 
 	await assert.rejects(
 		service.queryCollection({ requestId: "stale-page", expectedRevision: 2, collection: "models" }),
@@ -400,18 +410,20 @@ test("range queries are bounded reads and do not advance the summary revision", 
 	const service = new TokenLedgerService(implementation({
 		readUsage: (query) => {
 			reads.push(query);
-			return usage({ range: query.range, site: query.site });
+			return usage({ range: query.range, site: query.site, provider: query.provider });
 		}
 	}));
 	const result = await service.queryUsage({
 		requestId: "range",
 		range: { from: "2026-08-01", to: "2026-08-30", ignored: "x" },
-		site: " relay.example "
+		site: " relay.example ",
+		provider: " route-two "
 	});
 
-	assert.deepEqual(reads.at(-1), { range: { from: "2026-08-01", to: "2026-08-30" }, site: "relay.example" });
+	assert.deepEqual(reads.at(-1), { range: { from: "2026-08-01", to: "2026-08-30" }, site: "relay.example", provider: "route-two" });
 	assert.equal(result.revision, 1);
 	assert.equal(result.value.site, "relay.example");
+	assert.equal(result.value.provider, "route-two");
 	assert.equal(service.current().revision, 1);
 	assertDeepFrozen(result);
 	await service.dispose();

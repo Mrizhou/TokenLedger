@@ -26,7 +26,7 @@ const PRIVATE_KEYS = new Set([
 	"userauth"
 ]);
 const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-const PAGE_SIZE = 16;
+const PAGE_SIZE = 8;
 const EXPORT_PAGE_CHARS = 6_000;
 const MAX_COPY_DEPTH = 10;
 const MAX_COPY_NODES = 8_000;
@@ -37,27 +37,13 @@ const MAX_OBJECT_KEY_LENGTH = 64;
 const LABEL_LIMIT = 240;
 const DETAIL_LIMIT = 600;
 const ACTIVITY_DAYS = 371;
-const ACTIVITY_CELL_WIDTH = 3;
-const ACTIVITY_MAX_VISIBLE_DAYS = 32;
-const ACTIVITY_SURFACE_COLUMNS = 4;
+const ACTIVITY_CELL_WIDTH = 2;
+const ACTIVITY_MAX_VISIBLE_WEEKS = 54;
 const DAY_MS = 86_400_000;
-const TABS = [
-	{ id: "overview", label: "总览" },
-	{ id: "breakdown", label: "明细" },
-	{ id: "accounts", label: "账户" },
-	{ id: "export", label: "导出" }
-];
-const BREAKDOWN_TABS = [
-	{ id: "sites", label: "站点" },
-	{ id: "models", label: "模型" },
-	{ id: "projects", label: "项目" },
-	{ id: "providers", label: "提供方" },
-	{ id: "activity", label: "活动" }
-];
 const RANGE_ITEMS = [
-	{ id: "today", label: "今天" },
+	{ id: "today", label: "今日" },
 	{ id: "month", label: "本月" },
-	{ id: "all", label: "全部时间" }
+	{ id: "all", label: "累计" }
 ];
 const MODEL_SORTS = [
 	{ id: "tokens", label: "令牌总数" },
@@ -68,7 +54,7 @@ const MODEL_SORTS = [
 	{ id: "cost", label: "预估费用" }
 ];
 const ACTIVITY_LEVELS = [
-	{ glyph: "░", tone: "muted" },
+	{ glyph: "·", tone: "muted" },
 	{ glyph: "░", tone: "success" },
 	{ glyph: "▒", tone: "success" },
 	{ glyph: "▓", tone: "success" },
@@ -194,6 +180,19 @@ function text(value, limit = LABEL_LIMIT) {
 	return typeof value === "string" ? value.replaceAll(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, limit) : "";
 }
 
+/** Stable bounded wire id for an account across provider-directory reordering. */
+export function tokenLedgerAccountTabId(input) {
+	const value = record(input);
+	const identity = text(value.id || value.origin, 512);
+	if (identity === "") return undefined;
+	let hash = 0xcbf29ce484222325n;
+	for (let index = 0; index < identity.length; index += 1) {
+		hash ^= BigInt(identity.charCodeAt(index));
+		hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+	}
+	return `account:${hash.toString(36).padStart(13, "0")}`;
+}
+
 function number(value) {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -295,6 +294,10 @@ function actionBar(id, items) {
 	return { kind: "actions", id, items };
 }
 
+function tabs(id, activeId, items) {
+	return { kind: "tabs", id, activeId, items };
+}
+
 function column(children, gap = 1) {
 	return { kind: "stack", direction: "column", gap, children: children.filter(Boolean).map((node) => ({ node })) };
 }
@@ -307,10 +310,6 @@ function sections(value) {
 	return { kind: "sections", sections: value };
 }
 
-function navigationLabel(items, activeId, fallback) {
-	return items.find((item) => item.id === activeId)?.label ?? fallback;
-}
-
 function cancelableLoader(messageText) {
 	return column([
 		{ kind: "loader", message: messageText, variant: "braille" },
@@ -318,20 +317,6 @@ function cancelableLoader(messageText) {
 			{ id: "tokenledger.cancel", label: "取消加载" }
 		])
 	]);
-}
-
-function totalsRows(value) {
-	const totals = record(value);
-	return [
-		row("令牌总数", fmt(totals.tokens)),
-		row("请求数", fmt(totals.requests)),
-		row("输入", fmt(totals.inputTokens)),
-		row("缓存读取", fmt(totals.cacheReadTokens)),
-		row("缓存写入", fmt(totals.cacheWriteTokens)),
-		row("输出", fmt(totals.outputTokens)),
-		row("推理", fmt(totals.reasoningTokens)),
-		row("缓存命中率", percentage(totals.cacheHitRate))
-	];
 }
 
 /** Match the WebUI activity strip's quantile-based zero-to-four intensity. */
@@ -412,48 +397,83 @@ function activityCells(source) {
 	return values;
 }
 
-function activityStrip(cells, visibleDays, levelAt) {
-	const visible = cells.slice(-visibleDays);
+function activityWeeks(cells) {
+	const first = dayTime(cells[0]?.day);
+	if (first === undefined) return [];
+	const firstWeekday = (new Date(first).getUTCDay() + 6) % 7;
+	const padded = [...Array.from({ length: firstWeekday }, () => undefined), ...cells];
+	while (padded.length % 7 !== 0) padded.push(undefined);
+	return Array.from({ length: padded.length / 7 }, (_, index) => padded.slice(index * 7, index * 7 + 7));
+}
+
+function activityGrid(weeks, visibleWeeks, levelAt) {
+	const visible = weeks.slice(-visibleWeeks);
+	const labels = ["一", "二", "三", "四", "五", "六", "日"];
 	return {
-		kind: "rich-text",
-		spans: visible.map((cell) => {
-			const level = ACTIVITY_LEVELS[levelAt(cell.tokens)];
-			return { text: `${level.glyph}${level.glyph} `, tone: level.tone };
-		})
+		kind: "stack",
+		direction: "column",
+		gap: 0,
+		children: labels.map((label, weekday) => ({
+			node: {
+				kind: "rich-text",
+				spans: [
+					{ text: `${label} `, tone: "muted" },
+					...visible.map((week) => {
+						const cell = week[weekday];
+						const level = ACTIVITY_LEVELS[cell === undefined ? 0 : levelAt(cell.tokens)];
+						return { text: level.glyph.repeat(ACTIVITY_CELL_WIDTH), tone: level.tone };
+					})
+				]
+			}
+		}))
 	};
+}
+
+function recentActivity(source) {
+	const rows = array(source.activity).map((value) => record(value)).filter((value) => dayTime(text(value.day)) !== undefined);
+	const latest = rows.toSorted((left, right) => text(left.day).localeCompare(text(right.day))).at(-1);
+	if (latest === undefined) return message("暂无活动记录。", "muted");
+	const models = array(source.activityModels)
+		.map((value) => record(value))
+		.filter((value) => text(value.day) === text(latest.day))
+		.toSorted((left, right) => number(right.tokens) - number(left.tokens))
+		.slice(0, 3)
+		.map((value) => `${text(value.model) || "未知模型"} ${fmt(value.tokens)}`);
+	return message([
+		`最近活动：${text(latest.day)} · ${fmt(latest.tokens)} 令牌 · ${fmt(latest.requests)} 次请求`,
+		...(models.length === 0 ? [] : [models.join(" · ")])
+	].join("\n"), "muted");
 }
 
 function activityHeatmap(source) {
 	const cells = activityCells(source);
 	if (cells === undefined) return column([
-		{ kind: "divider", label: "按日活动热力图" },
+		{ kind: "divider", label: "活跃度" },
 		message("暂无可绘制的活动日期。", "muted")
 	], 0);
+	const weeks = activityWeeks(cells);
 	const zone = text(record(source.timeZone).id || record(source.timeZone).offset, 120) || "宿主时区";
 	const levelAt = activityLevelScale(cells.map((cell) => cell.tokens));
-	const variants = Array.from({ length: ACTIVITY_MAX_VISIBLE_DAYS }, (_, index) => {
-		const visibleDays = index + 1;
-		const minWidth = visibleDays * ACTIVITY_CELL_WIDTH + ACTIVITY_SURFACE_COLUMNS;
-		return {
-			node: activityStrip(cells, visibleDays, levelAt),
-			when: {
-				...(visibleDays === 1 ? {} : { minWidth }),
-				...(visibleDays === ACTIVITY_MAX_VISIBLE_DAYS ? {} : { maxWidth: minWidth + ACTIVITY_CELL_WIDTH - 1 })
-			}
-		};
-	});
+	const variants = [
+		{ weeks: Math.min(16, weeks.length), when: { maxWidth: 39 } },
+		{ weeks: Math.min(18, weeks.length), when: { minWidth: 40, maxWidth: 63 } },
+		{ weeks: Math.min(30, weeks.length), when: { minWidth: 64, maxWidth: 87 } },
+		{ weeks: Math.min(42, weeks.length), when: { minWidth: 88, maxWidth: 111 } },
+		{ weeks: Math.min(ACTIVITY_MAX_VISIBLE_WEEKS, weeks.length), when: { minWidth: 112 } }
+	].map((variant) => ({ node: activityGrid(weeks, variant.weeks, levelAt), when: variant.when }));
 	return column([
-		{ kind: "divider", label: "按日活动热力图" },
-		message(`截止 ${cells.at(-1).day} · ${zone} · 按宽度显示最近日期 · 完整 371 天见“明细 → 活动”`, "muted"),
+		{ kind: "divider", label: "活跃度" },
+		message(`截止 ${cells.at(-1).day} · ${zone}`, "muted"),
 		{ kind: "stack", direction: "column", gap: 0, children: variants },
 		{
 			kind: "rich-text",
 			spans: [
 				{ text: "少 ", tone: "muted" },
-				...ACTIVITY_LEVELS.map((level) => ({ text: `${level.glyph}${level.glyph} `, tone: level.tone })),
+				...ACTIVITY_LEVELS.map((level) => ({ text: `${level.glyph.repeat(ACTIVITY_CELL_WIDTH)} `, tone: level.tone })),
 				{ text: "多", tone: "muted" }
 			]
-		}
+		},
+		recentActivity(source)
 	], 0);
 }
 
@@ -465,14 +485,15 @@ function pricedRows(priced) {
 function pagination(key, state, total) {
 	const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 	const current = Math.min(integer(record(state.pages)[key]), pages - 1);
+	const shortcutFor = key === "projects" ? "*" : key === "accounts" ? "tokenledger.account-tabs" : `tokenledger.${key}`;
 	return {
 		page: current,
 		pages,
 		start: current * PAGE_SIZE,
 		end: Math.min(total, (current + 1) * PAGE_SIZE),
 		node: actionBar(`tokenledger.page.${key}`, [
-			{ id: `tokenledger.page.${key}.prev`, label: "PgUp 上一页", shortcut: "pageup", shortcutFor: `tokenledger.${key}`, focusable: false, disabled: current === 0 },
-			{ id: `tokenledger.page.${key}.next`, label: "PgDn 下一页", shortcut: "pagedown", shortcutFor: `tokenledger.${key}`, focusable: false, disabled: current + 1 >= pages }
+			{ id: `tokenledger.page.${key}.prev`, label: "PgUp 上一页", shortcut: "pageup", shortcutFor, focusable: false, disabled: current === 0 },
+			{ id: `tokenledger.page.${key}.next`, label: "PgDn 下一页", shortcut: "pagedown", shortcutFor, focusable: false, disabled: current + 1 >= pages }
 		])
 	};
 }
@@ -514,19 +535,16 @@ function boundaryNotice(source) {
 	const labels = {
 		days: "所选范围的日期",
 		activity: "活动日期",
-		activityModels: "活动模型记录",
 		models: "模型",
 		sites: "站点",
 		projects: "项目",
-		providers: "提供方",
-		directory: "目录项",
 		accounts: "账户",
 		pricedRows: "计价记录"
 	};
 	const omitted = Object.entries(record(source.collectionBounds))
-		.map(([key, value]) => [key, integer(record(value).omittedCount)])
-		.filter(([, count]) => count > 0)
-		.map(([key, count]) => `${labels[key] ?? key}：初始边界外还有 ${String(count)} 条`);
+		.map(([key, value]) => [key, labels[key], integer(record(value).omittedCount)])
+		.filter(([, label, count]) => label !== undefined && count > 0)
+		.map(([, label, count]) => `${label}：初始边界外还有 ${String(count)} 条`);
 	const nested = array(source.boundaryOmissions).reduce((sum, value) => sum + integer(record(value).omittedCount), 0);
 	const details = [
 		...omitted,
@@ -545,95 +563,76 @@ function collectionNotice(source, collection, label) {
 }
 
 function selectedTotals(state) {
-	if (state.view !== undefined && integer(state.viewRevision) >= integer(state.snapshot?.revision)) return record(state.view.totals);
+	if (state.view !== undefined) return record(state.view.totals);
 	return record(record(state.snapshot?.totals).selected);
 }
 
-function overview(state) {
-	const source = state.view ?? state.snapshot ?? {};
+function usageDashboard(state, source) {
 	const totals = selectedTotals(state);
 	const windows = state.view === undefined ? record(state.snapshot?.totals) : record(state.view.windows);
 	const windowItems = RANGE_ITEMS.map((item) => {
 		const total = record(windows[item.id]);
 		return {
-			id: `range:${item.id}`,
-			label: item.label,
-			detail: `${fmt(total.tokens)} 令牌 · ${fmt(total.requests)} 次请求`,
-			...(state.range === item.id ? { badge: "当前" } : {})
+			id: item.id,
+			label: `${item.label} ${fmt(total.tokens)}`
 		};
 	});
-	const diagnostics = record(source.diagnostics);
-	const timeZone = record(source.timeZone);
-	const freshness = state.view === undefined ? record(state.snapshot?.freshness) : source;
 	return column([
-		boundaryNotice(source),
-		sections([
-			section("当前用量", fields([...totalsRows(totals), ...pricedRows(source.priced)]))
-		]),
-		activityHeatmap(source),
-		{ kind: "divider", label: "统计范围" },
-		listNode("tokenledger.range-list", windowItems, `range:${state.range}`, "没有可用的统计范围"),
-		sections([
-			section("数据状态", fields([
-				row("站点筛选", state.site === undefined ? "全部站点" : state.site),
-				row("生成时间", fmt(source.generatedAt ?? state.snapshot?.capturedAt)),
-				row("最近扫描", fmt(freshness.lastSweepAt)),
-				row("宿主时区", text(timeZone.id || timeZone.offset || "未知", 120)),
-				row("已索引会话", fmt(diagnostics.sessions)),
-				row("未归属记录", fmt(diagnostics.unattributedRows)),
-				row("当前会话", state.sessionId === undefined ? "未授权读取" : state.sessionId)
-			]))
-		]),
-		actionBar("tokenledger.overview.actions", [
-			{ id: "tokenledger.refresh", label: "刷新用量", intent: "primary", busy: state.busyAction === "usage.refresh" },
-			{ id: "tokenledger.clear-site", label: "全部站点", disabled: state.site === undefined },
-			{ id: "tokenledger.rebuild", label: "重建索引", intent: "danger", confirm: "要从持久化会话日志重新构建 TokenLedger 索引吗？", busy: state.busyAction === "index.rebuild" }
+		{ kind: "divider", label: "Token 用量" },
+		tabs("tokenledger.range-tabs", RANGE_ITEMS.some((item) => item.id === state.range) ? state.range : "all", windowItems),
+		fields([
+			row("请求数", fmt(totals.requests)),
+			row("缓存命中率", percentage(totals.cacheHitRate)),
+			...pricedRows(source.priced)
 		])
 	]);
 }
 
-function siteRows(state, source) {
+function siteDistribution(values, total, width) {
+	const tones = ["accent", "muted", "warning", "success"];
+	let remaining = width;
+	return {
+		kind: "rich-text",
+		spans: values.map((value, index) => {
+			const share = total > 0 ? number(record(value).tokens) / total : 0;
+			const size = index + 1 === values.length ? remaining : Math.min(remaining, Math.max(1, Math.round(share * width)));
+			remaining -= size;
+			return { text: "█".repeat(Math.max(0, size)), tone: tones[index % tones.length] };
+		}).filter((value) => value.text !== "")
+	};
+}
+
+function siteDashboard(state, source) {
 	const localValues = array(source.sites);
 	const window = collectionWindow("sites", state, source, localValues);
 	const { page } = window;
 	const total = number(record(source.totals).tokens) || localValues.reduce((sum, value) => sum + number(record(value).tokens), 0);
-	const directoryValues = [...array(source.directory), ...array(record(record(state.collectionPages).directory).items)];
-	const directory = new Map(directoryValues.map((value) => [text(record(value).id), record(value)]));
 	const rows = window.values.map((value, offset) => {
 		const item = record(value);
 		const site = text(item.site) || "未知站点";
-		const directoryEntry = directory.get(site);
 		const share = total > 0 ? (number(item.tokens) / total) * 100 : 0;
 		return {
 			id: `site:${String(page.start + offset)}`,
 			label: site === "direct" ? "直连 / 官方" : site === "unrouted" ? "未知路由" : site,
-			detail: `${fmt(item.tokens)} 令牌 · ${fmt(item.requests)} 次请求 · ${share.toFixed(1)}%`,
-			...(text(directoryEntry?.type) || site === "direct" ? { badge: text(directoryEntry?.type) || "直连" } : {})
+			detail: `${fmt(item.tokens)} 令牌 · ${fmt(item.requests)} 次请求 · ${share.toFixed(1)}%`
 		};
 	});
-	const selectedOffset = window.values.findIndex((value) => text(record(value).site) === state.siteDetail);
-	const selectedLocal = localValues.find((value) => text(record(value).site) === state.siteDetail);
-	const selected = selectedOffset >= 0 ? record(window.values[selectedOffset]) : selectedLocal === undefined ? undefined : record(selectedLocal);
-	const selectedIndex = selectedOffset >= 0 ? page.start + selectedOffset : localValues.indexOf(selectedLocal);
-	const directoryEntry = selected === undefined ? undefined : directory.get(text(selected.site));
+	const selectedIndex = window.values.findIndex((value) => text(record(value).site) === state.site);
 	return column([
+		{ kind: "divider", label: "中转站分布" },
+		{
+			kind: "stack",
+			direction: "column",
+			gap: 0,
+			children: [
+				{ node: siteDistribution(localValues, total, 12), when: { maxWidth: 39 } },
+				{ node: siteDistribution(localValues, total, 32), when: { minWidth: 40 } }
+			]
+		},
 		collectionNotice(source, "sites", "站点"),
-		collectionNotice(source, "directory", "中转站目录"),
-		listNode("tokenledger.sites", rows, selectedIndex >= page.start && selectedIndex < page.end ? `site:${String(selectedIndex)}` : undefined, "此范围内没有站点"),
-		message(`第 ${String(page.page + 1)} / ${String(page.pages)} 页 · 共 ${String(window.total)} 个站点`, "muted"),
-		page.node,
-		selected === undefined ? undefined : sections([
-			section("已选站点", fields([
-				row("站点", text(selected.site)),
-				...totalsRows(selected),
-				row("软件", text(directoryEntry?.type) || "未知"),
-				row("路由", array(directoryEntry?.routes).map((value) => text(value)).filter(Boolean).join(", ") || "-")
-			]))
-		]),
-		actionBar("tokenledger.site.actions", [
-			{ id: "tokenledger.filter-selected-site", label: "仅查看所选站点", disabled: selected === undefined || text(selected.site) === state.site },
-			{ id: "tokenledger.clear-site", label: "清除筛选", disabled: state.site === undefined }
-		])
+		listNode("tokenledger.sites", rows, selectedIndex >= 0 ? `site:${String(page.start + selectedIndex)}` : undefined, "此范围内没有站点"),
+		page.pages > 1 ? message(`第 ${String(page.page + 1)} / ${String(page.pages)} 页 · 共 ${String(window.total)} 个站点`, "muted") : undefined,
+		page.pages > 1 ? page.node : undefined
 	]);
 }
 
@@ -644,13 +643,14 @@ function modelCost(source, model) {
 	return priced === undefined ? undefined : optionalNumber(record(priced).cost);
 }
 
-function modelRows(state, source) {
+function modelDashboard(state, source) {
 	const values = array(source.models).map((value) => record(value));
 	const sortKey = MODEL_SORTS.some((item) => item.id === state.modelSort) ? state.modelSort : "tokens";
+	const direction = state.modelSortDirection === "asc" ? 1 : -1;
 	const sorted = values.map((value) => ({ value, cost: modelCost(source, value) })).sort((left, right) => {
 		const leftValue = sortKey === "cost" ? left.cost ?? -1 : number(left.value[sortKey]);
 		const rightValue = sortKey === "cost" ? right.cost ?? -1 : number(right.value[sortKey]);
-		return rightValue - leftValue || text(left.value.model).localeCompare(text(right.value.model));
+		return direction * (leftValue - rightValue) || text(left.value.model).localeCompare(text(right.value.model));
 	});
 	const window = collectionWindow("models", state, source, sorted.map((entry) => entry.value));
 	const { page } = window;
@@ -658,123 +658,43 @@ function modelRows(state, source) {
 	const rows = pageEntries.map((entry, offset) => ({
 		id: `model:${String(page.start + offset)}`,
 		label: text(entry.value.model) || "未知模型",
-		detail: `${fmt(entry.value.tokens)} 令牌 · ${fmt(entry.value.requests)} 次请求 · 缓存命中 ${percentage(entry.value.cacheHitRate)}`,
+		detail: `${fmt(entry.value.requests)} 次请求 · 总量 ${fmt(entry.value.tokens)} · 输入 ${fmt(entry.value.inputTokens)} · 缓存 ${fmt(entry.value.cacheReadTokens)} · 输出 ${fmt(entry.value.outputTokens)}`,
 		...(entry.cost === undefined ? {} : { badge: money(entry.cost, record(entry.value.pricing).currency || record(source.priced).currency) })
 	}));
-	const selectedOffset = pageEntries.findIndex((entry) => text(entry.value.model) === state.selectedModel);
-	const selectedLocal = sorted.find((entry) => text(entry.value.model) === state.selectedModel);
-	const selected = selectedOffset >= 0 ? pageEntries[selectedOffset] : selectedLocal;
-	const selectedIndex = selectedOffset >= 0 ? page.start + selectedOffset : sorted.indexOf(selectedLocal);
 	return column([
-		{
-			kind: "form",
-			id: "tokenledger.model-sort-form",
-			fields: [{ kind: "select", id: "sort", label: "模型排序", value: sortKey, options: MODEL_SORTS }],
-			submitActionId: "应用排序"
-		},
+		{ kind: "divider", label: "模型" },
+		actionBar("tokenledger.model-sort-actions", MODEL_SORTS.map((item) => ({
+			id: `tokenledger.model-sort.${item.id}`,
+			label: `${item.label}${sortKey === item.id ? state.modelSortDirection === "asc" ? " ↑" : " ↓" : ""}`,
+			...(sortKey === item.id ? { intent: "primary" } : {})
+		}))),
 		collectionNotice(source, "models", "模型"),
 		collectionNotice(source, "pricedRows", "计价记录"),
-		listNode("tokenledger.models", rows, selectedIndex >= page.start && selectedIndex < page.end ? `model:${String(selectedIndex)}` : undefined, "此范围内没有模型"),
-		message(`第 ${String(page.page + 1)} / ${String(page.pages)} 页 · 共 ${String(window.total)} 个模型`, "muted"),
-		page.node,
-		selected === undefined ? undefined : sections([
-			section("已选模型", fields([
-				row("模型", text(selected.value.model)),
-				...totalsRows(selected.value),
-				row("预估费用", selected.cost === undefined ? "-" : money(selected.cost, record(source.priced).currency))
-			]))
-		])
+		listNode("tokenledger.models", rows, undefined, "此范围内没有模型"),
+		page.pages > 1 ? message(`第 ${String(page.page + 1)} / ${String(page.pages)} 页 · 共 ${String(window.total)} 个模型`, "muted") : undefined,
+		page.pages > 1 ? page.node : undefined
 	]);
 }
 
-function genericBreakdownRows(state, source, key, identity, labelOf, detailOf, title) {
-	const values = array(source[key]).map((value) => record(value));
+function projectDashboard(state, source) {
+	const values = array(source.projects).map((value) => record(value));
 	const sorted = values.toSorted((left, right) => number(right.tokens) - number(left.tokens));
-	const window = collectionWindow(key, state, source, sorted);
+	const window = collectionWindow("projects", state, source, sorted);
 	const { page } = window;
+	const total = number(record(source.totals).tokens) || sorted.reduce((sum, value) => sum + number(value.tokens), 0);
 	const rows = window.values.map((value, offset) => ({
-		id: `${key}:${String(page.start + offset)}`,
-		label: text(labelOf(value)) || `未知${title}`,
-		detail: text(detailOf(value), DETAIL_LIMIT)
+		id: `project:${String(offset)}`,
+		label: value.unattributed === true || text(value.project) === "" ? "未记录目录" : text(value.label || value.project) || "未知项目",
+		detail: `${fmt(value.tokens)} 令牌 · ${total > 0 ? ((number(value.tokens) / total) * 100).toFixed(1) : "0.0"}%${text(value.project) === "" ? "" : ` · ${text(value.project, 320)}`}`
 	}));
-	const selectedValue = state[identity];
-	const selectedOffset = window.values.findIndex((value) => text(labelOf(record(value))) === selectedValue);
-	const selectedLocal = sorted.find((value) => text(labelOf(value)) === selectedValue);
-	const selected = selectedOffset >= 0 ? record(window.values[selectedOffset]) : selectedLocal;
-	const selectedIndex = selectedOffset >= 0 ? page.start + selectedOffset : sorted.indexOf(selectedLocal);
+	const pending = record(state.pendingPage);
 	return column([
-		collectionNotice(source, key, title),
-		listNode(`tokenledger.${key}`, rows, selectedIndex >= page.start && selectedIndex < page.end ? `${key}:${String(selectedIndex)}` : undefined, `此范围内没有${title}`),
-		message(`第 ${String(page.page + 1)} / ${String(page.pages)} 页 · 共 ${String(window.total)} 个${title}`, "muted"),
-		page.node,
-		selected === undefined ? undefined : sections([
-			section(`已选${title}`, fields([
-				row("名称", text(labelOf(selected))),
-				...totalsRows(selected),
-				...(text(selected.path) === "" ? [] : [row("路径", text(selected.path, DETAIL_LIMIT))])
-			]))
-		])
-	]);
-}
-
-function activityRows(state, source) {
-	const values = array(source.activity).map((value) => record(value)).toReversed();
-	const window = collectionWindow("activity", state, source, values);
-	const { page } = window;
-	const rows = window.values.map((value, offset) => ({
-		id: `activity:${String(page.start + offset)}`,
-		label: text(value.day) || "未知日期",
-		detail: `${fmt(value.tokens)} 令牌 · ${fmt(value.requests)} 次请求`
-	}));
-	const selectedOffset = window.values.findIndex((value) => text(record(value).day) === state.selectedDay);
-	const selectedLocal = values.find((value) => text(value.day) === state.selectedDay);
-	const selected = selectedOffset >= 0 ? record(window.values[selectedOffset]) : selectedLocal;
-	const selectedIndex = selectedOffset >= 0 ? page.start + selectedOffset : values.indexOf(selectedLocal);
-	const localModels = selected === undefined ? [] : array(source.activityModels)
-		.map((value) => record(value))
-		.filter((value) => text(value.day) === text(selected.day))
-		.toSorted((left, right) => number(right.tokens) - number(left.tokens));
-	const modelWindow = collectionWindow("activity-models", state, source, localModels, {
-		collection: "activityModels",
-		day: text(selected?.day),
-		filtered: true
-	});
-	const modelPage = modelWindow.page;
-	return column([
-		collectionNotice(source, "activity", "活动日期"),
-		listNode("tokenledger.activity", rows, selectedIndex >= page.start && selectedIndex < page.end ? `activity:${String(selectedIndex)}` : undefined, "固定历史窗口内没有活动"),
-		message(`第 ${String(page.page + 1)} / ${String(page.pages)} 页 · 共 ${String(window.total)} 天`, "muted"),
-		page.node,
-		selected === undefined ? undefined : sections([
-			section("已选日期", fields([row("日期", text(selected.day)), ...totalsRows(selected)]))
-		]),
-		selected === undefined ? undefined : { kind: "divider", label: "当日模型" },
-		selected === undefined ? undefined : collectionNotice(source, "activityModels", "活动模型记录"),
-		selected === undefined ? undefined : listNode("tokenledger.activity-models", modelWindow.values.map((value, offset) => ({
-				id: `activity-model:${String(modelPage.start + offset)}`,
-				label: text(value.model) || "未知模型",
-				detail: `${fmt(value.tokens)} 令牌 · ${fmt(value.requests)} 次请求`
-			})), undefined, "当日没有模型明细"),
-		selected === undefined ? undefined : message(`第 ${String(modelPage.page + 1)} / ${String(modelPage.pages)} 页 · 共 ${String(modelWindow.total)} 个模型`, "muted"),
-		selected === undefined ? undefined : modelPage.node
-	]);
-}
-
-function breakdown(state) {
-	const source = state.view ?? {};
-	let body;
-	if (state.breakdownTab === "models") body = modelRows(state, source);
-	else if (state.breakdownTab === "projects") {
-		body = genericBreakdownRows(state, source, "projects", "selectedProject", (value) => value.unattributed === true ? "未归属" : value.label || value.project, (value) => `${fmt(value.tokens)} 令牌 · ${text(value.path, 320)}`, "项目");
-	} else if (state.breakdownTab === "providers") {
-		body = genericBreakdownRows(state, source, "providers", "selectedProvider", (value) => value.provider, (value) => `${fmt(value.tokens)} 令牌 · ${fmt(value.requests)} 次请求`, "提供方");
-	} else if (state.breakdownTab === "activity") body = activityRows(state, source);
-	else body = siteRows(state, source);
-	return column([
-		boundaryNotice(source),
-		{ kind: "tabs", id: "tokenledger.breakdown.tabs", activeId: state.breakdownTab, items: BREAKDOWN_TABS },
-		{ kind: "divider", label: `当前明细：${navigationLabel(BREAKDOWN_TABS, state.breakdownTab, "站点")}` },
-		body
+		{ kind: "divider", label: "按项目" },
+		collectionNotice(source, "projects", "项目"),
+		pending.key === "projects" ? message(`正在读取第 ${String(integer(pending.page) + 1)} 页，其他数据保持不变。`, "muted") : undefined,
+		listNode("tokenledger.projects", rows, undefined, "此范围内没有项目"),
+		page.pages > 1 ? message(`第 ${String(page.page + 1)} / ${String(page.pages)} 页 · 共 ${String(window.total)} 个项目`, "muted") : undefined,
+		page.pages > 1 ? page.node : undefined
 	]);
 }
 
@@ -782,127 +702,92 @@ function accountLabel(value) {
 	return text(value.displayName || value.name || value.id || value.origin) || "未知账户";
 }
 
-function accounts(state) {
-	const source = state.view ?? state.snapshot ?? {};
+function accountDashboard(state, source) {
 	const values = array(source.accounts).map((value) => record(value));
 	const window = collectionWindow("accounts", state, source, values);
 	const { page } = window;
-	const rows = window.values.map((value, offset) => ({
-		id: `account:${String(page.start + offset)}`,
-		label: accountLabel(value),
-		detail: [text(value.origin, 320), text(value.provider, 80), text(value.type, 80)].filter(Boolean).join(" · "),
-		...(value.userToken === true || value.hasToken === true ? { badge: "个人钱包" } : {})
+	const items = window.values.map((value, offset) => ({
+		id: tokenLedgerAccountTabId(value) ?? `account:${String(page.start + offset)}`,
+		label: accountLabel(value)
 	}));
 	const selectedOffset = window.values.findIndex((value) => text(record(value).id || record(value).origin) === state.selectedAccount);
-	const selectedLocal = values.find((value) => text(value.id || value.origin) === state.selectedAccount);
-	const selected = selectedOffset >= 0 ? record(window.values[selectedOffset]) : selectedLocal ?? record(window.values[0]);
-	const resolvedIndex = selectedOffset >= 0 ? page.start + selectedOffset : selectedLocal === undefined ? page.start : values.indexOf(selectedLocal);
-	const balance = state.balance;
+	const selected = record(selectedOffset >= 0 ? window.values[selectedOffset] : window.values[0]);
+	const selectedId = text(selected.id || selected.origin) || undefined;
+	const activeTabId = tokenLedgerAccountTabId(selected) ?? items[0]?.id;
+	const balance = selectedId !== undefined && state.balanceAccount === selectedId ? state.balance : undefined;
 	const windows = array(record(balance).windows);
-	const quotaPage = pagination("quota-windows", state, windows.length);
+	const status = balance === undefined
+		? state.busyAction === "balance.refresh" ? "读取中" : "-"
+		: balance.fetched === false ? "读取失败" : balance.isAvailable === false ? "不可用" : "可用";
+	const available = balance === undefined ? "-" : balance.total === undefined ? fmt(record(balance.quota).available) : money(balance.total, balance.currency);
+	const used = balance?.used === undefined ? "-" : money(balance.used, balance.currency);
+	const granted = balance?.granted === undefined ? "-" : money(balance.granted, balance.currency);
 	return column([
-		boundaryNotice(source),
+		{ kind: "divider", label: "余额" },
 		collectionNotice(source, "accounts", "账户"),
-		listNode("tokenledger.accounts", rows, resolvedIndex >= page.start && resolvedIndex < page.end ? `account:${String(resolvedIndex)}` : undefined, "没有发现可查询余额的账户"),
-		message(`第 ${String(page.page + 1)} / ${String(page.pages)} 页 · 共 ${String(window.total)} 个账户`, "muted"),
-		page.node,
-		selected === undefined ? undefined : sections([
-			section("已选账户", fields([
-				row("账户", accountLabel(selected)),
-				row("ID", text(selected.id) || "-"),
-				row("来源地址", text(selected.origin, DETAIL_LIMIT) || "-"),
-				row("提供方", text(selected.provider || selected.type) || "-")
-			])),
-			...(balance === undefined ? [] : [section("余额", fields([
-				row("状态", balance.fetched === false ? "读取失败" : balance.isAvailable === false ? "不可用" : "可用"),
-				row("可用额度", balance.total === undefined ? fmt(record(balance.quota).available) : money(balance.total, balance.currency)),
-				row("已使用", balance.used === undefined ? "-" : money(balance.used, balance.currency)),
-				row("总额度", balance.granted === undefined ? "-" : money(balance.granted, balance.currency)),
-				row("套餐", text(balance.plan) || "-"),
-				row("数据源", text(balance.scheme) || "-")
-			]))])
+		items.length === 0
+			? message("没有发现可查询余额的账户。", "muted")
+			: tabs("tokenledger.account-tabs", activeTabId, items),
+		page.pages > 1 ? message(`第 ${String(page.page + 1)} / ${String(page.pages)} 页 · 共 ${String(window.total)} 个账户`, "muted") : undefined,
+		page.pages > 1 ? page.node : undefined,
+		...(items.length === 0 ? [] : [
+			message(`账户：${accountLabel(selected)} · 来源：${text(selected.origin, DETAIL_LIMIT) || "-"} · 提供方：${text(selected.provider || selected.type) || "-"}`),
+			message(`状态：${status} · 可用：${available} · 已使用：${used} · 总额度：${granted} · 套餐：${text(balance?.plan) || "-"} · 数据源：${text(balance?.scheme) || "-"}`)
 		]),
 		balance?.boundaryTruncated === true ? boundaryNotice(balance) : undefined,
-		balance === undefined ? undefined : { kind: "divider", label: "额度周期" },
-		balance === undefined ? undefined : listNode("tokenledger.quota-windows", windows.slice(quotaPage.start, quotaPage.end).map((value, offset) => {
-			const window = record(value);
-			return { id: `quota:${String(quotaPage.start + offset)}`, label: text(window.kind) || "额度周期", detail: `已使用 ${percentage(window.usedPercent)} · 重置时间 ${fmt(window.resetsAt)}` };
-		}), undefined, "没有额度周期数据"),
-		balance === undefined ? undefined : message(`第 ${String(quotaPage.page + 1)} / ${String(quotaPage.pages)} 页 · 共 ${String(windows.length)} 个周期`, "muted"),
-		balance === undefined ? undefined : quotaPage.node,
-		actionBar("tokenledger.account.actions", [
-			{ id: "tokenledger.balance.refresh", label: "刷新余额", intent: "primary", disabled: selected === undefined, busy: state.busyAction === "balance.refresh" }
-		])
-	]);
-}
-
-function exportView(state) {
-	const result = state.exportResult;
-	const content = result?.content ?? "";
-	const pages = Math.max(1, Math.ceil(content.length / EXPORT_PAGE_CHARS));
-	const page = Math.min(integer(state.exportPage), pages - 1);
-	const snippet = content.slice(page * EXPORT_PAGE_CHARS, (page + 1) * EXPORT_PAGE_CHARS);
-	return column([
-		{
-			kind: "form",
-			id: "tokenledger.export-form",
-			fields: [{
-				kind: "select",
-				id: "format",
-				label: "格式",
-				value: state.exportFormat === "csv" ? "csv" : "json",
-				options: [{ id: "json", label: "JSON" }, { id: "csv", label: "CSV" }]
-			}],
-			submitActionId: "生成导出内容"
-		},
-		result === undefined ? { kind: "empty", title: "尚未生成导出文件", description: "通过 TokenLedger 公开服务生成有界导出内容。" } : sections([
-			section("导出信息", fields([
-				row("文件名", result.fileName || `tokenledger.${result.format}`),
-				row("MIME 类型", result.mimeType || "-"),
-				row("字符数", fmt(content.length)),
-				row("预览页", `${String(page + 1)} / ${String(pages)}`)
-			])),
-			section("完整分页内容", { kind: "code", code: snippet, language: result.format })
+		windows.length === 0 ? undefined : sections([
+			section("额度周期", fields(windows.map((value) => {
+				const window = record(value);
+				return row(text(window.kind) || "额度周期", `已使用 ${percentage(window.usedPercent)} · 重置时间 ${text(window.resetsAt) || "-"}`);
+			})))
 		]),
-		actionBar("tokenledger.export.actions", [
-			{ id: "tokenledger.export.prev", label: "PgUp 上一页", shortcut: "pageup", shortcutFor: "tokenledger.export-form", focusable: false, disabled: result === undefined || page === 0 },
-			{ id: "tokenledger.export.next", label: "PgDn 下一页", shortcut: "pagedown", shortcutFor: "tokenledger.export-form", focusable: false, disabled: result === undefined || page + 1 >= pages },
-			{ id: "tokenledger.export.clear", label: "清除", disabled: result === undefined }
-		])
-	]);
+		state.busyAction === "balance.refresh" ? message("正在刷新账户余额，当前数据保持不变。", "muted") : undefined
+	], 0);
 }
 
 /** Build the complete TokenLedger Blue dashboard for the current frontend tree. */
 export function buildTokenLedgerView(stateInput) {
 	const state = stateInput ?? {};
-	const activeTab = TABS.some((item) => item.id === state.tab) ? state.tab : "overview";
-	const pageLabel = navigationLabel(TABS, activeTab, "总览");
+	const source = state.view ?? state.snapshot ?? {};
 	let body;
 	if (state.serviceAvailable !== true) {
 		body = { kind: "empty", title: "TokenLedger 服务暂不可用", description: "Blue 正在等待 tokenLedgerV1；用量采集和原有 Web 界面不受影响。" };
-	} else if (state.tab === "breakdown") body = breakdown(state);
-	else if (state.tab === "accounts") body = accounts(state);
-	else if (state.tab === "export") body = exportView(state);
-	else body = overview(state);
+	} else body = column([
+		boundaryNotice(source),
+		accountDashboard(state, source),
+		usageDashboard(state, source),
+		siteDashboard(state, source),
+		projectDashboard(state, source),
+		activityHeatmap(source),
+		modelDashboard(state, source),
+		sections([
+			section("数据状态", fields([
+				row("最近扫描", fmt(source.lastSweepAt ?? record(state.snapshot?.freshness).lastSweepAt)),
+				row("最近活动", fmt(record(source.diagnostics).lastUsageAt)),
+				row("未归属记录", fmt(record(source.diagnostics).unattributedRows))
+			]))
+		]),
+		actionBar("tokenledger.dashboard-actions", [
+			{ id: "tokenledger.refresh", label: "刷新", intent: "primary", busy: state.busyAction === "usage.refresh" || state.busyAction === "balance.refresh" }
+		])
+	]);
 	const content = column([
-		{ kind: "tabs", id: "tokenledger.tabs", activeId: activeTab, items: TABS },
-		{ kind: "divider", label: `当前页：${pageLabel}` },
-		message("操作：Tab/Shift+Tab 切换标签层级 · ←/→ 直接切换本层标签页 · ↓ 进入内容 · ↑/↓ 浏览内容 · Enter/Space 选择内容项 · PgUp/PgDn 翻页", "muted"),
 		state.error ? message(state.error, "danger") : undefined,
 		state.loading === true && state.view === undefined ? cancelableLoader("正在加载 TokenLedger") : undefined,
 		body
 	]);
 	return freezeNode({
 		kind: "surface",
-		title: `TokenLedger · ${pageLabel}`,
-		subtitle: state.site === undefined ? "全部中转站" : `已筛选：${text(state.site)}`,
+		title: "TokenLedger 用量账本",
+		subtitle: state.site === undefined ? "全部中转站" : `只看：${text(state.site)}`,
 		badges: [
-			{ text: state.range === "today" ? "今天" : state.range === "month" ? "本月" : "全部时间", tone: "accent" },
+			{ text: state.range === "today" ? "今日" : state.range === "month" ? "本月" : "累计", tone: "accent" },
 			...(state.busyAction === undefined ? [] : [{ text: "处理中", tone: "warning" }])
 		],
 		chrome: "overlay",
 		padding: 1,
-		child: { kind: "scroll", child: content, follow: "none", scrollbar: true }
+		child: { kind: "scroll", child: content, follow: "none", scrollbar: true },
+		footer: message("Tab 切换账户/区间 · ←/→ 切换当前标签 · ↓ 进入内容 · PgUp/PgDn 项目翻页 · Esc 关闭", "muted")
 	});
 }
 
@@ -912,8 +797,7 @@ export const TOKEN_LEDGER_BLUE_MODEL = Object.freeze({
 	exportPageChars: EXPORT_PAGE_CHARS,
 	activityDays: ACTIVITY_DAYS,
 	activityCellWidth: ACTIVITY_CELL_WIDTH,
-	tabs: deepFreeze(TABS),
-	breakdownTabs: deepFreeze(BREAKDOWN_TABS),
+	activityMaxVisibleWeeks: ACTIVITY_MAX_VISIBLE_WEEKS,
 	ranges: deepFreeze(RANGE_ITEMS),
 	modelSorts: deepFreeze(MODEL_SORTS)
 });

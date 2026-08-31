@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS session_rollups (
 
 CREATE INDEX IF NOT EXISTS idx_rollups_day  ON session_rollups (day);
 CREATE INDEX IF NOT EXISTS idx_rollups_site ON session_rollups (site, day);
+CREATE INDEX IF NOT EXISTS idx_rollups_provider ON session_rollups (provider, day);
 
 -- Which directory a session ran in, which is what "project" means here.
 --
@@ -95,7 +96,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 ) WITHOUT ROWID;
 `;
 
-function rangeClause(range = {}, site = undefined, prefix = "") {
+function rangeClause(range = {}, site = undefined, prefix = "", provider = undefined) {
 	const where = [];
 	const params = [];
 	if (range.from !== undefined) {
@@ -109,6 +110,10 @@ function rangeClause(range = {}, site = undefined, prefix = "") {
 	if (site !== undefined) {
 		where.push(`${prefix}site = ?`);
 		params.push(site);
+	}
+	if (provider !== undefined) {
+		where.push(`${prefix}provider = ?`);
+		params.push(provider);
 	}
 	return { sql: where.length > 0 ? `WHERE ${where.join(" AND ")}` : "", params };
 }
@@ -347,24 +352,24 @@ export class LedgerStore {
 		});
 	}
 
-	/** Totals over a date range, optionally restricted to one relay site. */
-	totals(range = {}, site = undefined) {
-		const { sql, params } = rangeClause(range, site);
+	/** Totals over a date range, optionally restricted to one site and provider route. */
+	totals(range = {}, site = undefined, provider = undefined) {
+		const { sql, params } = rangeClause(range, site, "", provider);
 		return decorate(this.#db.prepare(`SELECT ${SUMS} FROM session_rollups ${sql}`).get(...params));
 	}
 
 	/** Per-day totals, ascending. */
-	byDay(range = {}, site = undefined) {
-		const { sql, params } = rangeClause(range, site);
+	byDay(range = {}, site = undefined, provider = undefined) {
+		const { sql, params } = rangeClause(range, site, "", provider);
 		return this.#db
 			.prepare(`SELECT day, ${SUMS} FROM session_rollups ${sql} GROUP BY day ORDER BY day`)
 			.all(...params)
 			.map(decorate);
 	}
 
-	/** Per-model totals, descending by billed tokens. Site is a filter. */
-	byModel(range = {}, site = undefined) {
-		const { sql, params } = rangeClause(range, site);
+	/** Per-model totals, descending by billed tokens. Site and provider are filters. */
+	byModel(range = {}, site = undefined, provider = undefined) {
+		const { sql, params } = rangeClause(range, site, "", provider);
 		return this.#db
 			.prepare(`SELECT model, ${SUMS} FROM session_rollups ${sql} GROUP BY model`)
 			.all(...params)
@@ -373,8 +378,8 @@ export class LedgerStore {
 	}
 
 	/** Per-site totals — the panel's site breakdown and the report's. */
-	bySite(range = {}) {
-		const { sql, params } = rangeClause(range);
+	bySite(range = {}, provider = undefined) {
+		const { sql, params } = rangeClause(range, undefined, "", provider);
 		return this.#db
 			.prepare(`SELECT site, ${SUMS} FROM session_rollups ${sql} GROUP BY site`)
 			.all(...params)
@@ -391,8 +396,8 @@ export class LedgerStore {
 	 * is worse than usage nobody can name: the first is invisible, the second is
 	 * a row on the panel saying so.
 	 */
-	byProject(range = {}, site = undefined) {
-		const { sql, params } = rangeClause(range, site, "r.");
+	byProject(range = {}, site = undefined, provider = undefined) {
+		const { sql, params } = rangeClause(range, site, "r.", provider);
 		return this.#db
 			.prepare(
 				`SELECT COALESCE(s.project, '') AS project, ${SUMS}
@@ -413,8 +418,8 @@ export class LedgerStore {
 	 * optional step, kept for cost estimation — basic attribution
 	 * should not have to wait for it.
 	 */
-	byProvider(range = {}, site = undefined) {
-		const { sql, params } = rangeClause(range, site);
+	byProvider(range = {}, site = undefined, provider = undefined) {
+		const { sql, params } = rangeClause(range, site, "", provider);
 		return this.#db
 			.prepare(`SELECT provider, ${SUMS} FROM session_rollups ${sql} GROUP BY provider`)
 			.all(...params)
@@ -423,8 +428,8 @@ export class LedgerStore {
 	}
 
 	/** Full route breakdown, for export and drill-down. */
-	byRoute(range = {}, site = undefined) {
-		const { sql, params } = rangeClause(range, site);
+	byRoute(range = {}, site = undefined, provider = undefined) {
+		const { sql, params } = rangeClause(range, site, "", provider);
 		return this.#db
 			.prepare(
 				`SELECT day, site, provider, model, ${SUMS} FROM session_rollups ${sql}

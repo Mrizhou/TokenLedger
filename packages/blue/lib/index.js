@@ -19,7 +19,8 @@ import {
 	normalizeTokenLedgerConfiguration,
 	normalizeTokenLedgerExport,
 	normalizeTokenLedgerSummary,
-	normalizeTokenLedgerView
+	normalizeTokenLedgerView,
+	tokenLedgerAccountTabId
 } from "./model.js";
 
 /** @typedef {import("@deepseek-ai/cordis").Context & { bluePluginHost: unknown, tokenLedgerV1?: unknown }} TokenLedgerBlueContext */
@@ -31,23 +32,13 @@ export const name = "@dsh-blue/tokenledger";
 export const inject = ["bluePluginHost"];
 
 const MANIFEST = Object.freeze(JSON.parse(readFileSync(new URL("../blue.plugin.json", import.meta.url), "utf8")));
-const MAIN_TABS = new Set(TOKEN_LEDGER_BLUE_MODEL.tabs.map((item) => item.id));
-const BREAKDOWN_TABS = new Set(TOKEN_LEDGER_BLUE_MODEL.breakdownTabs.map((item) => item.id));
 const RANGES = new Set(TOKEN_LEDGER_BLUE_MODEL.ranges.map((item) => item.id));
 const MODEL_SORTS = new Set(TOKEN_LEDGER_BLUE_MODEL.modelSorts.map((item) => item.id));
-const FORM_FIELDS = Object.freeze({
-	"tokenledger.model-sort-form": ["sort"],
-	"tokenledger.export-form": ["format"]
-});
 const COLLECTION_PAGE_SPECS = Object.freeze({
 	sites: { collection: "sites", sortBy: "tokens", direction: "desc" },
 	models: { collection: "models", direction: "desc" },
 	projects: { collection: "projects", sortBy: "tokens", direction: "desc" },
-	providers: { collection: "providers", sortBy: "tokens", direction: "desc" },
-	activity: { collection: "activity", sortBy: "day", direction: "desc" },
-	"activity-models": { collection: "activityModels", sortBy: "tokens", direction: "desc" },
-	accounts: { collection: "accounts" },
-	directory: { collection: "directory" }
+	accounts: { collection: "accounts" }
 });
 
 function ok(value) {
@@ -182,17 +173,6 @@ function rangeFor(id) {
 	return { from: localDayKey(now) };
 }
 
-function valuesOf(event, formId) {
-	const fields = FORM_FIELDS[formId] ?? [];
-	const source = own(event, "values");
-	const values = {};
-	for (const field of fields) {
-		const limit = field === "token" ? 32 * 1_024 : field === "baseUrl" || field === "origin" ? 2_048 : 256;
-		values[field] = text(own(source, field), limit);
-	}
-	return values;
-}
-
 function eventOf(value) {
 	return {
 		kind: text(own(value, "kind"), 64),
@@ -268,36 +248,26 @@ function collectionResult(value, expectedCollection) {
 	return { revision, page };
 }
 
-function selectedAccount(state) {
+function accountValues(state) {
 	const source = state.view ?? state.snapshot ?? {};
 	const cached = own(own(state.collectionPages, "accounts"), "items");
-	const accounts = [
+	return [
 		...(Array.isArray(source.accounts) ? source.accounts : []),
 		...(Array.isArray(cached) ? cached : [])
 	];
+}
+
+function selectedAccount(state) {
+	const accounts = accountValues(state);
 	return accounts.find((value) => text(value?.id ?? value?.origin) === state.selectedAccount) ?? accounts[0];
 }
 
-function sortedRows(state, key) {
-	const cached = own(own(state.collectionPages, key), "items");
-	const values = Array.isArray(cached) && integer(own(own(state.collectionPages, key), "page"), -1) === integer(state.pages[key])
-		? cached
-		: Array.isArray(state.view?.[key]) ? state.view[key] : [];
-	return values.toSorted((left, right) => Number(right?.tokens ?? 0) - Number(left?.tokens ?? 0));
+function accountProvider(value) {
+	return text(value?.route ?? value?.provider ?? value?.id, 256) || undefined;
 }
 
-function sortedModels(state) {
-	const cached = own(own(state.collectionPages, "models"), "items");
-	const values = Array.isArray(cached) && integer(own(own(state.collectionPages, "models"), "page"), -1) === integer(state.pages.models)
-		? cached
-		: Array.isArray(state.view?.models) ? state.view.models : [];
-	const key = state.modelSort === "cost" ? "cost" : state.modelSort;
-	const priced = new Map((Array.isArray(state.view?.priced?.rows) ? state.view.priced.rows : []).map((value) => [text(value?.model), value]));
-	return values.toSorted((left, right) => {
-		const leftValue = key === "cost" ? Number(left?.pricing?.cost ?? priced.get(text(left?.model))?.cost ?? -1) : Number(left?.[key] ?? 0);
-		const rightValue = key === "cost" ? Number(right?.pricing?.cost ?? priced.get(text(right?.model))?.cost ?? -1) : Number(right?.[key] ?? 0);
-		return rightValue - leftValue || text(left?.model).localeCompare(text(right?.model));
-	});
+function selectedProvider(state) {
+	return text(state.selectedAccountProvider, 256) || accountProvider(selectedAccount(state));
 }
 
 /**
@@ -315,26 +285,20 @@ export function apply(ctx) {
 	if (api === undefined) return;
 
 	const state = {
-		tab: "overview",
-		breakdownTab: "sites",
 		range: "all",
 		site: undefined,
-		siteDetail: undefined,
-		selectedModel: undefined,
-		selectedProject: undefined,
-		selectedProvider: undefined,
-		selectedDay: undefined,
 		selectedAccount: undefined,
+		selectedAccountProvider: undefined,
 		modelSort: "tokens",
+		modelSortDirection: "desc",
 		pages: {},
 		collectionPages: {},
-		exportFormat: "json",
-		exportPage: 0,
-		exportResult: undefined,
+		pendingPage: undefined,
 		snapshot: undefined,
 		view: undefined,
 		viewRevision: 0,
 		balance: undefined,
+		balanceAccount: undefined,
 		service: undefined,
 		serviceAvailable: false,
 		sessionId: undefined,
@@ -351,9 +315,16 @@ export function apply(ctx) {
 	let overlay;
 	let serviceDispose = () => {};
 	let sessionDispose = () => {};
+	let eventDispatchDepth = 0;
+	let eventRefreshDeferred = false;
+	let eventRefreshTimer;
 
 	const refreshRegistrations = () => {
 		if (state.disposed) return;
+		if (eventDispatchDepth > 0) {
+			eventRefreshDeferred = true;
+			return;
+		}
 		safeCall(() => overlay?.refresh(), undefined);
 	};
 
@@ -417,7 +388,13 @@ export function apply(ctx) {
 		}
 		if (state.snapshot !== undefined && snapshot.revision <= state.snapshot.revision) return false;
 			state.snapshot = snapshot;
-			if (state.viewRevision < snapshot.revision) state.collectionPages = {};
+			if (state.viewRevision < snapshot.revision) {
+				state.collectionPages = {};
+				if (state.range === "all" && state.site === undefined && selectedProvider(state) === undefined) {
+					state.view = undefined;
+					state.viewRevision = 0;
+				}
+			}
 			state.error = "";
 		refreshRegistrations();
 		return true;
@@ -431,24 +408,48 @@ export function apply(ctx) {
 		state.error = "";
 		refreshRegistrations();
 		try {
-			const requestId = `blue-view-${String(operation.serviceGeneration)}-${String(operation.requestEpoch)}-${String(operation.serial)}`;
-			const expectedRevision = state.snapshot?.revision;
-			if (expectedRevision === undefined) return fail("BLUE_INVALID_CONTRIBUTION", "TokenLedger 没有有效的摘要版本");
-			const raw = await service.queryUsage({ requestId, range: rangeFor(state.range), ...(state.site === undefined ? {} : { site: state.site }) }, { signal: operation.controller.signal });
-			if (!operationCurrent(operation)) return fail(operation.controller.signal.aborted ? "BLUE_ABORTED" : "BLUE_STALE", "用量读取已过期");
-			const result = queryResult(raw);
-			if (result === undefined) {
-				state.error = "TokenLedger 返回了无效的用量明细";
-				return fail("BLUE_INVALID_CONTRIBUTION", state.error);
-			}
-			if (result.revision !== expectedRevision || state.snapshot?.revision !== expectedRevision) {
-				return fail("BLUE_STALE", "用量明细与当前摘要版本不一致");
-			}
+			for (let attempt = 0; attempt < 2; attempt += 1) {
+				const requestId = `blue-view-${String(operation.serviceGeneration)}-${String(operation.requestEpoch)}-${String(operation.serial)}-${String(attempt + 1)}`;
+				const expectedRevision = state.snapshot?.revision;
+				const provider = selectedProvider(state);
+				if (expectedRevision === undefined) return fail("BLUE_INVALID_CONTRIBUTION", "TokenLedger 没有有效的摘要版本");
+				let raw;
+				try {
+					raw = await service.queryUsage({
+						requestId,
+						range: rangeFor(state.range),
+						...(state.site === undefined ? {} : { site: state.site }),
+						...(provider === undefined ? {} : { provider })
+					}, { signal: operation.controller.signal });
+				} catch (error) {
+					if (!operationCurrent(operation)) return fail(operation.controller.signal.aborted ? "BLUE_ABORTED" : "BLUE_STALE", "用量读取已过期");
+					const result = errorResult(error, "TokenLedger 用量读取失败");
+					if (attempt === 0 && result.code === "BLUE_STALE" && state.snapshot?.revision !== expectedRevision) continue;
+					state.error = result.message;
+					return result;
+				}
+				if (!operationCurrent(operation)) return fail(operation.controller.signal.aborted ? "BLUE_ABORTED" : "BLUE_STALE", "用量读取已过期");
+				const result = queryResult(raw);
+				if (result === undefined) {
+					state.error = "TokenLedger 返回了无效的用量明细";
+					return fail("BLUE_INVALID_CONTRIBUTION", state.error);
+				}
+				if (result.revision !== expectedRevision || state.snapshot?.revision !== expectedRevision) {
+					if (attempt === 0 && state.snapshot?.revision !== expectedRevision) continue;
+					return fail("BLUE_STALE", "用量明细与当前摘要版本不一致");
+				}
+				const returnedProvider = text(result.view.provider, 256) || undefined;
+				if (returnedProvider !== provider) {
+					state.error = "TokenLedger 返回了其他账户的用量明细";
+					return fail("BLUE_INVALID_CONTRIBUTION", state.error);
+				}
 				state.view = result.view;
 				state.viewRevision = result.revision;
 				state.collectionPages = {};
 				state.error = "";
-			return ok(undefined);
+				return ok(undefined);
+			}
+			return fail("BLUE_STALE", "用量明细与当前摘要版本不一致");
 		} catch (error) {
 			if (!operationCurrent(operation)) return fail(operation.controller.signal.aborted ? "BLUE_ABORTED" : "BLUE_STALE", "用量读取已过期");
 			const result = errorResult(error, "TokenLedger 用量读取失败");
@@ -469,27 +470,27 @@ export function apply(ctx) {
 			return fail("BLUE_CAPABILITY_UNSUPPORTED", "当前 TokenLedger 服务无法读取初始边界以外的数据");
 		}
 		if (specification === undefined) return fail("BLUE_ACTION_REJECTED", "未知的 TokenLedger 集合页面");
-		if (key === "activity-models" && state.selectedDay === undefined) {
-			return fail("BLUE_ACTION_REJECTED", "请先选择活动日期，再读取当日模型");
-		}
 		const operation = startOperation(`collection:${key}`, callerSignal);
 		state.error = "";
+		state.pendingPage = { key, page };
 		refreshRegistrations();
 		try {
 			const requestId = `blue-collection-${key}-${String(operation.serviceGeneration)}-${String(operation.requestEpoch)}-${String(operation.serial)}`;
 			const expectedRevision = state.viewRevision || state.snapshot?.revision;
 			if (expectedRevision === undefined) return fail("BLUE_INVALID_CONTRIBUTION", "TokenLedger 没有有效的集合版本");
 			const sortBy = key === "models" ? state.modelSort : specification.sortBy;
+			const direction = key === "models" ? state.modelSortDirection : specification.direction;
+			const provider = selectedProvider(state);
 			const raw = await service.queryCollection({
 				requestId,
 				...(expectedRevision === undefined ? {} : { expectedRevision }),
 				collection: specification.collection,
 				offset: page * TOKEN_LEDGER_BLUE_MODEL.pageSize,
 				limit: TOKEN_LEDGER_BLUE_MODEL.pageSize,
-				...(sortBy === undefined ? {} : { sortBy, direction: specification.direction }),
-				...(key === "activity-models" ? { day: state.selectedDay } : {}),
+				...(sortBy === undefined ? {} : { sortBy, direction }),
 				range: rangeFor(state.range),
-				...(state.site === undefined ? {} : { site: state.site })
+				...(state.site === undefined ? {} : { site: state.site }),
+				...(provider === undefined ? {} : { provider })
 			}, { signal: operation.controller.signal });
 			if (!operationCurrent(operation)) return fail(operation.controller.signal.aborted ? "BLUE_ABORTED" : "BLUE_STALE", "集合页面已过期");
 			const result = collectionResult(raw, specification.collection);
@@ -512,6 +513,7 @@ export function apply(ctx) {
 			state.error = result.message;
 			return result;
 		} finally {
+			if (state.pendingPage?.key === key && state.pendingPage?.page === page) state.pendingPage = undefined;
 			finishOperation(operation);
 			refreshRegistrations();
 		}
@@ -532,13 +534,15 @@ export function apply(ctx) {
 			if (!operationCurrent(operation)) return fail(operation.controller.signal.aborted ? "BLUE_ABORTED" : "BLUE_STALE", "TokenLedger 操作已过期");
 			const result = actionResult(raw, requestId);
 			if (!result.ok) {
-				state.error = result.message;
-				notify(result.message, result.code === "BLUE_STALE" ? "warning" : "danger");
+				if (options.softFailure !== true) {
+					state.error = result.message;
+					notify(result.message, result.code === "BLUE_STALE" ? "warning" : "danger");
+				}
 				return result;
 			}
 			const resultRevision = result.value.snapshot.revision;
 			const currentRevision = state.snapshot?.revision;
-			const readOnly = action.type === "balance.refresh" || action.type === "usage.export";
+			const readOnly = action.type === "balance.refresh";
 			if (
 				resultRevision < expectedRevision ||
 				(currentRevision !== undefined && resultRevision < currentRevision) ||
@@ -550,22 +554,18 @@ export function apply(ctx) {
 				const balance = normalizeTokenLedgerBalance(result.value.data);
 				if (balance === undefined) return fail("BLUE_INVALID_CONTRIBUTION", "TokenLedger 返回了无效的余额结果");
 				state.balance = balance;
-				state.pages = { ...state.pages, "quota-windows": 0 };
+				state.balanceAccount = text(action.accountId) || text(selectedAccount(state)?.id ?? selectedAccount(state)?.origin) || undefined;
 			}
-			if (options.export === true) {
-				const exportResult = normalizeTokenLedgerExport(result.value.data);
-				if (exportResult === undefined) return fail("BLUE_INVALID_CONTRIBUTION", "TokenLedger 返回了无效的导出结果");
-				state.exportResult = exportResult;
-				state.exportPage = 0;
-			}
-			notify("TokenLedger 操作已完成", "success");
+			if (options.silent !== true) notify("TokenLedger 操作已完成", "success");
 			if (options.reloadView === true) await loadView(operation.controller.signal);
 			return ok(undefined);
 		} catch (error) {
 			if (!operationCurrent(operation)) return fail(operation.controller.signal.aborted ? "BLUE_ABORTED" : "BLUE_STALE", "TokenLedger 操作已过期");
 			const result = errorResult(error);
-			state.error = result.message;
-			notify(result.message, result.code === "BLUE_STALE" ? "warning" : "danger");
+			if (options.softFailure !== true) {
+				state.error = result.message;
+				notify(result.message, result.code === "BLUE_STALE" ? "warning" : "danger");
+			}
 			return result;
 		} finally {
 			if (state.operations.get("action") === operation) state.busyAction = undefined;
@@ -577,9 +577,8 @@ export function apply(ctx) {
 	const setRange = async (range, callerSignal) => {
 		if (!RANGES.has(range)) return fail("BLUE_ACTION_REJECTED", "未知的 TokenLedger 统计范围");
 		state.range = range;
-		state.pages = {};
+		state.pages = state.pages.accounts === undefined ? {} : { accounts: state.pages.accounts };
 		state.collectionPages = {};
-		state.exportResult = undefined;
 		refreshRegistrations();
 		return loadView(callerSignal);
 	};
@@ -594,47 +593,28 @@ export function apply(ctx) {
 	const collectionOmitted = (collection) => integer(own(own(own(state.view, "collectionBounds"), collection), "omittedCount"));
 
 	const localCollectionLength = (key) => {
-		if (key === "activity-models") {
-			return (state.view?.activityModels ?? []).filter((value) => text(value?.day) === state.selectedDay).length;
-		}
 		const collection = COLLECTION_PAGE_SPECS[key]?.collection;
 		return Array.isArray(state.view?.[collection]) ? state.view[collection].length : 0;
 	};
 
-	const selectByIndex = (controlId, value) => {
-		const index = integer(Number(text(value).split(":").at(-1)), -1);
-		if (index < 0) return false;
-		if (controlId === "tokenledger.sites") state.siteDetail = text(cachedItem("sites", index)?.site ?? state.view?.sites?.[index]?.site) || undefined;
-		else if (controlId === "tokenledger.models") {
-			state.selectedModel = text(cachedItem("models", index)?.model ?? sortedModels(state)[index]?.model) || undefined;
-		}
-		else if (controlId === "tokenledger.projects") {
-			const selected = cachedItem("projects", index) ?? sortedRows(state, "projects")[index];
-			state.selectedProject = text(selected?.label ?? selected?.project) || undefined;
-		}
-		else if (controlId === "tokenledger.providers") {
-			state.selectedProvider = text(cachedItem("providers", index)?.provider ?? sortedRows(state, "providers")[index]?.provider) || undefined;
-		}
-		else if (controlId === "tokenledger.activity") {
-			state.selectedDay = text(cachedItem("activity", index)?.day ?? [...(state.view?.activity ?? [])].reverse()[index]?.day) || undefined;
-			state.pages = { ...state.pages, "activity-models": 0 };
-		} else if (controlId === "tokenledger.accounts") {
-			const selected = cachedItem("accounts", index) ?? (state.view?.accounts ?? state.snapshot?.accounts ?? [])[index];
-			state.selectedAccount = text(selected?.id ?? selected?.origin) || undefined;
-			state.balance = undefined;
-			state.pages = { ...state.pages, "quota-windows": 0 };
-		}
-		else return false;
-		return true;
-	};
-
 	const pageAction = (controlId) => {
-		const match = /^tokenledger\.page\.(sites|models|projects|providers|activity|activity-models|accounts|quota-windows)\.(prev|next)$/u.exec(controlId);
+		const match = /^tokenledger\.page\.(sites|models|projects|accounts)\.(prev|next)$/u.exec(controlId);
 		if (match === null) return undefined;
 		const key = match[1];
 		const delta = match[2] === "next" ? 1 : -1;
 		const nextPage = Math.max(0, integer(state.pages[key]) + delta);
 		return { key, nextPage };
+	};
+
+	const loadBalance = async (force, callerSignal, silent = false) => {
+		const account = selectedAccount(state);
+		const accountId = text(state.selectedAccount, 256) || text(account?.id, 256);
+		if (accountId === "") return ok(undefined);
+		return executeAction({
+			type: "balance.refresh",
+			force: force === true,
+			accountId
+		}, callerSignal, { balance: true, silent, softFailure: true });
 	};
 
 	const activate = async (controlId, callerSignal) => {
@@ -643,19 +623,25 @@ export function apply(ctx) {
 			const { key, nextPage } = requestedPage;
 			const specification = COLLECTION_PAGE_SPECS[key];
 			const firstIndex = nextPage * TOKEN_LEDGER_BLUE_MODEL.pageSize;
-			const shouldContinue = specification !== undefined && (
-				key === "activity-models" ||
-				(key === "models" && collectionOmitted("models") > 0) ||
-				firstIndex >= localCollectionLength(key)
-			);
+			const shouldContinue = specification !== undefined && firstIndex >= localCollectionLength(key);
 			if (shouldContinue) {
 				const loaded = await loadCollectionPage(key, nextPage, callerSignal);
 				if (!loaded.ok) return loaded;
-				if (key === "sites" && collectionOmitted("directory") > 0) {
-					await loadCollectionPage("directory", nextPage, callerSignal);
-				}
 			}
 			state.pages = { ...state.pages, [key]: nextPage };
+			if (key === "accounts") {
+				const selected = cachedItem("accounts", firstIndex) ?? state.view?.accounts?.[firstIndex];
+				state.requestEpoch += 1;
+				abortOperations();
+				state.selectedAccount = text(selected?.id ?? selected?.origin) || undefined;
+				state.selectedAccountProvider = accountProvider(selected);
+				state.site = undefined;
+				state.balance = undefined;
+				state.balanceAccount = undefined;
+				refreshRegistrations();
+				const usage = await loadView(callerSignal);
+				return usage.ok ? loadBalance(false, callerSignal, true) : usage;
+			}
 			refreshRegistrations();
 			return ok(undefined);
 		}
@@ -664,41 +650,15 @@ export function apply(ctx) {
 			refreshRegistrations();
 			return ok(undefined);
 		}
-		if (controlId === "tokenledger.refresh") return executeAction({ type: "usage.refresh" }, callerSignal, { reloadView: true });
-		if (controlId === "tokenledger.rebuild") return executeAction({ type: "index.rebuild" }, callerSignal, { reloadView: true });
-		if (controlId === "tokenledger.clear-site") {
-			state.site = undefined;
-			state.pages = {};
-			state.collectionPages = {};
-			return loadView(callerSignal);
+		if (controlId === "tokenledger.refresh") {
+			const refreshed = await executeAction({ type: "usage.refresh" }, callerSignal, { reloadView: true });
+			return refreshed.ok ? loadBalance(true, callerSignal, true) : refreshed;
 		}
-		if (controlId === "tokenledger.filter-selected-site") {
-			if (state.siteDetail === undefined) return fail("BLUE_ACTION_REJECTED", "尚未选择 TokenLedger 站点");
-			state.site = state.siteDetail;
-			state.pages = {};
-			state.collectionPages = {};
-			return loadView(callerSignal);
-		}
-		if (controlId === "tokenledger.balance.refresh") {
-			const account = selectedAccount(state);
-			if (account === undefined) return fail("BLUE_ACTION_REJECTED", "尚未选择 TokenLedger 账户");
-			return executeAction({ type: "balance.refresh", ...(text(account.id) === "" ? {} : { accountId: text(account.id) }) }, callerSignal, { balance: true });
-		}
-		if (controlId === "tokenledger.export.prev") state.exportPage = Math.max(0, state.exportPage - 1);
-		else if (controlId === "tokenledger.export.next") state.exportPage += 1;
-		else if (controlId === "tokenledger.export.clear") {
-			state.exportResult = undefined;
-			state.exportPage = 0;
-		} else return ok(undefined);
-		refreshRegistrations();
-		return ok(undefined);
-	};
-
-	const submit = async (event, controlId, callerSignal) => {
-		const values = valuesOf(event, controlId);
-		if (controlId === "tokenledger.model-sort-form") {
-			if (!MODEL_SORTS.has(values.sort)) return fail("BLUE_ACTION_REJECTED", "未知的 TokenLedger 模型排序方式");
-			state.modelSort = values.sort;
+		if (controlId.startsWith("tokenledger.model-sort.")) {
+			const sort = controlId.slice("tokenledger.model-sort.".length);
+			if (!MODEL_SORTS.has(sort)) return fail("BLUE_ACTION_REJECTED", "未知的 TokenLedger 模型排序方式");
+			state.modelSortDirection = state.modelSort === sort && state.modelSortDirection === "desc" ? "asc" : "desc";
+			state.modelSort = sort;
 			state.pages = { ...state.pages, models: 0 };
 			if (collectionOmitted("models") > 0) {
 				const loaded = await loadCollectionPage("models", 0, callerSignal);
@@ -706,10 +666,6 @@ export function apply(ctx) {
 			}
 			refreshRegistrations();
 			return ok(undefined);
-		}
-		if (controlId === "tokenledger.export-form") {
-			state.exportFormat = values.format === "csv" ? "csv" : "json";
-			return executeAction({ type: "usage.export", format: state.exportFormat, range: rangeFor(state.range), ...(state.site === undefined ? {} : { site: state.site }) }, callerSignal, { export: true });
 		}
 		return ok(undefined);
 	};
@@ -719,45 +675,65 @@ export function apply(ctx) {
 		const event = eventOf(rawEvent);
 		const context = contextOf(rawContext);
 		if (event.kind === "tab-change") {
-			if (event.controlId === "tokenledger.tabs") {
-				if (!MAIN_TABS.has(event.tabId)) return fail("BLUE_INVALID_CONTRIBUTION", "未知的 TokenLedger 页面");
-				state.tab = event.tabId;
-				state.error = "";
+			if (event.controlId === "tokenledger.range-tabs") return setRange(event.tabId, context.signal);
+			if (event.controlId === "tokenledger.account-tabs") {
+				const selected = accountValues(state).find((value) => tokenLedgerAccountTabId(value) === event.tabId);
+				if (selected === undefined) return fail("BLUE_INVALID_CONTRIBUTION", "未知的 TokenLedger 账户标签");
+				state.requestEpoch += 1;
+				abortOperations();
+				state.selectedAccount = text(selected.id ?? selected.origin) || undefined;
+				state.selectedAccountProvider = accountProvider(selected);
+				state.site = undefined;
+				state.pages = state.pages.accounts === undefined ? {} : { accounts: state.pages.accounts };
+				state.collectionPages = {};
+				state.balance = undefined;
+				state.balanceAccount = undefined;
 				refreshRegistrations();
-				if ((event.tabId === "breakdown" || event.tabId === "accounts") && state.view === undefined) return loadView(context.signal);
-				return ok(undefined);
+				const usage = await loadView(context.signal);
+				return usage.ok ? loadBalance(false, context.signal, true) : usage;
 			}
-			if (event.controlId === "tokenledger.breakdown.tabs") {
-				if (!BREAKDOWN_TABS.has(event.tabId)) return fail("BLUE_INVALID_CONTRIBUTION", "未知的 TokenLedger 明细页面");
-				state.breakdownTab = event.tabId;
-				state.error = "";
-				refreshRegistrations();
-				return ok(undefined);
-			}
+			return fail("BLUE_INVALID_CONTRIBUTION", "未知的 TokenLedger 标签组");
 		}
 		if (event.kind === "selection-change" || event.kind === "value-change") {
 			const value = text(event.value, 512);
-			if (event.controlId === "tokenledger.range-list" && value.startsWith("range:")) return setRange(value.slice(6), context.signal);
-			if (selectByIndex(event.controlId, value)) {
-				refreshRegistrations();
-				if (event.controlId === "tokenledger.activity" && collectionOmitted("activityModels") > 0) {
-					return loadCollectionPage("activity-models", 0, context.signal);
-				}
-				return ok(undefined);
+			const index = integer(Number(value.split(":").at(-1)), -1);
+			if (index < 0) return ok(undefined);
+			if (event.controlId === "tokenledger.sites") {
+				const selected = cachedItem("sites", index) ?? state.view?.sites?.[index];
+				const site = text(selected?.site) || undefined;
+				state.site = site === state.site ? undefined : site;
+				state.pages = state.pages.accounts === undefined ? {} : { accounts: state.pages.accounts };
+				state.collectionPages = {};
+				return loadView(context.signal);
 			}
 			return ok(undefined);
 		}
-		if (event.kind === "submit") return submit(event, event.controlId, context.signal);
 		if (event.kind === "activate") return activate(event.controlId, context.signal);
 		return ok(undefined);
 	};
 
 	const onEvent = async (rawEvent, rawContext) => {
+		eventDispatchDepth += 1;
+		let result;
 		try {
-			return await handleEvent(rawEvent, rawContext);
+			result = await handleEvent(rawEvent, rawContext);
 		} catch (error) {
-			return errorResult(error);
+			result = errorResult(error);
+		} finally {
+			eventDispatchDepth -= 1;
+			if (eventDispatchDepth === 0) {
+				const deferred = eventRefreshDeferred;
+				eventRefreshDeferred = false;
+				if (deferred && result?.ok !== true && !state.disposed) {
+					if (eventRefreshTimer !== undefined) clearTimeout(eventRefreshTimer);
+					eventRefreshTimer = setTimeout(() => {
+						eventRefreshTimer = undefined;
+						refreshRegistrations();
+					}, 0);
+				}
+			}
 		}
+		return result;
 	};
 
 	const openOverlay = (userGesture) => {
@@ -771,8 +747,8 @@ export function apply(ctx) {
 			capturing: true,
 			dismissible: true,
 			anchor: "center",
-			width: "86%",
-			maxHeight: "90%",
+			width: "96%",
+			maxHeight: "96%",
 			render: renderView,
 			onEvent
 		}, { userGesture }), fail("BLUE_INTERNAL_FAILURE", "TokenLedger 浮层打开失败")));
@@ -791,20 +767,18 @@ export function apply(ctx) {
 				const args = Array.isArray(rawArgs) ? rawArgs.map((value) => text(value, 256)).filter(Boolean).slice(0, 16) : [];
 				const signal = signalOf(own(rawOptions, "signal"));
 				const userGesture = own(rawOptions, "userGesture");
-				const tabArgument = args.find((value) => value.startsWith("--tab="));
-				const requestedTab = tabArgument === undefined ? undefined : tabArgument.slice(6);
-				if (requestedTab !== undefined && MAIN_TABS.has(requestedTab)) state.tab = requestedTab;
 				const range = args.find((value) => RANGES.has(value));
 				if (range !== undefined) state.range = range;
 				const site = args.find((value) => !value.startsWith("--") && !RANGES.has(value));
 				if (site !== undefined) state.site = site;
-			state.pages = {};
-			state.collectionPages = {};
+				state.pages = {};
+				state.collectionPages = {};
 				if (state.serviceAvailable) {
 					const result = args.includes("--refresh")
 						? await executeAction({ type: "usage.refresh" }, signal, { reloadView: true })
 						: await loadView(signal);
 					if (!result.ok && result.code !== "BLUE_CAPABILITY_ABSENT") return result;
+					await loadBalance(args.includes("--refresh"), signal, true);
 				}
 				return openOverlay(userGesture);
 			}
@@ -825,8 +799,10 @@ export function apply(ctx) {
 		state.view = undefined;
 		state.viewRevision = 0;
 		state.collectionPages = {};
+		state.selectedAccountProvider = undefined;
 		state.balance = undefined;
-		state.exportResult = undefined;
+		state.balanceAccount = undefined;
+		state.pendingPage = undefined;
 		state.error = "";
 		refreshRegistrations();
 	};
@@ -848,7 +824,11 @@ export function apply(ctx) {
 		const lifetime = new AbortController();
 		const disposeSubscription = safeCall(() => service.subscribe((snapshot) => {
 			if (state.disposed || generation !== state.serviceGeneration) return;
-			setSnapshot(snapshot, generation);
+			if (
+				setSnapshot(snapshot, generation) &&
+				selectedProvider(state) !== undefined &&
+				!state.operations.has("view")
+			) void loadView();
 		}, { signal: lifetime.signal }), undefined);
 		serviceDispose = () => {
 			lifetime.abort();
@@ -873,10 +853,10 @@ export function apply(ctx) {
 		state.requestEpoch += 1;
 		abortOperations();
 		state.balance = undefined;
-		state.exportResult = undefined;
+		state.pendingPage = undefined;
 		state.error = "";
 		refreshRegistrations();
-		if (state.serviceAvailable) void loadView();
+		if (state.serviceAvailable) void loadView().then((result) => result.ok ? loadBalance(false, undefined, true) : result);
 	};
 	if (session !== undefined) {
 		const current = method(session, "current");
@@ -892,6 +872,7 @@ export function apply(ctx) {
 
 	ctx.effect(() => () => {
 		state.disposed = true;
+		if (eventRefreshTimer !== undefined) clearTimeout(eventRefreshTimer);
 		state.serviceGeneration += 1;
 		state.requestEpoch += 1;
 		abortOperations();

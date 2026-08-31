@@ -1,115 +1,105 @@
 # AGENTS.md
 
-`@dsh-blue/tokenledger` is the renderer-neutral Blue companion for the
-`dsh-tokenledger` domain plugin. It consumes only the public
-`ctx.tokenLedgerV1` service. Do not import TokenLedger internals, expose its
-store, fold Harness session events, or move accounting, pricing, balance,
-export, or settings truth into this package.
+This directory is TokenLedger's separate renderer-neutral Blue companion. The
+current `@dsh-blue/tokenledger` name and repository are temporary integration
+test choices; the TokenLedger author owns the eventual package name, scope,
+repository, and publisher. The durable rule is that this package injects only
+`ctx.tokenLedgerV1`. It must never import TokenLedger internals, expose its
+store, fold Harness events, or move accounting truth into the frontend.
 
 `lib/index.js` owns one frontend-tree instance: dynamic service injection,
-session fencing, request controllers, current-page caches, Blue capability
-registrations, and Fiber cleanup. `lib/model.js` is pure interaction-model and
-wire-node construction code. Neither file may import pi-tui, raw terminal,
-ANSI, DOM, React, Agent, or Session objects. Renderer compilation and width
-truth remain owned by Blue core.
-Untrusted service values are copied through bounded incremental data-descriptor
-reads. Never bulk-materialize an object's descriptors before applying its key
-budget; proxies, accessors, overlong keys, credential keys, and
-`__proto__`/`prototype`/`constructor` fail closed before normalization.
+session/revision fencing, request controllers, current-page caches, Blue
+registrations, and Fiber cleanup. `lib/model.js` is pure wire-node construction.
+Neither may import pi-tui, ANSI, terminal widths, DOM, React, Agent, Session,
+Cordis objects, or renderer focus handles. Blue core owns compilation and
+keyboard behavior.
 
-The initial `current()`/`queryUsage()` values are bounded and can omit rows.
-Every async read captures the active summary revision before its first await
-and accepts only that exact cut; action results must echo the request id and
-carry one revision consistently in both the result and snapshot.
-Read `collectionBounds.{sourceCount,returnedCount,omittedCount}` and
-`boundaryTruncated`; never present a bounded array as complete. The only path
-beyond that boundary is `tokenLedgerV1.queryCollection()` with a revision
-fence. Keep only the current continuation page in frontend state, abort it on
-supersede/session switch/service unload, and reject stale or late results. The
-user-facing continuation explanation is emitted by `collectionNotice()` in
-`lib/model.js`; do not add competing continuation copy elsewhere.
+Untrusted public values cross through bounded descriptor reads. Proxies and
+accessors never execute. Credential, overlong, prototype-control, and unsafe
+array/key structures fail closed. Normalized values and emitted nodes stay
+bounded and deeply frozen.
 
-The Web client and loopback HTTP API remain the golden/plain fallback. Missing
-`tokenLedgerV1`, capability denial, activation failure, or service unload must
-leave collection and Web behavior intact and must not partially register Blue
-surfaces.
+Every asynchronous query captures the current service generation and revision
+before its first await and accepts only that cut afterward. Each request has a
+request id and abort controller. Supersede, session change, Service replacement,
+Service unload, and companion unload abort or fence late results. Keep only the
+current continuation page; never accumulate the ledger in frontend state.
 
-The companion composition owns an explicit domain row because installing the
-companion does not activate its peer's bundle. Keep that row's database and
-sweep config identical to the root TokenLedger bundle so Blue never creates a
-working-directory-local second ledger. The profile dependency set contains
-both packages, but `dsh.profile.bundles` must enable only this companion bundle;
-also enabling the root `dsh-tokenledger` bundle would mount a second domain
-instance against the same database. A normal registry install adds only the
-companion as the direct profile plugin and lets pnpm resolve its peer. Local
-link profiles may need both packages as direct dependencies; run every
-`dsh plugin` operation first, then remove `dsh-tokenledger` from the bundle list
-before boot because plugin reconciliation re-enables every direct dependency
-that declares `dsh.bundle`.
+Do not call the overlay registration's external `refresh()` while its `onEvent`
+handler is still running: canonical Blue treats that as an external surface
+replacement and aborts the in-flight event. Batch frontend refresh requests
+during event dispatch. On success, rely on the core bridge's one post-handler
+refresh; defer an explicit refresh until after settlement only for a failed
+event whose local error state must become visible.
 
-The Blue composition exposes exactly one command, `tokenledger`. Its domain row
-must set `commandEnabled: false`, while ordinary Harness/Web compositions keep
-the domain plugin's same-named legacy text command through the default
-`commandEnabled: true`. Do not register a persistent pane or status entry: the
-command opens the complete managed overlay, and unload must both dispose the
-command handle and close that overlay.
+The Web client and loopback HTTP API are the golden/plain fallback. The Blue UI
+is exactly one command-opened managed overlay with no persistent pane/status
+and no duplicate settings page. Missing/invalid `tokenLedgerV1` must leave a
+visible local fallback without affecting collection or Web behavior.
 
-The overlay does not own a settings page, configuration reads, or settings
-actions. TokenLedger configuration is edited through Blue's existing
-`/settings` workflow. Keep the domain `tokenLedgerV1.getConfiguration()` and
-settings action compatibility surface intact for Web, HTTP, legacy, and other
-public-service consumers, but do not call it from this companion.
+Match the Web UI's vertical order and surface area:
 
-The preview TUI is Simplified Chinese only. Main and breakdown navigation must
-show active state without relying on color (`●` active, `○` inactive), repeat
-the selected page in the surface title and current-page divider, and use the
-Blue compiler's `‹ ›` candidate brackets without a redundant leading arrow on
-the active candidate. Wire tab labels stay plain; canonical Blue core owns both
-markers, so compiled rows must never contain `● ●` or `○ ○`. Form submit labels
-and loading cancel
-controls must remain Chinese without leaking internal `tokenledger.*` ids. The
-shared surface body always explains that Tab/Shift-Tab switches only between
-tab levels, Left/Right immediately switches the page in the current tab level,
-Down enters content, Up/Down browses content, Enter/Space selects or activates
-content controls, and PageUp/PageDown pages the focused control group. Tabs
-must ignore Enter/Space. Lists, actions, pagination, and forms must never enter
-the Tab cycle. Pagination actions are not focusable and carry an explicit
-`shortcutFor` control id.
-Overview renders the WebUI's 371-day activity heatmap with the same quantile
-scale. One day is two adjacent terminal cells (`░░`, `▒▒`, `▓▓`, or `██`) plus
-one blank column, which approximates the Web square-cell grid. Zero days use
-the muted tone; all four non-zero levels use the success tone and differ only
-by glyph density. The overview is always one chronological data row. Bounded
-responsive variants select the latest number of days that fit at three columns
-per day after the overlay frame and padding are deducted; `明细 -> 活动` remains
-the complete 371-day paged history. The
-managed overlay request carries no title because the returned dynamic overlay
-surface owns the single frame.
-Keyboard fixture evidence must cover Tab/Shift-Tab between main and breakdown
-tab levels, immediate Left/Right tab changes, Enter/Space no-op on tabs, Down
-content entry, Tab return from content, Enter/Space content selection, and
-PageUp/PageDown scoped paging through the real public compiler.
+1. 余额
+2. Token 用量
+3. 中转站分布
+4. 按项目
+5. 活跃度
+6. 模型
+7. 数据状态与刷新
 
-Run `node --test "test/*.test.js"`, syntax-check both `lib/*.js` entries, run
-oxlint from the Blue checkout, and validate with
-`node script/blue-plugin-validate.mjs <this-package>`. The independent packed
-fixture must run against the current and previous supported Harness lines with
-normal npm peer resolution and a clean, exact Blue revision supplied through
-`--blue-revision <full-clean-blue-commit>`; omission must fail closed. It must execute
-all declared scenarios, report no skips, clean its temporary install, and
-cover continuation, abort/stale rejection, provider swap/fallback, unload/late
-results, and 20/40/80/120-column rendering.
+Do not add export, index rebuild, provider detail, independent activity/model/
+site pages, or overview/breakdown navigation. Configuration belongs to Blue's
+existing `/settings` flow. The domain public actions remain available for Web,
+HTTP, legacy, and third-party consumers but are not UI justification here.
 
-The manifests currently use the unpublished integration candidate
-`0.1.1-blue.0`; the companion peer floor is
-`dsh-tokenledger >=0.1.1-blue.0 <0.2.0` because published `0.1.0` has no public
-service export. This is not registry evidence. The validated preview window is
-Blue `>=0.1.1-rc.2 <0.1.2` and Harness
-`>=0.1.1-rc.1 <0.1.2`. Do not widen either manifest range beyond evidence from
-the canonical validator and packed compatibility fixture.
+Accounts and `今日 / 本月 / 累计` are the only canonical tab groups. Wire tab
+labels are plain business text. Blue core owns `●`, `○`, `‹ ›`, and focus paint.
+On the accepted core contract, Tab/Shift+Tab cycles only these two tab levels;
+Left/Right immediately selects within the focused level; Enter/Space is inert
+on tabs; Down enters content and Tab from content returns to the remembered tab
+level. Account wire ids derive from the public account `id`/`origin`, never an
+array position, so provider-directory reordering cannot move semantic focus.
+Selecting an account reloads the complete usage cut for that account's provider
+as well as its balance; totals, requests, sites, projects, activity, models,
+and pricing must never remain on another provider. Keep the Chinese footer
+aligned with that behavior.
 
-Do not remove the companion while it is the only Blue consumer of
-`tokenLedgerV1`. Deletion requires an integrated replacement that preserves
-the same public-service boundary, complete continuation behavior, lifecycle
-and width evidence, packed dual-line fixtures, real-profile dogfood, and human
-acceptance. Removing the legacy Web renderer is a separate upstream decision.
+`按项目` must show tokens, percentage, and the full project directory. PgUp/
+PgDn uses a validated global paging shortcut so either tab level can page the
+project list without first traversing dashboard content; a more specific
+focused collection shortcut still wins. A pending project continuation preserves every other section
+and completion replaces only the project page. Project row ids represent page
+slots so the focused slot survives a page replacement. Sites, models, and accounts may
+also page locally when the public boundary requires it. A local page already in
+the initial view must not trigger `queryCollection()`.
+
+If a usage query is fenced only because the replayed public revision advanced
+during that read, retry once against the new captured revision. Never retry a
+result whose revision disagrees while the captured snapshot itself is unchanged.
+An unfiltered cumulative dashboard may adopt a newer summary replay as one
+complete cut. A provider/day/month/site-filtered view must retain its last
+accepted query cut until another query succeeds; never replace only its totals
+with the new cumulative summary.
+
+The activity view uses the WebUI's 371-day, quantile-based data with weekdays as
+seven rows and weeks as columns. Every day occupies two terminal columns so a
+cell remains approximately square; keep bounded responsive variants up to 54
+weeks. Zero uses muted `··`; non-zero levels use doubled success-toned
+`░`, `▒`, `▓`, and `█`.
+
+Initial overlay open and account changes query the selected provider usage cut,
+then request `balance.refresh` with `force: false`. The single dashboard Refresh
+action runs `usage.refresh`, reloads the selected provider view, then requests
+the current account balance with `force: true`. Balance failure is soft and
+must not erase otherwise valid usage data.
+
+The composition owns an explicit domain row because installing a peer does not
+activate its bundle. Keep database/sweep settings identical to the root bundle
+and `commandEnabled: false` in this row so Blue exposes exactly one command.
+
+Run `node --test "test/*.test.js"`, syntax-check `lib/*.js`, run oxlint from the
+Blue checkout, run the canonical `blue-plugin-validate.mjs`, and dry-run both
+package tarballs. The independent packed fixture requires an explicit clean
+Blue revision and must eventually pass both supported Harness lines plus
+20/40/80/120-column compiler scans. Do not claim that final packed gate until
+both runs actually complete.

@@ -522,6 +522,7 @@ function coreView(source, tracker, budget) {
 	const version = dataProperty(source, "version", tracker, "version");
 	const generatedAt = dataProperty(source, "generatedAt", tracker, "generatedAt");
 	const site = dataProperty(source, "site", tracker, "site");
+	const provider = dataProperty(source, "provider", tracker, "provider");
 	const lastSweepAt = dataProperty(source, "lastSweepAt", tracker, "lastSweepAt");
 	return {
 		version: boundedText(version, 64, tracker, "version", "unknown"),
@@ -529,6 +530,7 @@ function coreView(source, tracker, budget) {
 		timeZone: boundedCloneOr(dataProperty(source, "timeZone", tracker, "timeZone") ?? {}, 128, tracker, "timeZone", budget, {}),
 		range: boundedCloneOr(dataProperty(source, "range", tracker, "range") ?? {}, 128, tracker, "range", budget, {}),
 		...(typeof site === "string" ? { site: boundedText(site, 256, tracker, "site") } : {}),
+		...(typeof provider === "string" ? { provider: boundedText(provider, 256, tracker, "provider") } : {}),
 		totals: boundedCloneOr(dataProperty(source, "totals", tracker, "totals") ?? {}, 128, tracker, "totals", budget, {}),
 		windows: boundedCloneOr(dataProperty(source, "windows", tracker, "windows") ?? {}, 128, tracker, "windows", budget, {}),
 		lastSweepAt: typeof lastSweepAt === "number" && Number.isFinite(lastSweepAt) ? lastSweepAt : undefined,
@@ -713,7 +715,11 @@ function queryOf(request) {
 	const site = typeof requestedSite === "string" && requestedSite.trim() !== ""
 		? requestedSite.trim().slice(0, 256)
 		: undefined;
-	return { range, site };
+	const requestedProvider = dataProperty(request, "provider");
+	const provider = typeof requestedProvider === "string" && requestedProvider.trim() !== ""
+		? requestedProvider.trim().slice(0, 256)
+		: undefined;
+	return { range, site, ...(provider === undefined ? {} : { provider }) };
 }
 
 function expectedRevisionOf(request, requestId) {
@@ -1128,7 +1134,7 @@ export class TokenLedgerService {
 		});
 	}
 
-	/** Read one bounded range/site view without mutating the replayed summary. */
+	/** Read one bounded range/site/provider view without mutating the replayed summary. */
 	queryUsage(request, options = {}) {
 		const requestId = requestIdOf(request);
 		const query = queryOf(request);

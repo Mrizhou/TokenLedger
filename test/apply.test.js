@@ -314,6 +314,57 @@ test("structured settings and balance actions use the existing domain seams", as
 	await dispose();
 });
 
+test("balance actions preserve cached reads unless force is explicitly true", async () => {
+	const origin = "https://relay.example";
+	const { ctx, dispose } = fakeContext({
+		providers: [piAi("relay")],
+		section: { providers: { relay: { baseURL: `${origin}/v1` } } }
+	});
+	const services = captureServices(ctx);
+	const previousFetch = globalThis.fetch;
+	const requests = [];
+	globalThis.fetch = async (url) => {
+		requests.push(String(url));
+		return {
+			ok: true,
+			status: 200,
+			async json() {
+				return String(url).endsWith("/api/status")
+					? { data: { quota_per_unit: 500_000 } }
+					: { success: true, data: { quota: 500_000, used_quota: 0, username: "fixture" } };
+			}
+		};
+	};
+	try {
+		apply(ctx, {
+			database: ":memory:",
+			sweepIntervalMs: 0,
+			sweepOnStart: false,
+			userAuth: { [origin]: { userId: 7, token: "fixture-secret" } }
+		});
+		const api = services.get("tokenLedgerV1");
+		for (let turn = 0; turn < 5; turn++) await settle();
+		const execute = (requestId, force) => api.execute({
+			requestId,
+			expectedRevision: api.current().revision,
+			action: { type: "balance.refresh", accountId: "relay", force }
+		});
+
+		const first = await execute("balance-cold", false);
+		assert.equal(first.data.total, 1);
+		assert.equal(requests.length, 2, "a cold wallet reads status and balance once");
+		const cached = await execute("balance-cached", false);
+		assert.equal(cached.data.cached, true);
+		assert.equal(requests.length, 2, "a non-forced read must use the fresh wallet cache");
+		const forced = await execute("balance-forced", true);
+		assert.equal(forced.data.cached, false);
+		assert.equal(requests.length, 3, "a forced read bypasses wallet freshness but reuses the unit cache");
+	} finally {
+		globalThis.fetch = previousFetch;
+		await dispose();
+	}
+});
+
 test("a fingerprint answer survives the next sweep", async () => {
 	// The regression a real install showed as a site permanently reading 未识别.
 	const { ctx, tick } = fakeContext({

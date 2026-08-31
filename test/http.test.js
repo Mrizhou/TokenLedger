@@ -118,6 +118,26 @@ test("the site breakdown ignores the current filter, because it is how you chang
 	}
 });
 
+test("a provider route filters every usage section as one account cut", () => {
+	const store = seeded();
+	try {
+		const selected = usagePayload({ store, sites: () => [] }, { range: {}, provider: "api99" });
+		assert.equal(selected.provider, "api99");
+		assert.equal(selected.totals.outputTokens, 100);
+		assert.equal(selected.days[0].outputTokens, 100);
+		assert.equal(selected.activity[0].outputTokens, 100);
+		assert.equal(selected.models[0].outputTokens, 100);
+		assert.equal(selected.projects[0].outputTokens, 100);
+		assert.deepEqual(selected.sites.map((row) => row.site), ["api.relay-one.example"]);
+
+		const absent = usagePayload({ store, sites: () => [] }, { range: {}, provider: "other-route" });
+		assert.equal(absent.totals.tokens, 0);
+		for (const key of ["days", "activity", "models", "projects", "providers", "sites"]) assert.deepEqual(absent[key], []);
+	} finally {
+		store.close();
+	}
+});
+
 test("the directory carries routes and software, which the totals cannot say", () => {
 	const store = seeded();
 	try {

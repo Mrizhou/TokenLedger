@@ -158,6 +158,8 @@ test("the project breakdown honours the site filter, like every other breakdown"
 		);
 		store.commitSession("a", state, { project: "/home/me/ledger" });
 		assert.equal(store.byProject({}, "relay.example")[0].tokens, 100);
+		assert.equal(store.byProject({}, undefined, "api99")[0].tokens, 100);
+		assert.equal(store.byProject({}, undefined, "other-route").length, 0);
 		assert.equal(store.byProject({}, "somewhere.else").length, 0);
 	} finally {
 		store.close();

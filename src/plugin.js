@@ -58,11 +58,11 @@ function dayKeyDaysAgo(daysBack) {
  * Rates live in config rather than in code because a relay sets its own
  * prices; shipping a table would be shipping one site's deal as everyone's.
  */
-function priceWithConfiguredRates(store, range, site, rates) {
+function priceWithConfiguredRates(store, range, site, rates, provider = undefined) {
 	try {
 		const table = new RateTable(rates);
 		const day = range.to ?? range.from ?? dayKey(Date.now());
-		return priceRows(store.byModel(range, site), table, day);
+		return priceRows(store.byModel(range, site, provider), table, day);
 	} catch {
 		// A malformed rate table costs the cost column, not the report.
 		return null;
@@ -1093,8 +1093,8 @@ export function apply(ctx, userConfig = {}) {
 			store,
 			sites: () => directory.sites,
 			sweep: runSweepAndPublish,
-			priced: (range, site) =>
-				config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates),
+			priced: (range, site, provider) =>
+				config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates, provider),
 			accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 			projectTitles: () => projectTitles,
 			lastSweepAt: () => lastSweepAt,
@@ -1116,8 +1116,8 @@ export function apply(ctx, userConfig = {}) {
 	const usageDeps = {
 		store,
 		sites: () => directory.sites,
-		priced: (range, site) =>
-			config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates),
+		priced: (range, site, provider) =>
+			config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates, provider),
 		accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 		projectTitles: () => projectTitles,
 		lastSweepAt: () => lastSweepAt
@@ -1176,7 +1176,7 @@ export function apply(ctx, userConfig = {}) {
 				case "balance.refresh": {
 					if (balance === undefined) unavailable("tokenledger balance reader is unavailable", requestId);
 					const accountId = optionalText(action, "accountId", 256);
-					const data = await balance(accountId, true, undefined, { signal });
+					const data = await balance(accountId, action.force === true, undefined, { signal });
 					if (signal.aborted) throw new TokenLedgerError("ABORTED", "balance refresh was aborted", { requestId });
 					return { ok: true, changed: false, message: "balance refreshed", data };
 				}
