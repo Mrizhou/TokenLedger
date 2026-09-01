@@ -5,8 +5,9 @@
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Token 用量算清楚，并归属到**实际服务这次请求的中转站**——不用配置，不用凭据。
 
-Token-usage accounting for the DeepSeek Harness Web GUI (`dsh web`), attributed
-to the relay site that served each request. Zero configuration.
+Token-usage accounting for DeepSeek Harness, attributed to the relay site that
+served each request. The existing Web GUI (`dsh web`) and renderer-neutral
+consumers share the same host-owned aggregation. Zero configuration.
 
 ![TokenLedger 面板](docs/images/panel.png)
 
@@ -234,6 +235,22 @@ import { LedgerStore } from "dsh-tokenledger/store";
 import { readBalance } from "dsh-tokenledger/balance";
 ```
 
+### Harness 与 Blue
+
+`ctx.tokenLedger` 为现有消费者保留原有对象身份和九个成员：`store`、`sweep`、
+`totals`、`byDay`、`byModel`、`bySite`、`sites`、`diagnostics` 和 `reindex`。
+
+Blue UI 与 Web UI 都包含在同一个 `dsh-tokenledger` npm 包中。安装该 bundle 后：
+
+- 普通 Harness/Web 环境保留原文本 `/tokenledger` 命令和回环 HTTP 面板。
+- 检测到 Blue host 时，同一个插件 Fiber 挂载原生 dashboard，并以 Blue overlay
+  命令替换文本命令；Blue 卸载或拒绝注册时恢复文本命令。
+- Blue 通过 apply-local controller 读取同一个 `usagePayload()`，不会发布额外的
+  Cordis Service，也不会维护第二套用量口径。
+
+完整架构和验收记录见
+[`docs/BLUE-MIGRATION.md`](docs/BLUE-MIGRATION.md)。
+
 ## 开发 / Development
 
 ```bash
@@ -242,6 +259,19 @@ npm pack --dry-run
 ```
 
 浏览器半边**没有构建步骤**：它是一个手写的 `__ModuleLoader__` bundle，React 由宿主作为 peer 提供，样式手写注入。因此它能在 Node 里被加载和测试。
+
+Blue PR 验收不需要 clone Blue 仓库。从本仓库根目录安装固定版本的 Blue
+CLI，把当前插件快照加入它管理的 `blue` profile，然后启动：
+
+```bash
+npm install --global pnpm@11 @dsh-blue/blue-cli@0.1.2-alpha.1
+blue plugin add "file:$PWD"
+blue
+```
+
+进入 Blue 后执行 `/tokenledger`，检查真实用量、刷新、账户切换、分页和退出清理。
+修改插件源码后，重新执行 `blue plugin add "file:$PWD"` 再启动；`file:` 安装会物化
+插件自己的依赖闭包，不依赖开发者机器上的 TokenLedger 工作区链接。
 
 ## 致谢 / Credits
 

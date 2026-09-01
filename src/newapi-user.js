@@ -70,10 +70,15 @@ export const DEFAULT_QUOTA_PER_UNIT = 500_000;
 /** Site display currencies this panel can render a symbol for. */
 const UNITS = new Map([["CNY", "CNY"], ["USD", "USD"], ["EUR", "EUR"]]);
 
-/** wallet cache, per origin: `{ state, fetchedAt, nextAttemptAt, backoffMs }`. */
-const wallets = new Map();
-/** Unit cache, per origin: `{ currency, perUnit, fetchedAt }`. */
-const units = new Map();
+/** Create one plugin-instance-owned wallet and unit cache. */
+function createCache() {
+	return { wallets: new Map(), units: new Map() };
+}
+
+// Kept only for the original function exports. The Cordis plugin uses
+// `createNewApiWalletReader()` and therefore never shares this compatibility
+// cache with another plugin instance or Fiber.
+const compatibilityCache = createCache();
 
 /** A number an API may send as a string; `undefined` for everything else. */
 function toNumber(value) {
@@ -100,17 +105,65 @@ function label(value) {
 
 /** Drop one origin's caches — after its credentials changed. */
 export function forgetWallet(origin) {
-	wallets.delete(origin);
+	compatibilityCache.wallets.delete(origin);
 }
 
 /** Drop everything; used when the whole namespace changes underneath us. */
 export function forgetAllWallets() {
-	wallets.clear();
+	compatibilityCache.wallets.clear();
+	compatibilityCache.units.clear();
 }
 
 /** Read-only view for diagnostics and tests. */
 export function walletCacheSnapshot() {
-	return [...wallets.entries()].map(([origin, entry]) => ({ origin, ...entry, state: undefined }));
+	return [...compatibilityCache.wallets.entries()].map(([origin, entry]) => ({ origin, ...entry, state: undefined }));
+}
+
+/**
+ * Create a host-instance-owned New API wallet reader.
+ *
+ * @returns `{ read, forget, clear, snapshot, dispose }`. None of the methods
+ *   exposes credentials or cached wallet values through diagnostics.
+ */
+export function createNewApiWalletReader() {
+	const cache = createCache();
+	let closed = false;
+	let generation = 0;
+	const assertOpen = () => {
+		if (closed) throw Object.assign(new Error("disposed"), { kind: "aborted" });
+	};
+	const clear = () => {
+		cache.wallets.clear();
+		cache.units.clear();
+	};
+	return Object.freeze({
+		read: async (options) => {
+			assertOpen();
+			const captured = generation;
+			try {
+				const value = await readWallet(cache, options);
+				if (closed || captured !== generation) {
+					clear();
+					throw Object.assign(new Error("disposed"), { kind: "aborted" });
+				}
+				return value;
+			} catch (error) {
+				if (closed || captured !== generation) {
+					clear();
+					throw Object.assign(new Error("disposed"), { kind: "aborted", cause: error });
+				}
+				throw error;
+			}
+		},
+		forget: (origin) => cache.wallets.delete(origin),
+		clear,
+		snapshot: () => [...cache.wallets.entries()].map(([origin, entry]) => ({ origin, ...entry, state: undefined })),
+		dispose: () => {
+			closed = true;
+			generation++;
+			clear();
+		}
+	});
 }
 
 /**
@@ -170,11 +223,14 @@ export function unitFromStatus(data) {
  * wallet: the shipped default divisor applies, and the number renders without
  * a symbol rather than under a made-up one.
  */
-async function readUnit(origin, doFetch, now, timeoutMs) {
-	const cached = units.get(origin);
+async function readUnit(cache, origin, doFetch, now, timeoutMs, externalSignal) {
+	const cached = cache.units.get(origin);
 	if (cached !== undefined && now - cached.fetchedAt < STATUS_TTL_MS) return cached;
 
 	const controller = new AbortController();
+	const onAbort = () => controller.abort(externalSignal?.reason);
+	if (externalSignal?.aborted === true) controller.abort(externalSignal.reason);
+	else externalSignal?.addEventListener("abort", onAbort, { once: true });
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	try {
 		const response = await doFetch(new URL(STATUS_PATH, origin).href, {
@@ -184,7 +240,7 @@ async function readUnit(origin, doFetch, now, timeoutMs) {
 		if (!response.ok) throw new Error(`http-${response.status}`);
 		const body = await response.json();
 		const entry = { ...unitFromStatus(body?.data ?? {}), fetchedAt: now };
-		units.set(origin, entry);
+		cache.units.set(origin, entry);
 		return entry;
 	} catch {
 		// A status read that fails costs a symbol, never the wallet. Do not
@@ -192,6 +248,7 @@ async function readUnit(origin, doFetch, now, timeoutMs) {
 		return { perUnit: DEFAULT_QUOTA_PER_UNIT, currency: undefined, fetchedAt: now };
 	} finally {
 		clearTimeout(timer);
+		externalSignal?.removeEventListener("abort", onAbort);
 	}
 }
 
@@ -208,12 +265,16 @@ async function readUnit(origin, doFetch, now, timeoutMs) {
  *   - `"invalid-response"` — the body was not the shape the console answers;
  *   - `"timeout"` / `"unreachable"` — transport.
  */
-export async function readNewApiWallet(options = {}) {
+async function readWallet(cache, options = {}) {
 	const { origin, userId, token, force = false, timeoutMs = 10_000 } = options;
 	const now = options.now ?? Date.now();
 	const doFetch = options.fetch ?? globalThis.fetch;
+	const externalSignal = options.signal;
+	if (externalSignal?.aborted === true) {
+		throw Object.assign(new Error("aborted"), { kind: "aborted" });
+	}
 
-	const entry = wallets.get(origin);
+	const entry = cache.wallets.get(origin);
 	const fresh = entry !== undefined && now - entry.fetchedAt < BASE_TTL_MS;
 	// Every card this reader returns carries `supported` and `fetched` — the
 	// panel's failure branch keys off `fetched !== true`, and a success that
@@ -236,9 +297,12 @@ export async function readNewApiWallet(options = {}) {
 	// a dependency that does not exist: only the MAPPING needs the unit, and
 	// it is applied after both land. `readUnit` never rejects (a failed
 	// status read costs the symbol, not the wallet), so the race is safe.
-	const unitPromise = readUnit(origin, doFetch, now, timeoutMs);
+	const unitPromise = readUnit(cache, origin, doFetch, now, timeoutMs, externalSignal);
 
 	const controller = new AbortController();
+	const onAbort = () => controller.abort(externalSignal?.reason);
+	if (externalSignal?.aborted === true) controller.abort(externalSignal.reason);
+	else externalSignal?.addEventListener("abort", onAbort, { once: true });
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	let response;
 	try {
@@ -252,12 +316,19 @@ export async function readNewApiWallet(options = {}) {
 			signal: controller.signal
 		});
 	} catch (error) {
-		if (error?.name === "AbortError") throw Object.assign(new Error("timeout"), { kind: "timeout" });
+		if (error?.name === "AbortError") {
+			const kind = externalSignal?.aborted === true ? "aborted" : "timeout";
+			throw Object.assign(new Error(kind), { kind });
+		}
 		throw Object.assign(new Error("unreachable"), { kind: "unreachable" });
 	} finally {
 		clearTimeout(timer);
+		externalSignal?.removeEventListener("abort", onAbort);
 	}
 	const unit = await unitPromise;
+	if (externalSignal?.aborted === true) {
+		throw Object.assign(new Error("aborted"), { kind: "aborted" });
+	}
 
 	if (response.status === 401 || response.status === 403) {
 		throw Object.assign(new Error(`upstream-${response.status}`), { kind: "upstream-auth", status: response.status });
@@ -269,6 +340,9 @@ export async function readNewApiWallet(options = {}) {
 	} catch {
 		throw Object.assign(new Error("invalid-response"), { kind: "invalid-response" });
 	}
+	if (externalSignal?.aborted === true) {
+		throw Object.assign(new Error("aborted"), { kind: "aborted" });
+	}
 
 	// New API answers refusals inside a 200 as well as with real statuses, and
 	// the throttle itself arrives as a 429 — or, on some forks, as prose inside
@@ -276,7 +350,7 @@ export async function readNewApiWallet(options = {}) {
 	// not the cache's business and just fails this read.
 	if (body?.success === false || response.ok !== true) {
 		const message = label(body?.message) ?? "";
-		if (response.status === 429 || isLimitMessage(message)) return limitOrStale(origin, entry, now, message);
+		if (response.status === 429 || isLimitMessage(message)) return limitOrStale(cache, origin, entry, now, message);
 		if (body?.success === false) {
 			throw Object.assign(new Error(message || "upstream-error"), { kind: "upstream-auth" });
 		}
@@ -302,8 +376,13 @@ export async function readNewApiWallet(options = {}) {
 		keyName: label(data.username) ?? label(data.display_name)
 	};
 
-	wallets.set(origin, { state, fetchedAt: now, nextAttemptAt: 0, backoffMs: 0 });
+	cache.wallets.set(origin, { state, fetchedAt: now, nextAttemptAt: 0, backoffMs: 0 });
 	return { ...state, supported: true, fetched: true, cached: false, fetchedAt: now };
+}
+
+/** Compatibility wrapper using the original module-local cache. */
+export function readNewApiWallet(options = {}) {
+	return readWallet(compatibilityCache, options);
 }
 
 /** What a throttle refusal looks like across the forks that send one in prose. */
@@ -342,7 +421,7 @@ function throttleHeaders(response) {
  * A previous result rides along as the card to show — `retryAt` goes to the
  * small print — and is thrown only when there is nothing to show.
  */
-function limitOrStale(origin, entry, now, message, response) {
+function limitOrStale(cache, origin, entry, now, message, response) {
 	const headers = throttleHeaders(response);
 	let backoffMs;
 	if (headers.retryAfter !== undefined && headers.retryAfter >= 0) {
@@ -354,7 +433,7 @@ function limitOrStale(origin, entry, now, message, response) {
 	}
 	backoffMs = Math.min(MAX_BACKOFF_MS, Math.max(1_000, backoffMs));
 	const nextAttemptAt = now + backoffMs;
-	if (entry !== undefined) wallets.set(origin, { ...entry, nextAttemptAt, backoffMs });
+	if (entry !== undefined) cache.wallets.set(origin, { ...entry, nextAttemptAt, backoffMs });
 	if (entry?.state !== undefined) {
 		return { ...entry.state, supported: true, fetched: true, cached: true, stale: true, fetchedAt: entry.fetchedAt, retryAt: nextAttemptAt };
 	}

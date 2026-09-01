@@ -220,11 +220,11 @@ export function parseQuery(url) {
  * would let its sections disagree with each other while they land.
  *
  * @param deps - `{ store, sites, priced, projectTitles }`.
- * @param query - `{ range, site }` from {@link parseQuery}.
+ * @param query - `{ range, site, provider? }`; HTTP {@link parseQuery} omits provider.
  */
 export function usagePayload(deps, query) {
 	const { store, sites, priced } = deps;
-	const { range, site } = query;
+	const { range, site, provider } = query;
 	return {
 		ok: true,
 		// So "is my install current?" is answerable in one request. Several rounds
@@ -239,35 +239,36 @@ export function usagePayload(deps, query) {
 		timeZone: hostTimeZone(),
 		range,
 		site,
-		totals: store.totals(range, site),
-		days: store.byDay(range, site),
+		...(provider === undefined ? {} : { provider }),
+		totals: store.totals(range, site, provider),
+		days: store.byDay(range, site, provider),
 		// The three windows the panel shows side by side, each a whole figure
 		// rather than a slice of the selected range: "today" and "this month" and
 		// "all time" are the questions people actually ask, and reading them off
 		// one selector means changing it three times.
 		windows: {
-			today: store.totals({ from: dayKey(Date.now()) }, site),
-			month: store.totals({ from: monthStart() }, site),
-			all: store.totals({}, site)
+			today: store.totals({ from: dayKey(Date.now()) }, site, provider),
+			month: store.totals({ from: monthStart() }, site, provider),
+			all: store.totals({}, site, provider)
 		},
 		// The activity strip has its OWN window, deliberately. Tied to the
 		// selected range it collapsed to a single cell whenever "today" was
 		// picked — a heatmap of one day is not a heatmap, and it read as broken.
-		activity: store.byDay({ from: fromDaysAgo(ACTIVITY_DAYS) }, site),
+		activity: store.byDay({ from: fromDaysAgo(ACTIVITY_DAYS) }, site, provider),
 		// Per-day, per-model rows for the same window, so hovering a cell can
 		// show what ran that day rather than only how much. Sent with the panel
 		// rather than fetched per hover: a request on mouseover would lag behind
 		// the pointer, and these are counts, not content.
-		activityModels: dailyModels(store.byRoute({ from: fromDaysAgo(ACTIVITY_DAYS) }, site)),
-		models: store.byModel(range, site),
+		activityModels: dailyModels(store.byRoute({ from: fromDaysAgo(ACTIVITY_DAYS) }, site, provider)),
+		models: store.byModel(range, site, provider),
 		// Site rows are never filtered by the current selection: the breakdown is
 		// how you CHANGE that selection, so hiding the others would strand you.
-		sites: store.bySite(range),
+		sites: store.bySite(range, provider),
 		// Which project burned it — keyed on the directory the session ran in,
 		// labelled with the workspace title when there is one. See `projects.js`
 		// for why the directory is the key and the workspace only the label.
-		projects: store.byProject(range, site).map((row) => ({ ...row, ...describeProject(row.project, deps.projectTitles?.().get(row.project)) })),
-		providers: store.byProvider(range, site),
+		projects: store.byProject(range, site, provider).map((row) => ({ ...row, ...describeProject(row.project, deps.projectTitles?.().get(row.project)) })),
+		providers: store.byProvider(range, site, provider),
 		// Configured/discovered sites carry the routes and software behind each
 		// row, which the totals alone cannot say.
 		directory: (sites?.() ?? []).map((s) => ({
@@ -285,7 +286,7 @@ export function usagePayload(deps, query) {
 		// exactly right.
 		lastSweepAt: deps.lastSweepAt?.(),
 		diagnostics: store.diagnostics(),
-		priced: priced?.(range, site) ?? null
+		priced: priced?.(range, site, provider) ?? null
 	};
 }
 

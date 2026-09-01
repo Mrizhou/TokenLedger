@@ -79,12 +79,15 @@ test("declaring dsh.client obliges the package to export ./client", () => {
 	assert.ok(pkg.exports["./client"], 'dsh.client without an "./client" export is a hard error upstream');
 });
 
-const root = await import("../src/index.js");
+const root = await import(new URL(`..${pkg.exports["."].slice(1)}`, import.meta.url));
 
 test("the package root is a valid Cordis plugin, because the entry name points at it", async () => {
 	assert.equal(typeof root.apply, "function", "a bare entry name loads the root export as the plugin");
 	assert.ok(Array.isArray(root.inject));
 	assert.equal(typeof root.name, "string");
+	assert.equal(typeof root.foldUsage, "function", "the documented root library API remains available");
+	assert.equal(typeof root.bySite, "function");
+	assert.equal(typeof root.byModel, "function");
 });
 
 test("every file the manifest points at is shipped", () => {
@@ -109,6 +112,10 @@ test("no official @deepseek-ai package is a hard dependency", () => {
 		assert.equal(name.startsWith("@deepseek-ai/"), false, `${name} must be a peer, not a dependency`);
 	}
 	for (const name of Object.keys(pkg.peerDependencies ?? {})) {
+		if (name === "@deepseek-ai/cordis") {
+			assert.equal(pkg.peerDependenciesMeta?.[name], undefined, "Cordis is the required host-owned Blue lifecycle peer");
+			continue;
+		}
 		assert.equal(
 			pkg.peerDependenciesMeta?.[name]?.optional,
 			true,

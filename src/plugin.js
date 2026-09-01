@@ -39,8 +39,10 @@ import { createFingerprintRegistry } from "./fingerprints.js";
 import { describeProject, readProjectTitles, workspaceRegistry } from "./projects.js";
 import { discoverFromContext, mergeSites, withKnownSoftware } from "./discovery.js";
 import { createBalanceReader, listAccounts } from "./balance.js";
-import { forgetWallet, readNewApiWallet, shouldUseWallet } from "./newapi-user.js";
-import { VERSION, registerRoutes } from "./http.js";
+import { createNewApiWalletReader, shouldUseWallet } from "./newapi-user.js";
+import { VERSION, registerRoutes, usagePayload } from "./http.js";
+import { DashboardController, DashboardControllerError } from "./dashboard-controller.js";
+import { mountTokenLedgerBlue } from "./blue/index.js";
 
 import { LedgerStore } from "./store.js";
 import { RateTable, priceRows } from "./pricing.js";
@@ -57,11 +59,11 @@ function dayKeyDaysAgo(daysBack) {
  * Rates live in config rather than in code because a relay sets its own
  * prices; shipping a table would be shipping one site's deal as everyone's.
  */
-function priceWithConfiguredRates(store, range, site, rates) {
+function priceWithConfiguredRates(store, range, site, rates, provider = undefined) {
 	try {
 		const table = new RateTable(rates);
 		const day = range.to ?? range.from ?? dayKey(Date.now());
-		return priceRows(store.byModel(range, site), table, day);
+		return priceRows(store.byModel(range, site, provider), table, day);
 	} catch {
 		// A malformed rate table costs the cost column, not the report.
 		return null;
@@ -102,7 +104,8 @@ export const inject = ["sessionPersistence"];
 const DEFAULTS = {
 	database: "tokenledger.sqlite",
 	sweepIntervalMs: 60_000,
-	sweepOnStart: true
+	sweepOnStart: true,
+	commandEnabled: true
 };
 
 /**
@@ -598,9 +601,9 @@ function routeAttributionReport(store, directory) {
 /**
  * Cordis plugin entry.
  *
- * Publishes `ctx.tokenLedger` so a UI row or a tool can read the index without
- * reopening the database, and disposes both the timer and the store with the
- * fiber.
+ * Preserves the legacy `ctx.tokenLedger` service and optionally mounts the Blue
+ * adapter. The dashboard controller, timer, caches, and store remain owned by
+ * this one plugin Fiber.
  */
 export function apply(ctx, userConfig = {}) {
 	const config = { ...DEFAULTS, ...userConfig };
@@ -621,6 +624,8 @@ export function apply(ctx, userConfig = {}) {
 		logger?.error?.("tokenledger: could not open %s: %s", config.database, error?.message ?? error);
 		return;
 	}
+	let dashboardController;
+	const walletReader = createNewApiWalletReader();
 
 	// --- the site directory -------------------------------------------------
 	//
@@ -650,6 +655,7 @@ export function apply(ctx, userConfig = {}) {
 		// already succeeded.
 		onLearn: (software) => {
 			directory = { ...directory, sites: withKnownSoftware(directory.sites, software) };
+			dashboardController?.notifyChanged();
 		}
 	});
 
@@ -799,6 +805,9 @@ export function apply(ctx, userConfig = {}) {
 			scoped.on?.("dispose", () => {
 				live = false;
 				settingsScope = undefined;
+				settingsRemove = undefined;
+				settingsRemoveUserAuth = undefined;
+				dashboardController?.notifyChanged(true);
 			});
 			void import("./settings-schema.js")
 				.then(({ registerNamespace }) =>
@@ -807,6 +816,7 @@ export function apply(ctx, userConfig = {}) {
 								// A resolved value replaces the entry config wholesale;
 								// the directory picks the change up on the next sweep.
 								Object.assign(config, next);
+								dashboardController?.notifyChanged(true);
 							})
 						: undefined
 				)
@@ -821,6 +831,7 @@ export function apply(ctx, userConfig = {}) {
 					// nothing. Re-discover now instead of leaving the directory empty
 					// until the next timer tick.
 					refreshDirectory();
+					dashboardController?.notifyChanged(true);
 					logger?.info?.("tokenledger: settings namespace registered; configuration can be saved");
 				})
 				.catch((error) => {
@@ -828,6 +839,7 @@ export function apply(ctx, userConfig = {}) {
 					// different, and a message that names the wrong one sends whoever
 					// reads it to the wrong place.
 					settingsFailure = error?.message ?? String(error);
+					dashboardController?.notifyChanged(true);
 					logger?.warn?.(
 						"tokenledger: could not register the settings namespace (%s); using entry config only",
 						settingsFailure
@@ -838,67 +850,54 @@ export function apply(ctx, userConfig = {}) {
 		settingsFailure = "这个 Cordis 没有 ctx.inject";
 	}
 
-	const api = {
+	// The original public face is a published compatibility contract. Keep its
+	// identity and behavior unchanged while new renderers migrate to the bounded
+	// the internal dashboard controller below; in particular, this legacy object still exposes
+	// the store because removing it here would turn an additive migration into a
+	// breaking release.
+	const legacyApi = {
 		store,
 		sweep: runSweep,
 		totals: (range, site) => store.totals(range, site),
 		byDay: (range, site) => store.byDay(range, site),
 		byModel: (range, site) => store.byModel(range, site),
 		bySite: (range) => store.bySite(range),
-		sites: () => directory.sites.map((s) => ({ ...s })),
+		sites: () => directory.sites.map((site) => ({ ...site })),
 		diagnostics: () => store.diagnostics(),
-		/** Discard the index; the next sweep rebuilds it from seq 0. */
 		reindex: async () => {
 			store.reset();
 			return runSweep();
 		}
 	};
-
-	// Cordis refuses a bare assignment to an undeclared service ("cannot set
-	// property without provide"). Publishing is a convenience for a UI row or a
-	// tool, not a prerequisite for collecting, so an upstream rc that moves this
-	// API costs the service and nothing else.
 	try {
 		if (typeof ctx.reflect?.provide === "function") {
-			ctx.reflect.provide("tokenLedger", api);
+			ctx.reflect.provide("tokenLedger", legacyApi);
 		} else {
-			logger?.warn?.("tokenledger: no reflect.provide on this Cordis; collecting without publishing a service");
+			logger?.warn?.("tokenledger: no reflect.provide on this Cordis; collecting without publishing services");
 		}
 	} catch (error) {
-		logger?.warn?.("tokenledger: could not publish the service: %s", error?.message ?? error);
+		logger?.warn?.("tokenledger: could not publish the legacy service: %s", error?.message ?? error);
 	}
 
-	// `/tokenledger [days] [site]` — a report in the conversation stream. The
-	// command is a shell over the same queries the future UI page will use, so
-	// nothing here is throwaway when that page lands.
-	const commands = typeof ctx.get === "function" ? ctx.get("commands") : undefined;
-	if (commands !== undefined) {
-		try {
-			ctx.effect(function* () {
-				yield commands.register({
-					name: config.commandName ?? "tokenledger",
-					description: "Token usage by model and relay site",
-					input: { hint: "[days] [site] | site | export [csv] | diagnostics | reindex" },
-					handler: async (invocation) => {
-						try {
-							return { kind: "success", text: await handleCommand(invocation.rawInput ?? "") };
-						} catch (error) {
-							return { kind: "error", text: `tokenledger: ${error?.message ?? error}` };
-						}
-					}
-				});
-			}, "tokenledger command");
-		} catch (error) {
-			logger?.warn?.("tokenledger: could not register the command: %s", error?.message ?? error);
-		}
-	}
+	/** Sweep and replay the changed summary to renderer-neutral consumers. */
+	const runSweepAndPublish = async () => {
+		const result = await runSweep();
+		dashboardController?.notifyChanged();
+		return result;
+	};
+
+	/** Discard the derived index; the next sweep rebuilds it from seq 0. */
+	const reindexAndPublish = async () => {
+		store.reset();
+		return runSweepAndPublish();
+	};
 
 	const handleCommand = (rawInput) =>
 		runCommand(rawInput, {
 			store,
 			config,
-			sweep: runSweep,
-			reindex: api.reindex,
+			sweep: runSweepAndPublish,
+			reindex: reindexAndPublish,
 			logger,
 			sites: () => directory.sites,
 			// The whole directory, not just its sites: diagnostics needs the
@@ -910,22 +909,56 @@ export function apply(ctx, userConfig = {}) {
 			probeStatus: fingerprints.status,
 			// Present only once the namespace registered; `runCommand` says so
 			// rather than failing, because the report half still works without it.
-			saveRelays:
-				settingsScope === undefined
-					? undefined
-					: async (relays) => {
+				saveRelays:
+					settingsScope === undefined
+						? undefined
+						: async (relays) => {
 							await settingsScope.update({ relays });
 							refreshDirectory();
+							dashboardController?.notifyChanged(true);
 						},
-			removeRelay:
-				settingsRemove === undefined
-					? undefined
-					: async (route) => {
+				removeRelay:
+					settingsRemove === undefined
+						? undefined
+						: async (route) => {
 							await settingsRemove(route);
 							refreshDirectory();
+							dashboardController?.notifyChanged(true);
 						},
 			saveUnavailableBecause: settingsFailure
 		});
+
+	// The legacy command is the plain fallback. A live Blue adapter temporarily
+	// owns the same name and restores this effect when its host service unloads.
+	let legacyCommandEffect;
+	let disposing = false;
+	const stopLegacyCommand = () => {
+		const dispose = legacyCommandEffect;
+		legacyCommandEffect = undefined;
+		if (typeof dispose === "function") void dispose();
+	};
+	const startLegacyCommand = () => {
+		if (disposing || config.commandEnabled === false || legacyCommandEffect !== undefined || typeof ctx.get !== "function") return;
+		const commands = ctx.get("commands");
+		if (commands === undefined || typeof commands.register !== "function") return;
+		try {
+			legacyCommandEffect = ctx.effect(() => commands.register({
+				name: config.commandName ?? "tokenledger",
+				description: "Token usage by model and relay site",
+				input: { hint: "[days] [site] | site | export [csv] | diagnostics | reindex" },
+				handler: async (invocation) => {
+					try {
+						return { kind: "success", text: await handleCommand(invocation.rawInput ?? "") };
+					} catch (error) {
+						return { kind: "error", text: `tokenledger: ${error?.message ?? error}` };
+					}
+				}
+			}), "tokenledger legacy command");
+		} catch (error) {
+			logger?.warn?.("tokenledger: could not register the command: %s", error?.message ?? error);
+		}
+	};
+	startLegacyCommand();
 
 	// The read-only surface the browser panel reads. Registering it is optional
 	// in both directions: a composition with no web server keeps collecting, and
@@ -935,6 +968,51 @@ export function apply(ctx, userConfig = {}) {
 	// exists reads the USER WALLET (per-user, adaptive-cache, no key query to
 	// spend the site's rate budget on), and every other account falls through
 	// to the per-key readers exactly as before.
+	let balance;
+
+	/** The stored credentials as a renderer may SEE them: never the token. */
+	const userAuth = (origin) => {
+		const all = config.userAuth ?? {};
+		const view = (entry) => ({
+			userId: typeof entry?.userId === "number" ? entry.userId : undefined,
+			hasToken: typeof entry?.token === "string" && entry.token !== ""
+		});
+		if (origin !== undefined) {
+			const hit = all[origin];
+			return hit === undefined ? {} : { [origin]: view(hit) };
+		}
+		return Object.fromEntries(Object.entries(all).map(([key, entry]) => [key, view(entry)]));
+	};
+
+	/** Save or clear one origin's entry through the existing settings seam. */
+	const saveUserAuth = async (body) => {
+		if (body === null || typeof body !== "object") throw new Error("invalid-body");
+		const origin = normalizeOrigin(body.origin);
+		if (origin === undefined) throw new Error("invalid-origin");
+		if (body.remove === true) {
+			if (settingsRemoveUserAuth === undefined) throw new Error("settings-not-ready");
+			await settingsRemoveUserAuth(origin);
+			// Mirror the change now: the settings watch is asynchronous and a read
+			// immediately after this write must not see the removed credential.
+			const next = { ...(config.userAuth ?? {}) };
+			delete next[origin];
+			config.userAuth = next;
+		} else {
+			if (settingsScope === undefined) throw new Error("settings-not-ready");
+			const userId = body.userId;
+			if (typeof userId !== "number" || !Number.isInteger(userId) || userId <= 0) {
+				throw new Error("invalid-user-id");
+			}
+			const previous = config.userAuth?.[origin];
+			const token = typeof body.token === "string" && body.token !== "" ? body.token : previous?.token;
+			if (typeof token !== "string" || token === "") throw new Error("invalid-token");
+			config.userAuth = { ...(config.userAuth ?? {}), [origin]: { userId, token } };
+			await settingsScope.update({ userAuth: config.userAuth });
+		}
+		walletReader.forget(origin);
+		dashboardController?.notifyChanged(true);
+	};
+
 	try {
 		/** The per-key readers, unchanged underneath the wallet override. */
 		const baseBalance = createBalanceReader(ctx, {
@@ -958,7 +1036,7 @@ export function apply(ctx, userConfig = {}) {
 			}
 		});
 
-		const balance = async (id, force, warmOrigin) => {
+		balance = async (id, force, warmOrigin, request = {}) => {
 			const accounts = listAccounts(ctx, { softwareOf: fingerprints.software });
 			// A WARM request names an origin, not an account: the browser fires
 			// one per configured site at page load, before any account is picked.
@@ -974,14 +1052,15 @@ export function apply(ctx, userConfig = {}) {
 				// to the per-key read: that spends the site's query budget the
 				// wallet exists to save, and a page load would pay it every time.
 				if (warmOrigin !== undefined) return { ok: true, warmed: false };
-				return baseBalance(id);
+				return baseBalance(id, { signal: request.signal });
 			}
 			try {
-				const card = await readNewApiWallet({
+				const card = await walletReader.read({
 					origin: account.origin,
 					userId: auth.userId,
 					token: auth.token,
-					force
+					force,
+					signal: request.signal
 				});
 				return { ok: true, account: account.id, displayName: account.displayName, warmed: warmOrigin !== undefined, ...card };
 			} catch (error) {
@@ -1014,61 +1093,12 @@ export function apply(ctx, userConfig = {}) {
 			}
 		};
 
-		/** The stored credentials as the dialog may SEE them: never the token. */
-		const userAuth = (origin) => {
-			const all = config.userAuth ?? {};
-			const view = (entry) => ({
-				userId: typeof entry?.userId === "number" ? entry.userId : undefined,
-				hasToken: typeof entry?.token === "string" && entry.token !== ""
-			});
-			if (origin !== undefined) {
-				const hit = all[origin];
-				return hit === undefined ? {} : { [origin]: view(hit) };
-			}
-			return Object.fromEntries(Object.entries(all).map(([key, entry]) => [key, view(entry)]));
-		};
-
-		/** Save or clear one origin's entry, from the dialog's POST. */
-		const saveUserAuth = async (body) => {
-			if (body === null || typeof body !== "object") throw new Error("invalid-body");
-			const origin = normalizeOrigin(body.origin);
-			if (origin === undefined) throw new Error("invalid-origin");
-			if (body.remove === true) {
-				if (settingsRemoveUserAuth === undefined) throw new Error("settings-not-ready");
-				await settingsRemoveUserAuth(origin);
-				// Mirror the change into `config` NOW: the settings watch fires
-				// asynchronously, and the panel's reload lands before it does — a
-				// read in that gap must see the credentials as gone, not stale.
-				const next = { ...(config.userAuth ?? {}) };
-				delete next[origin];
-				config.userAuth = next;
-			} else {
-				if (settingsScope === undefined) throw new Error("settings-not-ready");
-				const userId = body.userId;
-				if (typeof userId !== "number" || !Number.isInteger(userId) || userId <= 0) {
-					throw new Error("invalid-user-id");
-				}
-				// An empty token means "keep what is stored" — the dialog prefills
-				// nothing for a configured site, so editing the user id alone
-				// must not demand retyping the secret.
-				const previous = config.userAuth?.[origin];
-				const token = typeof body.token === "string" && body.token !== "" ? body.token : previous?.token;
-				if (typeof token !== "string" || token === "") throw new Error("invalid-token");
-				// Same mirror, same reason: the panel re-reads the moment the save
-				// answers, and the wallet — not the per-key fallback — must answer.
-				config.userAuth = { ...(config.userAuth ?? {}), [origin]: { userId, token } };
-				await settingsScope.update({ userAuth: config.userAuth });
-			}
-			// Whatever just changed, the next read starts from the network.
-			forgetWallet(origin);
-		};
-
 		const served = registerRoutes(ctx, {
 			store,
 			sites: () => directory.sites,
-			sweep: runSweep,
-			priced: (range, site) =>
-				config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates),
+			sweep: runSweepAndPublish,
+			priced: (range, site, provider) =>
+				config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates, provider),
 			accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 			projectTitles: () => projectTitles,
 			lastSweepAt: () => lastSweepAt,
@@ -1087,14 +1117,57 @@ export function apply(ctx, userConfig = {}) {
 		logger?.error?.("tokenledger: could not register the HTTP routes: %s", error?.stack ?? error?.message ?? error);
 	}
 
-	if (config.sweepOnStart) void runSweep();
+	const usageDeps = {
+		store,
+		sites: () => directory.sites,
+		priced: (range, site, provider) =>
+			config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates, provider),
+		accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
+		projectTitles: () => projectTitles,
+		lastSweepAt: () => lastSweepAt
+	};
+	const readUsage = (query) => usagePayload(usageDeps, query);
+	try {
+		dashboardController = new DashboardController({
+			readUsage,
+			refresh: async ({ signal }) => {
+				const stats = await runSweep();
+				if (signal.aborted) throw new DashboardControllerError("ABORTED", "Usage refresh was aborted");
+				return stats;
+			},
+			readBalance: async (action, { signal }) => {
+				if (balance === undefined) throw new DashboardControllerError("UNAVAILABLE", "Balance reader is unavailable");
+				const accountId = typeof action.accountId === "string" ? action.accountId.slice(0, 256) : undefined;
+				const data = await balance(accountId, action.force === true, undefined, { signal });
+				if (signal.aborted) throw new DashboardControllerError("ABORTED", "Balance refresh was aborted");
+				return data;
+			},
+			dispose: () => walletReader.dispose()
+		});
+	} catch (error) {
+		logger?.warn?.("tokenledger: could not initialize the Blue dashboard controller: %s", error?.message ?? error);
+	}
+
+	if (dashboardController !== undefined && typeof ctx.inject === "function") {
+		ctx.inject(["bluePluginHost"], (scoped) => {
+			stopLegacyCommand();
+			const mounted = mountTokenLedgerBlue(scoped, dashboardController, { onDispose: startLegacyCommand });
+			if (!mounted) startLegacyCommand();
+		});
+	}
+
+	if (config.sweepOnStart) void runSweepAndPublish();
 
 	const timer =
-		config.sweepIntervalMs > 0 ? setInterval(() => void runSweep(), config.sweepIntervalMs) : undefined;
+		config.sweepIntervalMs > 0 ? setInterval(() => void runSweepAndPublish(), config.sweepIntervalMs) : undefined;
 	timer?.unref?.();
 
-	ctx.on("dispose", () => {
+	ctx.on("dispose", async () => {
+		disposing = true;
+		stopLegacyCommand();
 		if (timer !== undefined) clearInterval(timer);
+		if (dashboardController === undefined) walletReader.dispose();
+		else await dashboardController.dispose();
 		try {
 			store.close();
 		} catch {
