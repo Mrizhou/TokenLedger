@@ -24,7 +24,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 483/484
+npm test                           # 全量，当前基线 484/484
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -34,16 +34,24 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 1. **🔴 改这个仓库不会修好运行中的 DSH。**
    实际加载的是 `~/.dsh/profiles/desktop/node_modules/dsh-tokenledger`，
    **npm 装的 0.1.0，跟本仓库（0.1.1-blue.0）是两份独立代码**。
-   仓库里 commit 完就说"修好了"是错的 —— 必须另外装进 profile 才生效。
+   仓库里 commit 完就说"修好了"是错的 —— 必须另外去打那一份。
+   **而且不能整包覆盖过去**：本仓库的 `blue.plugin.json` 声明
+   `compatibility.harness: "0.1.2-alpha.2"`（Blue 渲染器线），本机是 DSH Desktop 2.0.6，
+   整包换过去等于顺带吃下整个 Blue 重构。2026-09-14 的做法是只手工打兼容补丁，
+   备份在装机目录的 `src/plugin.js.bak-pre-dsh2-fix-20260914`。
+   ⚠️ 手工补丁**会被 DSH 市场的更新/重装悄悄冲掉**，升完要回来重打；
+   查是否还在：`grep -c "persistence.open" <装机目录>/src/plugin.js`，出来 0 就是没了。
 
 2. **🔴 没跑 `npm install` 就别下"测试挂了"的结论。**
    `@deepseek-ai/cordis` / `@deepseek-ai/schemastery` 是 devDeps，缺了会让
    `boot` / `settings-schema` / `blue-entry` 三个文件整文件加载失败（5 个 fail），
    报的是 `ERR_MODULE_NOT_FOUND`，不是断言失败 —— 别去改代码。
 
-3. **🔴 `test/blue-packaging.test.js` 在 Windows 上必然红一条，别去"修"代码。**
-   `execFileSync("npm", ...)` 在 Windows 上找不到 `npm.cmd` → `spawnSync npm ENOENT`。
-   **上游的跨平台疏漏**，不是本地改动引入的。全量 483/484 里那个 1 就是它。
+3. **🔴 Windows 上不要直接 spawn `npm`。**（`test/blue-packaging.test.js` 2026-09-14 已修）
+   `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
+   **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
+   会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **484/484**。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
