@@ -444,3 +444,38 @@ test("a malformed relay entry is skipped rather than poisoning the map", async (
 	assert.equal(sites.length, 1);
 	assert.deepEqual(Object.keys(providerBaseUrls), ["good"]);
 });
+
+test("handles handle-based persistence (list + open handle) from modern DSH", async () => {
+	await withStore(async (store) => {
+		const sessions = new Map([
+			["s1", { revision: "r1", events: [header("p", "m"), message(1, 1, "p", "m", { inputTokens: 200, outputTokens: 20 })] }]
+		]);
+		let closed = false;
+		const handlePersistence = {
+			async list() {
+				return [...sessions.entries()].map(([id, s]) => ({
+					header: { version: 0, id, createdAt: DAY, ...s.header },
+					revision: s.revision
+				}));
+			},
+			async open(id, mode) {
+				assert.equal(mode, "read");
+				return {
+					async read(fromSeq) {
+						const s = sessions.get(id);
+						return { events: s.events.filter((e) => e.seq >= fromSeq) };
+					},
+					async close() {
+						closed = true;
+					}
+				};
+			}
+		};
+		const stats = await sweep(handlePersistence, store, {});
+		assert.equal(stats.scanned, 1);
+		assert.equal(stats.updated, 1);
+		assert.equal(closed, true);
+		assert.equal(store.totals().inputTokens, 200);
+		assert.equal(store.totals().outputTokens, 20);
+	});
+});

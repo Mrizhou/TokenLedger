@@ -209,7 +209,11 @@ export async function sweep(persistence, store, options = {}) {
 
 	let snapshots;
 	try {
-		snapshots = await persistence.listSnapshots();
+		const listSessions = persistence.list ?? persistence.listSnapshots;
+		if (typeof listSessions !== "function") {
+			throw new Error("sessionPersistence exposes neither list() nor listSnapshots()");
+		}
+		snapshots = await listSessions.call(persistence);
 	} catch (error) {
 		logger?.warn?.("tokenledger: could not list sessions: %s", error?.message ?? error);
 		stats.failed++;
@@ -250,7 +254,17 @@ export async function sweep(persistence, store, options = {}) {
 			const fromSeq = checkpoint === undefined
 				? (snapshot.header?.seedLength ?? 0)
 				: state.consumedSeq + 1;
-			const { events } = await persistence.readFrom(sessionId, fromSeq);
+			let events;
+			if (typeof persistence.open === "function") {
+				const handle = await persistence.open(sessionId, "read");
+				try {
+					({ events } = await handle.read(fromSeq));
+				} finally {
+					await handle.close();
+				}
+			} else {
+				({ events } = await persistence.readFrom(sessionId, fromSeq));
+			}
 			if ((events?.length ?? 0) === 0) {
 				stats.skipped++;
 				continue;
