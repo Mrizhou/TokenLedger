@@ -12,7 +12,14 @@ const root = resolve(import.meta.dirname, "..");
 test("single package contains the Web plugin and canonical Blue manifest", () => {
 	const destination = mkdtempSync(join(tmpdir(), "tokenledger-blue-pack-"));
 	try {
-		const output = execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", destination], { cwd: root, encoding: "utf8" });
+		// On Windows npm is `npm.cmd`, and since Node 18.20/20.12/22 a `.cmd` file
+		// cannot be spawned without a shell — both execFileSync("npm", …) and
+		// execFileSync("npm.cmd", …) fail, the first with ENOENT and the second
+		// with EINVAL. Go through the shell there, and quote the one argument that
+		// carries a path. POSIX keeps the shell-free spawn.
+		const onWindows = process.platform === "win32";
+		const destinationArgument = onWindows ? `"${destination}"` : destination;
+		const output = execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", destinationArgument], { cwd: root, encoding: "utf8", shell: onWindows });
 		const packed = JSON.parse(output)[0];
 		const files = new Set(packed.files.map((file) => file.path));
 		for (const path of ["package.json", "blue.plugin.json", "cordis.patch.yml", "src/blue/index.js", "src/blue/model.js", "README.md"]) {
