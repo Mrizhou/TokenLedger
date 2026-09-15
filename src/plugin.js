@@ -15,9 +15,10 @@
  *
  * ## Why it sweeps rather than subscribing
  *
- * `sessionPersistence.listSnapshots()` returns an opaque per-log revision that
+ * `sessionPersistence.list()` returns an opaque per-log revision that
  * changes on append, so a sweep can skip every unchanged session without
- * parsing it, and `readFrom(id, seq)` reads only the tail. Subscribing to live
+ * parsing it, and a read handle opened with `open(id, "read")` reads the log.
+ * Subscribing to live
  * events instead would put this code on the hot path and lose everything
  * written while the plugin was not running — a restart would silently under-
  * count. Sweeping is idempotent and self-healing; subscribing is neither.
@@ -40,12 +41,12 @@ import { describeProject, readProjectTitles, workspaceRegistry } from "./project
 import { discoverFromContext, mergeSites, withKnownSoftware } from "./discovery.js";
 import { createBalanceReader, listAccounts } from "./balance.js";
 import { createNewApiWalletReader, shouldUseWallet } from "./newapi-user.js";
-import { VERSION, registerRoutes, usagePayload } from "./http.js";
+import { VERSION, priceToday, registerRoutes, usagePayload } from "./http.js";
 import { DashboardController, DashboardControllerError } from "./dashboard-controller.js";
 import { mountTokenLedgerBlue } from "./blue/index.js";
 
 import { LedgerStore } from "./store.js";
-import { RateTable, priceRows } from "./pricing.js";
+import { DEEPSEEK_OFFICIAL_RATES, RateTable, priceRows } from "./pricing.js";
 import { num, renderReport, table } from "./report.js";
 
 /** `YYYY-MM-DD` for N days before today, in local time. */
@@ -54,14 +55,19 @@ function dayKeyDaysAgo(daysBack) {
 }
 
 /**
- * Price the range with rates from configuration.
+ * Price the range with rates from configuration, falling back to the shipped
+ * DeepSeek official list.
  *
  * Rates live in config rather than in code because a relay sets its own
  * prices; shipping a table would be shipping one site's deal as everyone's.
+ * But the official route is the default install, and a report whose cost
+ * column is all em dashes until the user writes a price table reads as
+ * broken. The official list prices the deepseek models only; anything else
+ * stays unpriced (`null`, never zero). A user-supplied `rates` always wins.
  */
 function priceWithConfiguredRates(store, range, site, rates, provider = undefined) {
 	try {
-		const table = new RateTable(rates);
+		const table = new RateTable(rates === undefined ? DEEPSEEK_OFFICIAL_RATES : rates);
 		const day = range.to ?? range.from ?? dayKey(Date.now());
 		return priceRows(store.byModel(range, site, provider), table, day);
 	} catch {
@@ -209,6 +215,10 @@ export async function sweep(persistence, store, options = {}) {
 
 	let snapshots;
 	try {
+		// The harness reworked this seam on 2026-08-28 (`bec6805d6a`,
+		// handle-based session persistence): `listSnapshots()` became `list()`.
+		// Prefer the new name and keep the old one as a fallback, so a host on
+		// either side of that change lists its sessions.
 		const listSessions = persistence.list ?? persistence.listSnapshots;
 		if (typeof listSessions !== "function") {
 			throw new Error("sessionPersistence exposes neither list() nor listSnapshots()");
@@ -245,41 +255,43 @@ export async function sweep(persistence, store, options = {}) {
 				continue;
 			}
 
-			// A fork's durable log starts with a copy of its parent's event prefix.
-			// DSH records the exclusive end of that inherited prefix as seedLength.
-			// Counting it again under the child's session id makes every fork inflate
-			// the ledger.
-			const seedLength = snapshot.header?.seedLength ?? 0;
+			// The handle-based seam reads the log through `open(id, "read")`;
+			// `readFrom(id, seq)` is gone with it. The v1→v2 session migration
+			// also RENUMBERS event seqs, so a checkpoint's `consumedSeq` can
+			// overshoot the renumbered log and yield an empty tail while unread
+			// events remain — the session would silently never be counted
+			// again. A moved revision therefore re-reads the whole log and
+			// re-folds it from scratch; `commitSession` replaces the session's
+			// rows wholesale, so the full fold cannot double count.
 			let events;
 			let state;
 			if (typeof persistence.open === "function") {
-				// The handle seam re-reads the WHOLE log rather than the tail past
-				// consumedSeq. The v1 -> v2 session migration RENUMBERS event seqs, so a
-				// checkpoint written before it can point past the end of the renumbered
-				// log: the tail reads back empty, the session is counted as skipped, and
-				// it is never folded again. That failure is silent — sweep() swallows its
-				// own errors — so it surfaces as "the panel stopped growing", which is
-				// the one symptom hardest to trace back to here.
-				//
-				// A full re-fold is safe rather than double counting: commitSession
-				// deletes the session's rollups inside the same transaction that writes
-				// the new ones, so the rows are replaced wholesale.
 				const handle = await persistence.open(sessionId, "read");
 				try {
 					({ events } = await handle.read(0));
 				} finally {
 					await handle.close();
 				}
-				// A full re-read sees the inherited prefix again, so the fold starts past
-				// it. A fresh state, because this is a fold from scratch, not a delta.
+				// A fork's durable log starts with a copy of its parent's event
+				// prefix; DSH records the exclusive end of that inherited prefix
+				// as seedLength. A full re-read sees the prefix again, so the
+				// fold starts past it — counting it under the child's session id
+				// would inflate every fork's ledger.
+				const seedLength = snapshot.header?.seedLength ?? 0;
 				events = (events ?? []).filter((event) => (event.seq ?? 0) >= seedLength);
 				state = createUsageState();
 			} else {
-				// The pre-handle seam reads only the tail. Existing checkpoints already
-				// point past the inherited prefix; only a session's first read needs to
-				// start at the durable seed boundary.
+				// The pre-handle seam still reads a tail. A fork's durable log
+				// starts with a copy of its parent's event prefix. DSH records
+				// the exclusive end of that inherited prefix as seedLength.
+				// Counting it again under the child's session id makes every fork
+				// inflate the ledger. Existing checkpoints already point past the
+				// prefix; only a session's first read needs to start at the
+				// durable seed boundary.
 				state = store.loadState(sessionId);
-				const fromSeq = checkpoint === undefined ? seedLength : state.consumedSeq + 1;
+				const fromSeq = checkpoint === undefined
+					? (snapshot.header?.seedLength ?? 0)
+					: state.consumedSeq + 1;
 				({ events } = await persistence.readFrom(sessionId, fromSeq));
 			}
 			if ((events?.length ?? 0) === 0) {
@@ -1128,8 +1140,12 @@ export function apply(ctx, userConfig = {}) {
 			store,
 			sites: () => directory.sites,
 			sweep: runSweepAndPublish,
-			priced: (range, site, provider) =>
-				config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates, provider),
+			// The panel prices every range: the configured rates when present,
+			// the shipped DeepSeek official list otherwise (deepseek models
+			// only — anything else stays unpriced).
+			priced: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider),
+			// The badge's "today" figure, same rate default as `priced`.
+			todayPriced: (site) => priceToday(store, site, config.rates),
 			accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 			projectTitles: () => projectTitles,
 			lastSweepAt: () => lastSweepAt,
@@ -1151,8 +1167,8 @@ export function apply(ctx, userConfig = {}) {
 	const usageDeps = {
 		store,
 		sites: () => directory.sites,
-		priced: (range, site, provider) =>
-			config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates, provider),
+		priced: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider),
+		todayPriced: (site) => priceToday(store, site, config.rates),
 		accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 		projectTitles: () => projectTitles,
 		lastSweepAt: () => lastSweepAt

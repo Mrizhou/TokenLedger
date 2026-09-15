@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
 	DEEPSEEK_OFF_PEAK,
+	DEEPSEEK_OFFICIAL_RATES,
 	RATE_BUCKETS,
 	RateTable,
 	defineRate,
@@ -158,4 +159,38 @@ test("priceRows totals per currency and never sums across them", () => {
 test("costs are rounded to six decimals, not float noise", () => {
 	const rate = defineRate({ model: "v4", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 0.7 } });
 	assert.equal(estimateCost(buckets({ inputTokens: 3 }), rate).cost, 0.000002);
+});
+
+test("the shipped official schedule prices each day with its own generation's rates", () => {
+	// DeepSeek renamed and repriced on 2026-09-10 and retired V4 Pro on
+	// 2026-09-14; a day is priced with the schedule in force that day, so
+	// history keeps the prices it was billed at.
+	const table = new RateTable(DEEPSEEK_OFFICIAL_RATES);
+
+	// V4 prices before the switch, V4.1 Flash prices from it.
+	assert.equal(table.rateFor("deepseek-v4-flash", "2026-09-09").perMillion.inputTokens, 3.0);
+	assert.equal(table.rateFor("deepseek-v4-flash", "2026-09-10").perMillion.inputTokens, 2.0);
+	// The rename's new id prices from its first day.
+	assert.equal(table.rateFor("deepseek-flash", "2026-09-10").perMillion.inputTokens, 2.0);
+	assert.equal(table.rateFor("deepseek-flash", "2026-09-09"), undefined);
+	// V4 Pro keeps its prices to its retirement day, then rides V4.1 Flash's.
+	assert.equal(table.rateFor("deepseek-v4-pro", "2026-09-13").perMillion.inputTokens, 9.0);
+	assert.equal(table.rateFor("deepseek-v4-pro", "2026-09-14").perMillion.inputTokens, 2.0);
+	// Non-DeepSeek models stay unpriced.
+	assert.equal(table.rateFor("gpt-5.6-sol", "2026-09-10"), undefined);
+});
+
+test("priceRows prices the official route through the shipped schedule", () => {
+	const table = new RateTable(DEEPSEEK_OFFICIAL_RATES);
+	const { totals, unpricedModels } = priceRows(
+		[
+			{ model: "deepseek-flash", ...buckets({ inputTokens: 1_000_000, outputTokens: 1_000_000 }) },
+			{ model: "deepseek-v4-pro", ...buckets({ inputTokens: 1_000_000 }) }
+		],
+		table,
+		"2026-09-12"
+	);
+	// flash: ¥2/M in + ¥8/M out on 1M each = 10; pro (pre-retirement): ¥9/M in.
+	assert.deepEqual(totals, { CNY: 19 });
+	assert.deepEqual(unpricedModels, []);
 });
