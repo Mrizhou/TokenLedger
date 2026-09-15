@@ -24,7 +24,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 484/484
+npm test                           # 全量，当前基线 485/485
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -37,10 +37,20 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    仓库里 commit 完就说"修好了"是错的 —— 必须另外去打那一份。
    **而且不能整包覆盖过去**：本仓库的 `blue.plugin.json` 声明
    `compatibility.harness: "0.1.2-alpha.2"`（Blue 渲染器线），本机是 DSH Desktop 2.0.6，
-   整包换过去等于顺带吃下整个 Blue 重构。2026-09-14 的做法是只手工打兼容补丁，
-   备份在装机目录的 `src/plugin.js.bak-pre-dsh2-fix-20260914`。
-   ⚠️ 手工补丁**会被 DSH 市场的更新/重装悄悄冲掉**，升完要回来重打；
-   查是否还在：`grep -c "persistence.open" <装机目录>/src/plugin.js`，出来 0 就是没了。
+   整包换过去等于顺带吃下整个 Blue 重构。做法是只手工搬需要的那几处改动。
+
+   装机目录现在有**两处**手工补丁。自检命令在装机目录下跑，**出来 0 就是被冲掉了**：
+
+   | 文件 | 补了什么 | 自检 | 备份 |
+   |------|---------|------|------|
+   | `src/plugin.js` | DSH 2.0 句柄式 persistence 兼容（2026-09-14） | `grep -c "persistence.open" src/plugin.js` | `src/plugin.js.bak-pre-dsh2-fix-20260914` |
+   | `src/client.js` | AccountPicker 下拉灰底灰字（2026-09-14） | `grep -c "tkl_select option" src/client.js` | `src/client.js.bak-pre-select-contrast-20260914` |
+
+   ⚠️ 手工补丁**会被 DSH 市场的更新/重装悄悄冲掉**，升完要回来把上表逐条重打。
+   打完必须**重启 DSH Desktop**：样式表按 `STYLE_ID` 一次性注入，热重载不会换掉已注入的那份。
+
+   `client.js` 这处已提上游 [PR #63](https://github.com/zh667/TokenLedger/pull/63)，
+   上游合并并发版、且装机版跟进之后，这一行可以从表里删掉。
 
 2. **🔴 没跑 `npm install` 就别下"测试挂了"的结论。**
    `@deepseek-ai/cordis` / `@deepseek-ai/schemastery` 是 devDeps，缺了会让
@@ -51,7 +61,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **484/484**。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **485/485**。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
