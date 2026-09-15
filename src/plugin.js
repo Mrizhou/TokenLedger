@@ -15,9 +15,10 @@
  *
  * ## Why it sweeps rather than subscribing
  *
- * `sessionPersistence.listSnapshots()` returns an opaque per-log revision that
+ * `sessionPersistence.list()` returns an opaque per-log revision that
  * changes on append, so a sweep can skip every unchanged session without
- * parsing it, and `readFrom(id, seq)` reads only the tail. Subscribing to live
+ * parsing it, and a read handle opened with `open(id, "read")` reads the log.
+ * Subscribing to live
  * events instead would put this code on the hot path and lose everything
  * written while the plugin was not running — a restart would silently under-
  * count. Sweeping is idempotent and self-healing; subscribing is neither.
@@ -33,7 +34,7 @@
  * @module dsh-tokenledger/plugin
  */
 
-import { DIRECT, UNKNOWN, UNROUTED, applyUsageDelta, dayKey } from "./usage.js";
+import { DIRECT, UNKNOWN, UNROUTED, applyUsageDelta, createUsageState, dayKey } from "./usage.js";
 import { RelaySiteRegistry, SITE_TYPES, createSiteResolver, domainOf, normalizeOrigin } from "./relay-sites.js";
 import { createFingerprintRegistry } from "./fingerprints.js";
 import { describeProject, readProjectTitles, workspaceRegistry } from "./projects.js";
@@ -209,7 +210,15 @@ export async function sweep(persistence, store, options = {}) {
 
 	let snapshots;
 	try {
-		snapshots = await persistence.listSnapshots();
+		// The harness reworked this seam on 2026-08-28 (`bec6805d6a`,
+		// handle-based session persistence): `listSnapshots()` became `list()`.
+		// Prefer the new name and keep the old one as a fallback, so a host on
+		// either side of that change lists its sessions.
+		const listSessions = persistence.list ?? persistence.listSnapshots;
+		if (typeof listSessions !== "function") {
+			throw new Error("sessionPersistence exposes neither list() nor listSnapshots()");
+		}
+		snapshots = await listSessions.call(persistence);
 	} catch (error) {
 		logger?.warn?.("tokenledger: could not list sessions: %s", error?.message ?? error);
 		stats.failed++;
@@ -241,16 +250,45 @@ export async function sweep(persistence, store, options = {}) {
 				continue;
 			}
 
-			const state = store.loadState(sessionId);
-			// A fork's durable log starts with a copy of its parent's event prefix.
-			// DSH records the exclusive end of that inherited prefix as seedLength.
-			// Counting it again under the child's session id makes every fork inflate
-			// the ledger. Existing checkpoints already point past the prefix; only a
-			// session's first read needs to start at the durable seed boundary.
-			const fromSeq = checkpoint === undefined
-				? (snapshot.header?.seedLength ?? 0)
-				: state.consumedSeq + 1;
-			const { events } = await persistence.readFrom(sessionId, fromSeq);
+			// The handle-based seam reads the log through `open(id, "read")`;
+			// `readFrom(id, seq)` is gone with it. The v1→v2 session migration
+			// also RENUMBERS event seqs, so a checkpoint's `consumedSeq` can
+			// overshoot the renumbered log and yield an empty tail while unread
+			// events remain — the session would silently never be counted
+			// again. A moved revision therefore re-reads the whole log and
+			// re-folds it from scratch; `commitSession` replaces the session's
+			// rows wholesale, so the full fold cannot double count.
+			let events;
+			let state;
+			if (typeof persistence.open === "function") {
+				const handle = await persistence.open(sessionId, "read");
+				try {
+					({ events } = await handle.read(0));
+				} finally {
+					await handle.close();
+				}
+				// A fork's durable log starts with a copy of its parent's event
+				// prefix; DSH records the exclusive end of that inherited prefix
+				// as seedLength. A full re-read sees the prefix again, so the
+				// fold starts past it — counting it under the child's session id
+				// would inflate every fork's ledger.
+				const seedLength = snapshot.header?.seedLength ?? 0;
+				events = (events ?? []).filter((event) => (event.seq ?? 0) >= seedLength);
+				state = createUsageState();
+			} else {
+				// The pre-handle seam still reads a tail. A fork's durable log
+				// starts with a copy of its parent's event prefix. DSH records
+				// the exclusive end of that inherited prefix as seedLength.
+				// Counting it again under the child's session id makes every fork
+				// inflate the ledger. Existing checkpoints already point past the
+				// prefix; only a session's first read needs to start at the
+				// durable seed boundary.
+				state = store.loadState(sessionId);
+				const fromSeq = checkpoint === undefined
+					? (snapshot.header?.seedLength ?? 0)
+					: state.consumedSeq + 1;
+				({ events } = await persistence.readFrom(sessionId, fromSeq));
+			}
 			if ((events?.length ?? 0) === 0) {
 				stats.skipped++;
 				continue;
