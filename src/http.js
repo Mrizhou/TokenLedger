@@ -36,6 +36,7 @@
 import { createRequire } from "node:module";
 
 import { describeProject } from "./projects.js";
+import { DEEPSEEK_OFFICIAL_RATES, RateTable, priceRows } from "./pricing.js";
 import { dailyModels, dayKey, fromDaysAgo, hostTimeZone, monthStart } from "./usage.js";
 
 /**
@@ -214,12 +215,35 @@ export function parseQuery(url) {
 }
 
 /**
+ * Today's cost, the figure the sidebar badge shows next to today's tokens.
+ *
+ * Priced with the configured rates when present, the shipped DeepSeek official
+ * list otherwise — the same default the panel's `priced` column uses. Only the
+ * official provider's rows are priced: a relay site sets its own prices, so
+ * guessing them from the official list would print a confident wrong figure.
+ * `null` when nothing priced ran today, which the badge renders as tokens
+ * alone.
+ *
+ * @returns `{ cost, currency }` or `null`.
+ */
+export function priceToday(store, site = undefined, rates = undefined) {
+	const day = dayKey(Date.now());
+	const rows = store.byRoute({ from: day }, site).filter((row) => row.provider === "deepseek-official");
+	if (rows.length === 0) return null;
+	const table = rates === undefined ? new RateTable(DEEPSEEK_OFFICIAL_RATES) : new RateTable(rates);
+	const priced = priceRows(rows, table, day);
+	const entries = Object.entries(priced.totals);
+	if (entries.length === 0) return null;
+	return { cost: entries[0][1], currency: entries[0][0] };
+}
+
+/**
  * Build the whole panel payload in one read.
  *
  * One request rather than six: the panel renders as a unit, and six requests
  * would let its sections disagree with each other while they land.
  *
- * @param deps - `{ store, sites, priced, projectTitles }`.
+ * @param deps - `{ store, sites, priced, todayPriced, projectTitles }`.
  * @param query - `{ range, site, provider? }`; HTTP {@link parseQuery} omits provider.
  */
 export function usagePayload(deps, query) {
@@ -251,6 +275,10 @@ export function usagePayload(deps, query) {
 			month: store.totals({ from: monthStart() }, site, provider),
 			all: store.totals({}, site, provider)
 		},
+		// What today's tokens cost, for the sidebar badge. Independent of the
+		// selected range, like `windows.today` — the badge answers "today" even
+		// when the panel is looking at last month.
+		todayCost: deps.todayPriced?.(site) ?? null,
 		// The activity strip has its OWN window, deliberately. Tied to the
 		// selected range it collapsed to a single cell whenever "today" was
 		// picked — a heatmap of one day is not a heatmap, and it read as broken.

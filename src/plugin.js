@@ -41,12 +41,12 @@ import { describeProject, readProjectTitles, workspaceRegistry } from "./project
 import { discoverFromContext, mergeSites, withKnownSoftware } from "./discovery.js";
 import { createBalanceReader, listAccounts } from "./balance.js";
 import { createNewApiWalletReader, shouldUseWallet } from "./newapi-user.js";
-import { VERSION, registerRoutes, usagePayload } from "./http.js";
+import { VERSION, priceToday, registerRoutes, usagePayload } from "./http.js";
 import { DashboardController, DashboardControllerError } from "./dashboard-controller.js";
 import { mountTokenLedgerBlue } from "./blue/index.js";
 
 import { LedgerStore } from "./store.js";
-import { RateTable, priceRows } from "./pricing.js";
+import { DEEPSEEK_OFFICIAL_RATES, RateTable, priceRows } from "./pricing.js";
 import { num, renderReport, table } from "./report.js";
 
 /** `YYYY-MM-DD` for N days before today, in local time. */
@@ -55,14 +55,19 @@ function dayKeyDaysAgo(daysBack) {
 }
 
 /**
- * Price the range with rates from configuration.
+ * Price the range with rates from configuration, falling back to the shipped
+ * DeepSeek official list.
  *
  * Rates live in config rather than in code because a relay sets its own
  * prices; shipping a table would be shipping one site's deal as everyone's.
+ * But the official route is the default install, and a report whose cost
+ * column is all em dashes until the user writes a price table reads as
+ * broken. The official list prices the deepseek models only; anything else
+ * stays unpriced (`null`, never zero). A user-supplied `rates` always wins.
  */
 function priceWithConfiguredRates(store, range, site, rates, provider = undefined) {
 	try {
-		const table = new RateTable(rates);
+		const table = new RateTable(rates === undefined ? DEEPSEEK_OFFICIAL_RATES : rates);
 		const day = range.to ?? range.from ?? dayKey(Date.now());
 		return priceRows(store.byModel(range, site, provider), table, day);
 	} catch {
@@ -1135,8 +1140,12 @@ export function apply(ctx, userConfig = {}) {
 			store,
 			sites: () => directory.sites,
 			sweep: runSweepAndPublish,
-			priced: (range, site, provider) =>
-				config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates, provider),
+			// The panel prices every range: the configured rates when present,
+			// the shipped DeepSeek official list otherwise (deepseek models
+			// only — anything else stays unpriced).
+			priced: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider),
+			// The badge's "today" figure, same rate default as `priced`.
+			todayPriced: (site) => priceToday(store, site, config.rates),
 			accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 			projectTitles: () => projectTitles,
 			lastSweepAt: () => lastSweepAt,
@@ -1158,8 +1167,8 @@ export function apply(ctx, userConfig = {}) {
 	const usageDeps = {
 		store,
 		sites: () => directory.sites,
-		priced: (range, site, provider) =>
-			config.rates === undefined ? null : priceWithConfiguredRates(store, range, site, config.rates, provider),
+		priced: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider),
+		todayPriced: (site) => priceToday(store, site, config.rates),
 		accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 		projectTitles: () => projectTitles,
 		lastSweepAt: () => lastSweepAt
