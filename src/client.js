@@ -172,14 +172,20 @@ window.__ModuleLoader__.load({
 				// The activity ramp: Tailwind's emerald over GitHub's neutral zero.
 				// Level 0 is an alpha grey so it reads on both themes without a swap.
 				"--tkl-level-0:rgba(128,128,128,0.16);--tkl-level-1:#a7f3d0;--tkl-level-2:#6ee7b7;--tkl-level-3:#34d399;--tkl-level-4:#10b981;" +
+				// The account picker's dropdown is a NATIVE POPUP the browser draws
+				// OUTSIDE the panel, so it inherits none of the ground above and both
+				// of its colours have to be stated here. Literals, like the ramp
+				// below and for the same reason: a popup cannot be translucent, so a
+				// token a skin is free to set to `transparent` is unusable in one.
+				"--tkl-scheme:light;--tkl-option-bg:#fff;--tkl-option-fg:#1d1f23;" +
 				// Categorical, mid-tone so each reads on either surface. `direct` is
 				// the neutral one; the rest are the relay ramp.
 				"--tkl-direct:#8b93a7;--tkl-series-0:#0ea5e9;--tkl-series-1:#f59e0b;--tkl-series-2:#8b5cf6;--tkl-series-3:#14b8a6;--tkl-series-4:#ec4899;--tkl-series-5:#84cc16}",
-			"@media (prefers-color-scheme:dark){.tkl_panel{--tkl-level-1:#065f46;--tkl-level-2:#059669;--tkl-level-3:#10b981;--tkl-level-4:#34d399;--tkl-direct:#6b7280;--tkl-series-0:#38bdf8;--tkl-series-1:#fbbf24;--tkl-series-2:#a78bfa;--tkl-series-3:#2dd4bf;--tkl-series-4:#f472b6;--tkl-series-5:#a3e635}}",
+			"@media (prefers-color-scheme:dark){.tkl_panel{--tkl-scheme:dark;--tkl-option-bg:#2b2c2f;--tkl-option-fg:#ededed;--tkl-level-1:#065f46;--tkl-level-2:#059669;--tkl-level-3:#10b981;--tkl-level-4:#34d399;--tkl-direct:#6b7280;--tkl-series-0:#38bdf8;--tkl-series-1:#fbbf24;--tkl-series-2:#a78bfa;--tkl-series-3:#2dd4bf;--tkl-series-4:#f472b6;--tkl-series-5:#a3e635}}",
 			// An explicit theme choice must win over the media query in BOTH
 			// directions, so each is stated rather than inherited.
-			"[data-theme='dark'] .tkl_panel{--tkl-level-1:#065f46;--tkl-level-2:#059669;--tkl-level-3:#10b981;--tkl-level-4:#34d399;--tkl-direct:#6b7280;--tkl-series-0:#38bdf8;--tkl-series-1:#fbbf24;--tkl-series-2:#a78bfa;--tkl-series-3:#2dd4bf;--tkl-series-4:#f472b6;--tkl-series-5:#a3e635}",
-			"[data-theme='light'] .tkl_panel{--tkl-level-1:#a7f3d0;--tkl-level-2:#6ee7b7;--tkl-level-3:#34d399;--tkl-level-4:#10b981;--tkl-direct:#8b93a7;--tkl-series-0:#0ea5e9;--tkl-series-1:#f59e0b;--tkl-series-2:#8b5cf6;--tkl-series-3:#14b8a6;--tkl-series-4:#ec4899;--tkl-series-5:#84cc16}",
+			"[data-theme='dark'] .tkl_panel{--tkl-scheme:dark;--tkl-option-bg:#2b2c2f;--tkl-option-fg:#ededed;--tkl-level-1:#065f46;--tkl-level-2:#059669;--tkl-level-3:#10b981;--tkl-level-4:#34d399;--tkl-direct:#6b7280;--tkl-series-0:#38bdf8;--tkl-series-1:#fbbf24;--tkl-series-2:#a78bfa;--tkl-series-3:#2dd4bf;--tkl-series-4:#f472b6;--tkl-series-5:#a3e635}",
+			"[data-theme='light'] .tkl_panel{--tkl-scheme:light;--tkl-option-bg:#fff;--tkl-option-fg:#1d1f23;--tkl-level-1:#a7f3d0;--tkl-level-2:#6ee7b7;--tkl-level-3:#34d399;--tkl-level-4:#10b981;--tkl-direct:#8b93a7;--tkl-series-0:#0ea5e9;--tkl-series-1:#f59e0b;--tkl-series-2:#8b5cf6;--tkl-series-3:#14b8a6;--tkl-series-4:#ec4899;--tkl-series-5:#84cc16}",
 
 			".tkl_header{box-sizing:border-box;border-bottom:1px solid var(--dsw-alias-border-l2);background:transparent;flex:none;justify-content:space-between;align-items:center;min-height:44px;padding:10px 12px;display:flex;gap:8px}",
 			".tkl_headerLeft{align-items:center;gap:8px;display:flex;min-width:0}",
@@ -212,8 +218,19 @@ window.__ModuleLoader__.load({
 			".tkl_filter:hover{color:var(--dsw-alias-label-primary)}",
 			".tkl_picker{display:inline-flex;align-items:center;gap:5px;margin-left:auto}",
 			".tkl_pickerLabel{color:var(--dsw-alias-label-caption);font-size:10px}",
-			".tkl_select{color:var(--dsw-alias-label-secondary);background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--tkl-radius-xs);padding:1px 4px;font:inherit;font-size:11px;line-height:16px;max-width:150px}",
+			// The control keeps the panel's ground (`background:0 0`, pinned by a
+			// test) and adds only `color-scheme`, which is what the browser reads
+			// when it draws the popup's own frame — border, scrollbar, highlight.
+			// 150px cut real account names in half; the cap is now wide enough for
+			// one and still yields to the section title on a narrow panel.
+			".tkl_select{color:var(--dsw-alias-label-secondary);background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--tkl-radius-xs);padding:1px 4px;font:inherit;font-size:11px;line-height:16px;max-width:min(220px,45vw);text-overflow:ellipsis;color-scheme:var(--tkl-scheme,light)}",
 			".tkl_select:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}",
+			// The options are drawn in that popup, OUTSIDE the panel: they inherit
+			// the select's faint `label-secondary` but not its ground, so every
+			// account read grey-on-grey. BOTH halves have to be stated — an opaque
+			// ground AND a high-contrast label — or the popup keeps the system
+			// menu colour for whichever half was left out, which is the bug.
+			".tkl_select option{background-color:var(--tkl-option-bg);color:var(--tkl-option-fg)}",
 
 			// -- stat row ----------------------------------------------------------
 			".tkl_stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}",

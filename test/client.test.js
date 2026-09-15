@@ -216,6 +216,47 @@ test("the activity ramp is defined for both themes and for an explicit choice", 
 	assert.ok(css.includes("[data-theme='light'] .tkl_panel"));
 });
 
+test("the account picker's dropdown states its own ground and label", async () => {
+	// The reported bug: the options came up grey-on-grey and unreadable. An
+	// `<option>` is drawn in a native popup OUTSIDE the panel, so it inherits
+	// the select's faint `label-secondary` but none of the panel's ground —
+	// leaving either half to the system menu colour is what produced it.
+	const { dom } = await loadBundle();
+	const css = dom.head.children[0].textContent;
+
+	const option = css.match(/\.tkl_select option\{[^}]*\}/);
+	assert.ok(option, "the popup is unstyled, so it keeps the system menu colour");
+	assert.match(option[0], /background-color:var\(--tkl-option-bg\)/, "an opaque ground of its own");
+	assert.match(option[0], /color:var\(--tkl-option-fg\)/, "and a label that reads on it");
+
+	// Scoped --tkl-* literals rather than --dsw-alias-*: a popup cannot be
+	// translucent, and a skin is free to set the alias grounds to transparent.
+	assert.equal(
+		/--tkl-option-(?:bg|fg):var\(--dsw-alias/.test(css),
+		false,
+		"a token a skin may set to transparent cannot be a popup's ground"
+	);
+
+	// The same blocks the ramp is stated in: a colour defined only inside the
+	// media query is wrong the moment a user picks the opposite theme.
+	for (const [scope, rule] of [
+		["the default", /\.tkl_panel\{[^}]*\}/],
+		["the system's dark", /@media \(prefers-color-scheme:dark\)\{\.tkl_panel\{[^}]*\}/],
+		["an explicit dark", /\[data-theme='dark'\] \.tkl_panel\{[^}]*\}/],
+		["an explicit light", /\[data-theme='light'\] \.tkl_panel\{[^}]*\}/]
+	]) {
+		const block = css.match(rule)[0];
+		for (const token of ["--tkl-option-bg", "--tkl-option-fg", "--tkl-scheme"]) {
+			assert.ok(block.includes(token), `${token} is undefined under ${scope} theme`);
+		}
+	}
+
+	// The popup's own frame — border, scrollbar, the highlighted row — is the
+	// browser's, and `color-scheme` is the only thing it consults for it.
+	const select = css.match(/\.tkl_select\{[^}]*\}/)[0];
+	assert.match(select, /color-scheme:var\(--tkl-scheme/, "or the popup's frame ignores the theme");
+});
+
 test("apply registers dictionaries and the footer seat", async () => {
 	const { exports } = await loadBundle();
 	const registered = [];
