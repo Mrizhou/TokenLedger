@@ -39,15 +39,23 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `compatibility.harness: "0.1.2-alpha.2"`（Blue 渲染器线），本机是 DSH Desktop 2.0.6，
    整包换过去等于顺带吃下整个 Blue 重构。做法是只手工搬需要的那几处改动。
 
-   装机目录现在有**两处**手工补丁。自检命令在装机目录下跑，**出来 0 就是被冲掉了**：
+   装机目录现在有**三处**手工补丁（`plugin.js` 上叠了两处）。自检命令在装机目录下跑，**出来 0 就是被冲掉了**：
 
    | 文件 | 补了什么 | 自检 | 备份 |
    |------|---------|------|------|
-   | `src/plugin.js` | DSH 2.0 句柄式 persistence 兼容（2026-09-14） | `grep -c "persistence.open" src/plugin.js` | `src/plugin.js.bak-pre-dsh2-fix-20260914` |
+   | `src/plugin.js` | ① DSH 2.0 句柄式 persistence 兼容（2026-09-14） | `grep -c "persistence.open" src/plugin.js` | `src/plugin.js.bak-pre-dsh2-fix-20260914` |
+   | `src/plugin.js` | ② 重编号日志整份重折叠（2026-09-15，见下） | `grep -c "handle.read(0)" src/plugin.js` | `src/plugin.js.bak-pre-refold-20260915` |
    | `src/client.js` | AccountPicker 下拉灰底灰字（2026-09-14） | `grep -c "tkl_select option" src/client.js` | `src/client.js.bak-pre-select-contrast-20260914` |
 
    ⚠️ 手工补丁**会被 DSH 市场的更新/重装悄悄冲掉**，升完要回来把上表逐条重打。
-   打完必须**重启 DSH Desktop**：样式表按 `STYLE_ID` 一次性注入，热重载不会换掉已注入的那份。
+   打完必须**重启 DSH Desktop**：`plugin.js` 在启动时载入，样式表按 `STYLE_ID` 一次性注入 ——
+   两者热重载都不会换掉已经在内存里的那份。
+
+   **补丁 ② 的来由**：`86a30b6` 的句柄改法只换了读取方式，仍从 `consumedSeq + 1` 读尾巴；
+   而 v1→v2 会话迁移会**重编事件 seq**，老 checkpoint 会指到重编后日志的末尾之外 ——
+   读回来是空的 → `skipped` → **这个会话从此再不统计**，而且静音（红线 5）。
+   上游 @wangk123 在 [PR #65](https://github.com/zh667/TokenLedger/pull/65) 里发现的，
+   我们的 #64 因此关掉；本地按同样语义自己补上（`ca5b3d5`）。
 
    `client.js` 这处已提上游 [PR #63](https://github.com/zh667/TokenLedger/pull/63)，
    上游合并并发版、且装机版跟进之后，这一行可以从表里删掉。
