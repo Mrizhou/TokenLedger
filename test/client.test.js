@@ -374,9 +374,11 @@ test("each card shows its own window, whichever one is selected", async () => {
 	const { exports, render } = await loadBundle();
 	const tree = render(exports.StatRow, { data: payload(), range: "today", onRange() {}, translate: T });
 	const text = textOf(tree);
-	assert.ok(text.includes("30,781"), "today");
-	assert.ok(text.includes("47,085"), "this month");
-	assert.ok(text.includes("77,866"), "all time");
+	// Token figures render compact (30.8K, not 30,781); the full number stays
+	// readable in the card's tooltip.
+	assert.ok(text.includes("30.8K"), "today");
+	assert.ok(text.includes("47.1K"), "this month");
+	assert.ok(text.includes("77.9K"), "all time");
 	const on = findAll(tree, "tkl_stat").filter((c) => "data-on" in c.props);
 	assert.equal(on.length, 1, "exactly one card reads as selected");
 });
@@ -491,7 +493,7 @@ test("hovering a day shows what ran, not just how much", async () => {
 		})
 	);
 	assert.ok(text.includes("2026-08-14"));
-	assert.ok(text.includes("47,085"));
+	assert.ok(text.includes("47.1K"));
 	assert.ok(text.includes("deepseek-v4-pro"));
 	assert.ok(text.includes("85%"), "each model's share of that day");
 	assert.ok(text.includes("activity.level:4"));
@@ -564,8 +566,8 @@ test("the model table carries request counts, so a hit rate can be read", async 
 	const text = textOf(render(exports.ModelTable, { data: payload(), translate: T }));
 	assert.ok(text.includes("40.3%"));
 	assert.ok(text.includes("11.7%"));
-	assert.ok(text.includes("27,492"));
-	assert.ok(text.includes("30,781"), "total reconciles input, cache and output with the site row");
+	assert.ok(text.includes("27.5K"));
+	assert.ok(text.includes("30.8K"), "total reconciles input, cache and output with the site row");
 	assert.ok(text.includes("table.total"));
 });
 

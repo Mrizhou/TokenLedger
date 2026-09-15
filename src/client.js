@@ -520,6 +520,23 @@ window.__ModuleLoader__.load({
 			return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "—";
 		}
 
+		/**
+		 * Compact token units — big figures must stay readable at 12px, and a
+		 * bare sixteen-digit number reads as noise. 1.33B / 27.69M / 862.4K / 1234.
+		 */
+		function fmtCompact(value) {
+			if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+			const abs = Math.abs(value);
+			if (abs >= 1e9) return `${trimZeros((value / 1e9).toFixed(2))}B`;
+			if (abs >= 1e6) return `${trimZeros((value / 1e6).toFixed(2))}M`;
+			if (abs >= 1e3) return `${trimZeros((value / 1e3).toFixed(1))}K`;
+			return value.toLocaleString();
+		}
+
+		function trimZeros(text) {
+			return text.replace(/\.0+$|(\.[0-9]*[1-9])0+$/, "$1");
+		}
+
 		/** Percentage of a whole, guarding the zero denominator. */
 		function share(part, whole) {
 			return typeof part === "number" && typeof whole === "number" && whole > 0 ? (part / whole) * 100 : 0;
@@ -655,7 +672,7 @@ window.__ModuleLoader__.load({
 							...(r.id === range ? { "data-on": "" } : {}),
 							onClick: () => onRange(r.id),
 							children: [
-								jsx("div", { className: S.statValue, children: fmt(windows[r.key]?.tokens) }),
+								jsx("div", { className: S.statValue, children: fmtCompact(windows[r.key]?.tokens) }),
 								jsx("div", { className: S.statLabel, children: translate(`range.${r.id}`) })
 							]
 						},
@@ -767,7 +784,7 @@ window.__ModuleLoader__.load({
 								// label is a workspace title, since otherwise the name
 								// IS the last segment of the path.
 								row.titled === true ? jsx("span", { className: S.rowPath, children: row.path }) : null,
-								jsx("span", { className: S.rowValue, children: fmt(row.tokens) }),
+								jsx("span", { className: S.rowValue, children: fmtCompact(row.tokens) }),
 								jsx("span", { className: S.rowMeta, children: `${Math.round(share(row.tokens, total))}%` })
 							]
 						},
@@ -807,7 +824,7 @@ window.__ModuleLoader__.load({
 								{
 									className: S.stackSeg,
 									...(row.site === site ? { "data-on": "" } : {}),
-									title: `${row.site} · ${fmt(row.tokens)}`,
+									title: `${row.site} · ${fmtCompact(row.tokens)}`,
 									style: { width: `${share(row.tokens, total)}%`, background: row.color }
 								},
 								row.site
@@ -832,7 +849,7 @@ window.__ModuleLoader__.load({
 									children: [
 										jsx("span", { className: S.swatch, style: { background: row.color } }),
 										jsx("span", { className: S.rowName, children: label }),
-										jsx("span", { className: S.rowValue, children: fmt(row.tokens) }),
+										jsx("span", { className: S.rowValue, children: fmtCompact(row.tokens) }),
 										jsx("span", { className: S.rowMeta, children: `${Math.round(share(row.tokens, total))}%` })
 									]
 								},
@@ -1005,7 +1022,7 @@ window.__ModuleLoader__.load({
 					}),
 					jsxs("div", {
 						className: S.tipTotal,
-						children: [fmt(total), jsx("span", { className: S.tipUnit, children: "tokens" })]
+						children: [fmtCompact(total), jsx("span", { className: S.tipUnit, children: "tokens" })]
 					}),
 					models.length === 0
 						? jsx("p", { className: S.tipQuiet, children: translate("activity.quiet") })
@@ -1021,7 +1038,7 @@ window.__ModuleLoader__.load({
 													className: S.tipRowHead,
 													children: [
 														jsx("span", { className: S.tipName, title: row.model, children: row.model }),
-														jsx("span", { className: S.tipValue, children: fmt(row.tokens) }),
+														jsx("span", { className: S.tipValue, children: fmtCompact(row.tokens) }),
 														jsx("span", { className: S.tipPct, children: `${Math.round(share(row.tokens, total))}%` })
 													]
 												}),
@@ -1166,21 +1183,21 @@ window.__ModuleLoader__.load({
 									children: [
 										jsx("td", { title: m.model, children: m.model }),
 										jsx("td", { children: fmt(m.requests) }),
-										jsx("td", { children: fmt(MODEL_COLUMNS[2].get(m)) }),
-										jsx("td", { children: fmt(m.inputTokens) }),
+										jsx("td", { children: fmtCompact(MODEL_COLUMNS[2].get(m)) }),
+										jsx("td", { children: fmtCompact(m.inputTokens) }),
 										jsxs("td", {
 											children: [
-												fmt(m.cacheReadTokens),
+												fmtCompact(m.cacheReadTokens),
 												jsx("span", { className: S.hit, children: fmtHit(m.cacheHitRate) }),
 												// Cache WRITES count toward the total but had no column, so
 												// the row did not add up to it — 520 tokens invisible on a
 												// real install. The relay's own log marks them the same way.
 												(m.cacheWriteTokens ?? 0) > 0
-													? jsx("span", { className: S.hit, children: ` ↑${fmt(m.cacheWriteTokens)}` })
+													? jsx("span", { className: S.hit, children: ` ↑${fmtCompact(m.cacheWriteTokens)}` })
 													: null
 											]
 										}),
-										jsx("td", { children: fmt(m.outputTokens) }),
+										jsx("td", { children: fmtCompact(m.outputTokens) }),
 										jsx("td", { children: m.cost === null || m.cost === undefined ? "—" : fmtMoney(m.cost, m.currency) })
 									]
 								},
@@ -1938,7 +1955,16 @@ window.__ModuleLoader__.load({
 			}, [open]);
 
 			const busy = state.status === "loading";
-			const totalLabel = state.data === undefined ? "" : fmt(state.data.totals?.tokens);
+			// The badge answers today's two questions at a glance: tokens used and
+			// what they cost, both independent of the range currently selected in
+			// the panel. A compact figure keeps it readable at 12px.
+			const todayWindow = state.data?.windows?.today;
+			const todayCostAmount = state.data?.todayCost;
+			const badgeTokens = state.data === undefined ? "" : fmtCompact(todayWindow?.tokens);
+			const badgeCost = todayCostAmount === null || todayCostAmount === undefined
+				? ""
+				: fmtMoney(todayCostAmount.cost, todayCostAmount.currency);
+			const totalLabel = [badgeTokens, badgeCost].filter(Boolean).join(" · ");
 
 			return jsxs("div", {
 				ref: root,

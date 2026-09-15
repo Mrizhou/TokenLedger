@@ -137,10 +137,14 @@ export function buildSchema(z) {
 		 * nested, evolving shape owned by `pricing.js`, which already reports a
 		 * malformed table by dropping the cost column rather than failing. A
 		 * schema here would be a second, drifting definition of the same thing.
+		 *
+		 * Left unset, the shipped DeepSeek official CNY list prices the official
+		 * route's deepseek models; other models stay unpriced. A table here
+		 * always wins.
 		 */
 		rates: z.any()
 			.description("价格表")
-			.comment("用于成本估算的模型费率 JSON")
+			.comment("用于成本估算的模型费率 JSON；不配时按 DeepSeek 官方价（峰时）估算官方路由")
 	});
 }
 
