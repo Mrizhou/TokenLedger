@@ -10,7 +10,15 @@
 
 DSH Desktop 的第三方 token 计量插件。**这是 fork，不是原创**：
 上游 `github.com/zh667/TokenLedger` → 我的 `github.com/Mrizhou/TokenLedger`（origin）。
-上游更新不勤快，所以自己维护。
+**上游其实很勤快**（2026-09-15 查证：外部 PR 常在当天合，我们的 #63 从提到合 2 小时）——
+早先「上游不活跃」的说法已推翻。留着 fork 的理由是另外两条：合了不等于发版，
+而 DSH 实际加载的是 npm 上的 0.1.0（见红线 1）；以及我们有几样不打算上游的东西。
+
+**同步纪律：尽量跟随上游。** 2026-09-15 同步后 `src/` 与上游**逐字相同**，
+我们只在上游没有的地方保留：`CLAUDE.md`、`test/blue-packaging.test.js` 的
+Windows shell spawn（**有意不上游**，见决策记录）、`test/plugin.test.js` 末尾两个
+sweep 测试（上游 `test/sweep-handle-api.test.js` 覆盖更全，我们这两个留作守卫）。
+再出现重复实现，**取上游那份**。
 
 **`AGENTS.md` 是架构约束的正本**（renderer 无关性、`ctx.tokenLedger` 兼容边界、
 Blue 适配器的隔离要求、cleanup 顺序）。**改代码前先读它**，本文件不复述。
@@ -24,7 +32,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 486/486
+npm test                           # 全量，当前基线 493/493
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -55,10 +63,13 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    而 v1→v2 会话迁移会**重编事件 seq**，老 checkpoint 会指到重编后日志的末尾之外 ——
    读回来是空的 → `skipped` → **这个会话从此再不统计**，而且静音（红线 5）。
    上游 @wangk123 在 [PR #65](https://github.com/zh667/TokenLedger/pull/65) 里发现的，
-   我们的 #64 因此关掉；本地按同样语义自己补上（`ca5b3d5`）。
+   我们的 #64 因此关掉。本地一度自己补过一份（`ca5b3d5`），2026-09-15 同步时
+   **整份换成了上游的实现** —— 我们那两个测试在上游代码上原样通过，等于实测确认等价。
 
-   `client.js` 这处已提上游 [PR #63](https://github.com/zh667/TokenLedger/pull/63)，
-   上游合并并发版、且装机版跟进之后，这一行可以从表里删掉。
+   ⚠️ **上游合了不等于这张表可以删。** `client.js` 那处的
+   [PR #63](https://github.com/zh667/TokenLedger/pull/63) 已于 2026-09-15 合并
+   （`cf57c27` 就是我们的 commit），`plugin.js` 那两处也都在上游了 —— 但**装机版仍是
+   npm 上的 0.1.0**，一行都没跟上。要等上游发版 **且** 装机版升上去，这张表才能删。
 
 2. **🔴 没跑 `npm install` 就别下"测试挂了"的结论。**
    `@deepseek-ai/cordis` / `@deepseek-ai/schemastery` 是 devDeps，缺了会让
@@ -69,7 +80,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **486/486**。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **493/493**。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
