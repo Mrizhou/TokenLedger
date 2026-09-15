@@ -479,3 +479,44 @@ test("handles handle-based persistence (list + open handle) from modern DSH", as
 		assert.equal(store.totals().outputTokens, 20);
 	});
 });
+
+test("a renumbered log is re-folded rather than skipped, so a migrated session keeps counting", async () => {
+	// The v1 -> v2 session migration RENUMBERS event seqs. A checkpoint written
+	// before it points past the end of the renumbered log, so a tail read comes
+	// back empty, the session is counted as skipped, and it is never folded
+	// again — silently, because sweep() swallows its own failures. The handle
+	// seam therefore re-reads the whole log and folds it from scratch.
+	await withStore(async (store) => {
+		const log = { revision: "r1", events: [headerAt(100), messageAt(101, 1, 200, 20)] };
+		const persistence = {
+			async list() {
+				return [{ header: { version: 0, id: "s1", createdAt: DAY }, revision: log.revision }];
+			},
+			async open(id, mode) {
+				assert.equal(mode, "read");
+				return {
+					async read(fromSeq) {
+						return { events: log.events.filter((e) => e.seq >= fromSeq) };
+					},
+					async close() {}
+				};
+			}
+		};
+
+		const first = await sweep(persistence, store, {});
+		assert.equal(first.updated, 1, "the pre-migration sweep lands a checkpoint past seq 100");
+		assert.equal(store.totals().inputTokens, 200);
+
+		// The migration: the same conversation plus one more turn, renumbered
+		// from zero. Every seq is now far below the consumedSeq just stored.
+		log.revision = "r2";
+		log.events = [headerAt(0), messageAt(1, 1, 200, 20), messageAt(2, 2, 50, 5)];
+
+		const second = await sweep(persistence, store, {});
+		assert.equal(second.skipped, 0, "an empty tail read must not retire the session for good");
+		assert.equal(second.updated, 1);
+		assert.equal(store.totals().inputTokens, 250, "the whole renumbered log is folded again");
+		assert.equal(store.totals().outputTokens, 25);
+		assert.equal(store.totals().requests, 2, "the wholesale rollup replace means no double count");
+	});
+});

@@ -33,7 +33,7 @@
  * @module dsh-tokenledger/plugin
  */
 
-import { DIRECT, UNKNOWN, UNROUTED, applyUsageDelta, dayKey } from "./usage.js";
+import { DIRECT, UNKNOWN, UNROUTED, applyUsageDelta, createUsageState, dayKey } from "./usage.js";
 import { RelaySiteRegistry, SITE_TYPES, createSiteResolver, domainOf, normalizeOrigin } from "./relay-sites.js";
 import { createFingerprintRegistry } from "./fingerprints.js";
 import { describeProject, readProjectTitles, workspaceRegistry } from "./projects.js";
@@ -245,24 +245,41 @@ export async function sweep(persistence, store, options = {}) {
 				continue;
 			}
 
-			const state = store.loadState(sessionId);
 			// A fork's durable log starts with a copy of its parent's event prefix.
 			// DSH records the exclusive end of that inherited prefix as seedLength.
 			// Counting it again under the child's session id makes every fork inflate
-			// the ledger. Existing checkpoints already point past the prefix; only a
-			// session's first read needs to start at the durable seed boundary.
-			const fromSeq = checkpoint === undefined
-				? (snapshot.header?.seedLength ?? 0)
-				: state.consumedSeq + 1;
+			// the ledger.
+			const seedLength = snapshot.header?.seedLength ?? 0;
 			let events;
+			let state;
 			if (typeof persistence.open === "function") {
+				// The handle seam re-reads the WHOLE log rather than the tail past
+				// consumedSeq. The v1 -> v2 session migration RENUMBERS event seqs, so a
+				// checkpoint written before it can point past the end of the renumbered
+				// log: the tail reads back empty, the session is counted as skipped, and
+				// it is never folded again. That failure is silent — sweep() swallows its
+				// own errors — so it surfaces as "the panel stopped growing", which is
+				// the one symptom hardest to trace back to here.
+				//
+				// A full re-fold is safe rather than double counting: commitSession
+				// deletes the session's rollups inside the same transaction that writes
+				// the new ones, so the rows are replaced wholesale.
 				const handle = await persistence.open(sessionId, "read");
 				try {
-					({ events } = await handle.read(fromSeq));
+					({ events } = await handle.read(0));
 				} finally {
 					await handle.close();
 				}
+				// A full re-read sees the inherited prefix again, so the fold starts past
+				// it. A fresh state, because this is a fold from scratch, not a delta.
+				events = (events ?? []).filter((event) => (event.seq ?? 0) >= seedLength);
+				state = createUsageState();
 			} else {
+				// The pre-handle seam reads only the tail. Existing checkpoints already
+				// point past the inherited prefix; only a session's first read needs to
+				// start at the durable seed boundary.
+				state = store.loadState(sessionId);
+				const fromSeq = checkpoint === undefined ? seedLength : state.consumedSeq + 1;
 				({ events } = await persistence.readFrom(sessionId, fromSeq));
 			}
 			if ((events?.length ?? 0) === 0) {
