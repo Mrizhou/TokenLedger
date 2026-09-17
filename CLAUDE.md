@@ -11,14 +11,22 @@
 DSH Desktop 的第三方 token 计量插件。**这是 fork，不是原创**：
 上游 `github.com/zh667/TokenLedger` → 我的 `github.com/Mrizhou/TokenLedger`（origin）。
 **上游其实很勤快**（2026-09-15 查证：外部 PR 常在当天合，我们的 #63 从提到合 2 小时）——
-早先「上游不活跃」的说法已推翻。留着 fork 的理由是另外两条：合了不等于发版，
-而 DSH 实际加载的是 npm 上的 0.1.0（见红线 1）；以及我们有几样不打算上游的东西。
+早先「上游不活跃」的说法已推翻。留着 fork 的理由：我们有几样**不打算上游**的东西，
+而 DSH 装的就是这个 fork（见红线 1）。
 
-**同步纪律：尽量跟随上游。** 2026-09-15 同步后 `src/` 与上游**逐字相同**，
-我们只在上游没有的地方保留：`CLAUDE.md`、`test/blue-packaging.test.js` 的
-Windows shell spawn（**有意不上游**，见决策记录）、`test/plugin.test.js` 末尾两个
-sweep 测试（上游 `test/sweep-handle-api.test.js` 覆盖更全，我们这两个留作守卫）。
-再出现重复实现，**取上游那份**。
+**同步纪律：尽量跟随上游。** 我们只在上游没有的地方保留：`CLAUDE.md`、
+`test/blue-packaging.test.js` 的 Windows shell spawn（**有意不上游**，见决策记录）、
+`test/plugin.test.js` 末尾两个 sweep 测试（上游 `test/sweep-handle-api.test.js` 覆盖更全，留作守卫），
+以及 **`src/` 里唯一一处与上游不同的地方**：
+
+- `src/balance.js` `listAccounts()` 跳过「`declared: false` 且无存储配置」的目录项
+  （2026-09-17，**用户明确不提 PR**）。宿主目录列出 pi-ai 全部内置 provider，
+  不跳过的话 Z.ai / 智谱 GLM 会出现在没配过它们的账户列表里，
+  排在前面的空路由还会顶掉 `deepseek-official` 占走 DeepSeek 那一项。
+  守卫测试：`test/balance.test.js`「a shipped catalog route nobody configured is not an account」。
+  **合上游时这一处要保留**；上游若自己修了，取上游那份并确认守卫测试仍绿。
+
+其余再出现重复实现，**取上游那份**。
 
 **`AGENTS.md` 是架构约束的正本**（renderer 无关性、`ctx.tokenLedger` 兼容边界、
 Blue 适配器的隔离要求、cleanup 顺序）。**改代码前先读它**，本文件不复述。
@@ -39,15 +47,17 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 
 ## 红线
 
-1. **🔴 改这个仓库不会修好运行中的 DSH。**
-   实际加载的是 `~/.dsh/profiles/desktop/node_modules/dsh-tokenledger`，
-   **npm 装的 0.1.0，跟本仓库（0.1.1-blue.0）是两份独立代码**。
-   仓库里 commit 完就说"修好了"是错的 —— 必须另外去打那一份。
-   **而且不能整包覆盖过去**：本仓库的 `blue.plugin.json` 声明
-   `compatibility.harness: "0.1.2-alpha.2"`（Blue 渲染器线），本机是 DSH Desktop 2.0.6，
-   整包换过去等于顺带吃下整个 Blue 重构。做法是只手工搬需要的那几处改动。
+1. **🔴 改这个仓库不会修好运行中的 DSH —— 要 push 之后按新 SHA 重装。**
+   2026-09-17 起宿主是命令行 `dsh web`，装机版**直接从本 fork 装**：
+   `dsh plugin --profile web add "github:Mrizhou/TokenLedger#<40 位完整 SHA>"`
+   （短 SHA 解析不了），装完重启 `dsh web`。**不再手工打补丁。**
+   **别从 npm 装**：npm 上只有 08-15 的 0.1.0，缺句柄式 persistence 兼容，在现在的宿主上
+   **静音不记账**（09-11、09-16 两次都是这样死的）。
+   换装会触发账本重建：store schema 不一致时整表 DROP、从会话日志重折叠，
+   **日志已删的会话用量找不回**（09-17 那次丢了 43 个，数字记在知识库项目笔记时间线）。
 
-   装机目录现在有**三处**手工补丁（`plugin.js` 上叠了两处）。自检命令在装机目录下跑，**出来 0 就是被冲掉了**：
+   ~~旧做法（DSH Desktop 时代，已作废）~~：「不能整包覆盖，Blue 兼容声明不符」这个判断**是错的** ——
+   宿主不读 `blue.plugin.json`。下表只作历史。装机目录曾有**三处**手工补丁（`plugin.js` 上叠了两处）：
 
    | 文件 | 补了什么 | 自检 | 备份 |
    |------|---------|------|------|
@@ -99,7 +109,8 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 
 ## 已知的坑
 
-- 仓库版本 `0.1.1-blue.0` ≠ 装机版本 `0.1.0`，排障时先确认在看哪一份。
+- 装机版是 fork 的**某个 SHA**，不一定是仓库 HEAD。排障时先看 `~/.dsh/profiles/web/package.json`
+  里 `dsh-tokenledger` 钉的是哪个 SHA，再对仓库。
 - `~/.dsh/tokenledger.sqlite` 是唯一的历史来源，**换插件会丢历史**
   （知识库决策记录 2026-08-31 已为此否掉过换 `dsh-usage-stats`）。
 - git 作者身份是 gitee 的 `zhou-synn`，但 origin 在 GitHub（`Mrizhou`）。两边别搞混。
