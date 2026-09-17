@@ -617,6 +617,46 @@ test("a built-in route without a baseURL still names its vendor", () => {
 	assert.deepEqual(accounts.map((a) => a.hasCredential), [true, true]);
 });
 
+test("a shipped catalog route nobody configured is not an account", () => {
+	// The harness's directory lists every catalog provider, "registered or
+	// dormant" — dozens of them, each `declared: false`, most with no stored
+	// profile at all. Listing those as accounts put Z.ai and 智谱 GLM in the
+	// picker of an install that had configured neither (the origin table above
+	// is what lets them escape the DeepSeek collapse), and let whichever dormant
+	// route came first claim the DeepSeek card under its own route id.
+	const directory = [
+		{ provider: "openai", displayName: "openai", settingsNs: "llm-pi-ai", settingsPath: ["providers", "openai"], declared: false },
+		{ provider: "deepseek-official", displayName: "DeepSeek", settingsNs: "llm-deepseek", settingsPath: [] },
+		{ provider: "zai", displayName: "zai", settingsNs: "llm-pi-ai", settingsPath: ["providers", "zai"], declared: false },
+		{ provider: "zai-coding-cn", displayName: "zai-coding-cn", settingsNs: "llm-pi-ai", settingsPath: ["providers", "zai-coding-cn"], declared: false },
+		{ provider: "bd", displayName: "bd", settingsNs: "llm-pi-ai", settingsPath: ["providers", "bd"], declared: true }
+	];
+	const sections = {
+		"llm-pi-ai": { providers: { bd: { baseURL: "http://127.0.0.1:8045/v1", apiKeyEnv: "BD_API_KEY" } } },
+		"llm-deepseek": {}
+	};
+	const ctx = {
+		get: (name) =>
+			name === "llm"
+				? { listConfigurableProviders: () => directory }
+				: name === "settings"
+					? { get: (ns) => sections[ns] }
+					: undefined
+	};
+	const accounts = listAccounts(ctx, { softwareOf: new Map() });
+	assert.deepEqual(accounts.map((a) => a.id), ["deepseek-official", "bd"]);
+	assert.deepEqual(accounts.map((a) => a.displayName), ["DeepSeek", "127.0.0.1:8045"]);
+
+	// Configuring the catalog route is what makes it an account.
+	sections["llm-pi-ai"].providers.zai = { apiKeyEnv: "ZAI_API_KEY" };
+	assert.deepEqual(listAccounts(ctx, { softwareOf: new Map() }).map((a) => a.displayName), ["DeepSeek", "Z.ai", "127.0.0.1:8045"]);
+
+	// The shipped DeepSeek route is not a catalog entry: with nothing stored at
+	// all it is still the default, and still an account.
+	delete sections["llm-deepseek"];
+	assert.equal(listAccounts(ctx, { softwareOf: new Map() })[0].id, "deepseek-official");
+});
+
 test("an explicit baseURL beats the built-in origin table", () => {
 	// A route called anything may point anywhere: the table only speaks for
 	// routes whose profile says nothing at all.

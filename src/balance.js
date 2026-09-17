@@ -761,6 +761,13 @@ export function listAccounts(ctx, options = {}) {
 		} catch {
 			continue;
 		}
+		// The directory lists every catalog provider, registered or dormant. A
+		// catalog route (`declared: false`) with nothing stored was never set up:
+		// it has no key to read a balance with, and taken as an account it put
+		// Z.ai and 智谱 in the picker of an install that configured neither — or,
+		// arriving before the real DeepSeek route, claimed that card. The shipped
+		// DeepSeek route carries no `declared` flag, so it stays.
+		if (entry.declared === false && profile == null) continue;
 		// A profile without a baseURL is either the shipped DeepSeek default or
 		// one of the installation's built-in routes, whose origin lives in the
 		// harness's catalog, not in the stored settings. The table names those;
