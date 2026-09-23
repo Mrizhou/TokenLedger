@@ -44,6 +44,8 @@
  */
 
 /** The console route that answers with the user's own account. */
+import { DEFAULT_MAX_BYTES, fetchNoCrossOriginRedirect, readCapped } from "./transport.js";
+
 export const USER_SELF_PATH = "/api/user/self";
 /** The public site-config route that names the quota unit. */
 export const STATUS_PATH = "/api/status";
@@ -233,12 +235,16 @@ async function readUnit(cache, origin, doFetch, now, timeoutMs, externalSignal) 
 	else externalSignal?.addEventListener("abort", onAbort, { once: true });
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	try {
-		const response = await doFetch(new URL(STATUS_PATH, origin).href, {
+		// Guarded fetch, capped body — the same two defences the balance
+		// readers have: a bare fetch followed a cross-origin redirect with the
+		// `new-api-user` header in red-team testing, and a hostile body had no
+		// ceiling at all here.
+		const response = await fetchNoCrossOriginRedirect(doFetch, new URL(STATUS_PATH, origin).href, {
 			headers: { accept: "application/json" },
 			signal: controller.signal
 		});
 		if (!response.ok) throw new Error(`http-${response.status}`);
-		const body = await response.json();
+		const body = JSON.parse(await readCapped(response, DEFAULT_MAX_BYTES));
 		const entry = { ...unitFromStatus(body?.data ?? {}), fetchedAt: now };
 		cache.units.set(origin, entry);
 		return entry;
@@ -306,7 +312,7 @@ async function readWallet(cache, options = {}) {
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	let response;
 	try {
-		response = await doFetch(new URL(USER_SELF_PATH, origin).href, {
+		response = await fetchNoCrossOriginRedirect(doFetch, new URL(USER_SELF_PATH, origin).href, {
 			headers: {
 				// Both headers, and only headers — the token must never ride a URL.
 				authorization: `Bearer ${token}`,
@@ -320,6 +326,9 @@ async function readWallet(cache, options = {}) {
 			const kind = externalSignal?.aborted === true ? "aborted" : "timeout";
 			throw Object.assign(new Error(kind), { kind });
 		}
+		// A guard's refusal (cross-origin-redirect, http-3xx) keeps its own
+		// identity — "unreachable" would erase why the credential was withheld.
+		if (error?.kind !== undefined) throw error;
 		throw Object.assign(new Error("unreachable"), { kind: "unreachable" });
 	} finally {
 		clearTimeout(timer);
@@ -336,7 +345,7 @@ async function readWallet(cache, options = {}) {
 
 	let body;
 	try {
-		body = await response.json();
+		body = JSON.parse(await readCapped(response, DEFAULT_MAX_BYTES));
 	} catch {
 		throw Object.assign(new Error("invalid-response"), { kind: "invalid-response" });
 	}

@@ -26,6 +26,7 @@
     "./report": "./src/report.js",
     "./store": "./src/store.js",
     "./subscriptions": "./src/subscriptions.js",
+    "./transport": "./src/transport.js",
     "./usage": "./src/usage.js"
   },
   "files": [

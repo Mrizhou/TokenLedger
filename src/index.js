@@ -19,10 +19,12 @@
  * concrete: every internal rename became a breaking change, which is what had
  * blocked cleaning up the modules underneath.
  *
- * Nothing became unreachable. Every module keeps its own subpath export in
- * `package.json` — `dsh-tokenledger/store`, `/balance`, `/pricing`, `/usage`,
- * and the rest — so a consumer who wants an internal reaches for it by name and
- * can see from the import that it is one.
+ * Nothing became unreachable. The modules a consumer reaches for keep a
+ * subpath export in `package.json` — `dsh-tokenledger/store`, `/balance`,
+ * `/pricing`, `/usage`, `/transport`, and the rest — while the plugin's own
+ * internals (`blue/*`, `dashboard-controller`, `newapi-user`,
+ * `settings-schema`) stay unexported on purpose: they belong to `apply()` and
+ * carry no public contract.
  *
  * @module dsh-tokenledger
  */

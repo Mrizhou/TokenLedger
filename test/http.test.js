@@ -370,16 +370,54 @@ test("a host that has never swept reports no read time rather than a wrong one",
 // credentials. Everywhere else this surface stays read-only, and the loopback
 // fence applies to the writer with the same force as to the readers.
 
-test("POST is served only on the userauth route, and only from loopback", () => {
-	assert.equal(screenRequest(req({ method: "POST", url: USERAUTH_PATH })), undefined);
-	assert.equal(screenRequest(req({ method: "POST", url: USAGE_PATH }))?.status, 405);
-	assert.equal(screenRequest(req({ method: "POST", url: BALANCE_PATH }))?.status, 405);
+test("POST is served only on the userauth route, only from loopback, and only as a deliberate write", () => {
+	const write = { host: "127.0.0.1:3000", "x-tokenledger": "1" };
+	assert.equal(screenRequest(req({ method: "POST", url: USERAUTH_PATH, headers: write })), undefined);
+	assert.equal(screenRequest(req({ method: "POST", url: USAGE_PATH, headers: write }))?.status, 405);
+	assert.equal(screenRequest(req({ method: "POST", url: BALANCE_PATH, headers: write }))?.status, 405);
 	assert.equal(
-		screenRequest(req({ method: "POST", url: USERAUTH_PATH, socket: { remoteAddress: "203.0.113.9" } }))?.status,
+		screenRequest(req({ method: "POST", url: USERAUTH_PATH, headers: write, socket: { remoteAddress: "203.0.113.9" } }))?.status,
 		403,
 		"the write crosses the same fence as the reads"
 	);
 	assert.equal(screenRequest(req({ method: "PUT", url: USERAUTH_PATH }))?.status, 405);
+});
+
+test("a write-class request a drive-by page can forge is refused", () => {
+	// Red-team proven before this gate: a `text/plain` POST from a foreign
+	// page planted and cleared the stored console token through the one write
+	// route, and `force=1` behind a GET spent the wallet's throttle budget.
+	assert.equal(screenRequest(req({ method: "POST", url: USERAUTH_PATH }))?.status, 403, "no write header, no write");
+	assert.equal(screenRequest(req({ method: "GET", url: `${BALANCE_PATH}?force=1` }))?.status, 403, "force=1 is write-class");
+	assert.equal(
+		screenRequest(req({ method: "POST", url: USERAUTH_PATH, headers: { host: "127.0.0.1:3000", "x-tokenledger": "1", origin: "https://evil.example" } }))?.status,
+		403,
+		"a foreign Origin is refused outright"
+	);
+	assert.equal(
+		screenRequest(req({ method: "POST", url: USERAUTH_PATH, headers: { host: "127.0.0.1:3000", "x-tokenledger": "1", origin: "null" } }))?.status,
+		403,
+		"Origin: null is what a sandboxed iframe sends"
+	);
+	assert.equal(
+		screenRequest(req({ method: "GET", url: `${BALANCE_PATH}?force=1`, headers: { host: "127.0.0.1:3000", "x-tokenledger": "1", origin: "http://127.0.0.1:3000" } })),
+		undefined,
+		"the panel's own deliberate write passes"
+	);
+	assert.equal(screenRequest(req({ method: "GET", url: USAGE_PATH })), undefined, "a read stays a read");
+	assert.equal(
+		screenRequest(req({ headers: { host: "127.0.0.1:3080, evil.com" } }))?.status,
+		403,
+		"the Host gate reads a real host, not the text before the last colon"
+	);
+});
+
+test("a days that is not a small positive integer is refused, not silently mis-ranged", () => {
+	assert.equal(parseQuery(`${USAGE_PATH}?days=7`).range.from.length, 10);
+	assert.equal(parseQuery(`${USAGE_PATH}?days=abc`).error, "bad-days");
+	assert.equal(parseQuery(`${USAGE_PATH}?days=999999999999999999999`).error, "bad-days");
+	assert.equal(parseQuery(`${USAGE_PATH}?days=-1`).error, "bad-days");
+	assert.equal(parseQuery(USAGE_PATH).error, undefined, "absent still means all time");
 });
 
 test("balance query parsing separates the account from the force flag", () => {
@@ -432,7 +470,7 @@ test("the credentials route owns its path: GET shows state, POST writes, the tok
 		return Object.assign(stream, {
 			method: "POST",
 			url: USERAUTH_PATH,
-			headers: { host: "127.0.0.1" },
+			headers: { host: "127.0.0.1", "x-tokenledger": "1" },
 			socket: { remoteAddress: "127.0.0.1" }
 		});
 	};
@@ -462,7 +500,7 @@ test("the credentials route owns its path: GET shows state, POST writes, the tok
 		Object.assign(stream2, {
 			method: "POST",
 			url: USERAUTH_PATH,
-			headers: { host: "127.0.0.1" },
+			headers: { host: "127.0.0.1", "x-tokenledger": "1" },
 			socket: { remoteAddress: "127.0.0.1" }
 		}),
 		res2

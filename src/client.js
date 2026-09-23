@@ -573,7 +573,12 @@ window.__ModuleLoader__.load({
 		}
 
 		async function fetchJson(path, signal) {
-			const response = await fetch(path, { headers: { accept: "application/json" }, signal });
+			// The write header on every call: the panel's `force=1` and the
+			// userauth POST are write-class requests the host refuses without
+			// it, which is what keeps a drive-by web page from spending the
+			// wallet's throttle budget or planting a token through this local
+			// surface (red-team proven before this gate existed).
+			const response = await fetch(path, { headers: { accept: "application/json", "x-tokenledger": "1" }, signal });
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			const payload = await response.json();
 			if (payload === null || typeof payload !== "object" || payload.ok !== true) {
@@ -1616,7 +1621,7 @@ window.__ModuleLoader__.load({
 			const post = async (payload) => {
 				const response = await fetch(USERAUTH_PATH, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", "x-tokenledger": "1" },
 					body: JSON.stringify(payload)
 				});
 				// A 404 here has one meaning worth spelling out: the route the
@@ -2143,7 +2148,7 @@ window.__ModuleLoader__.load({
 			"balance.spent": "已用",
 			"balance.spentAmount": "已用 {amount}",
 			"balance.expires": "{at} 到期",
-			"balance.unknownSoftware": "认不出这个中转站跑的是什么程序，读不了余额。",
+			"balance.unknownSoftware": "没有可用的余额读取器：认不出这个站点的程序，或这类站点本就没有内置读取器。可点「设置查询API」自己声明查询端点。",
 			"balance.unknownAccount": "找不到这个账户。",
 			"balance.failed": "余额读取失败（{reason}）。",
 			"balance.hint.openrouter-management-key": "OpenRouter 的额度接口要的是 Management Key，不是这条路由用的推理 key。",
@@ -2263,7 +2268,7 @@ window.__ModuleLoader__.load({
 			"balance.spent": "spent",
 			"balance.spentAmount": "{amount} spent",
 			"balance.expires": "expires {at}",
-			"balance.unknownSoftware": "This relay runs software we do not recognise, so its balance cannot be read.",
+			"balance.unknownSoftware": "No balance reader for this site: its software is unrecognised, or none is built in for it. Declare a query endpoint with \"Set query API\".",
 			"balance.unknownAccount": "No such account.",
 			"balance.failed": "Could not read the balance ({reason}).",
 			"balance.hint.openrouter-management-key": "OpenRouter's credits endpoint wants a Management Key, not the inference key this route uses.",

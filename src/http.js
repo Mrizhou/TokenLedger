@@ -58,7 +58,6 @@ export const VERSION = (() => {
 export const BASE_PATH = "/api/tokenledger";
 export const USAGE_PATH = `${BASE_PATH}/usage`;
 export const BALANCE_PATH = `${BASE_PATH}/balance`;
-export const ACCOUNTS_PATH = `${BASE_PATH}/accounts`;
 /**
  * The one route that WRITES, and what it writes is the plugin's own settings
  * namespace: the per-origin New API console credentials the 设置余额 dialog
@@ -96,7 +95,11 @@ export function hostNameOf(header) {
 	if (typeof header !== "string" || header === "") return "";
 	if (header.startsWith("[")) return header.slice(1, header.indexOf("]"));
 	const colon = header.lastIndexOf(":");
-	return colon === -1 ? header : header.slice(0, colon);
+	// Strip a `:port` only when the tail really is one. Taking the text before
+	// the last colon unconditionally turned `127.0.0.1:3080, evil.com` into
+	// `127.0.0.1` and walked past the gate.
+	if (colon === -1 || !/^\d+$/.test(header.slice(colon + 1))) return header;
+	return header.slice(0, colon);
 }
 
 /** The path a request addresses, without the query. */
@@ -107,6 +110,17 @@ export function pathOf(url) {
 		return "";
 	}
 }
+
+/**
+ * Header a write-class request must carry.
+ *
+ * A cross-origin page cannot set it on a simple request, and asking the
+ * browser to send it triggers a preflight this surface never approves. Its
+ * absence is exactly what red-team testing exploited: a `text/plain` POST
+ * from a drive-by page planted and cleared the stored console token through
+ * the one write route.
+ */
+export const WRITE_HEADER = "x-tokenledger";
 
 /**
  * Decide whether a request may be served.
@@ -125,8 +139,29 @@ export function screenRequest(req) {
 	const peerOk = isLoopbackAddress(req.socket?.remoteAddress);
 	const hostOk = isLoopbackAddress(hostNameOf(req.headers?.host));
 	// Both, and the peer address is the one that cannot be forged.
-	if (peerOk && hostOk) return undefined;
-	return { status: 403, body: { ok: false, error: "forbidden" } };
+	if (!peerOk || !hostOk) return { status: 403, body: { ok: false, error: "forbidden" } };
+	// Write-class: the one POST route, and the GET that spends the wallet's
+	// throttle budget with `force=1`. Loopback is not AUTHENTICATION — every
+	// web page in a local browser satisfies the fence above. Both write
+	// shapes therefore demand {@link WRITE_HEADER} (a simple request cannot
+	// carry one) and refuse a foreign `Origin` outright — `null` included,
+	// because that is what a sandboxed iframe sends.
+	const writeClass = method === "POST" || (method === "GET" && forceOf(req.url));
+	if (!writeClass) return undefined;
+	if (String(req.headers?.[WRITE_HEADER] ?? "") !== "1") {
+		return { status: 403, body: { ok: false, error: "missing-write-header" } };
+	}
+	const origin = req.headers?.origin;
+	if (typeof origin === "string" && origin !== "") {
+		let hostname;
+		try {
+			hostname = new URL(origin).hostname;
+		} catch {
+			hostname = undefined;
+		}
+		if (!isLoopbackAddress(hostname)) return { status: 403, body: { ok: false, error: "foreign-origin" } };
+	}
+	return undefined;
 }
 
 /** The `?account=` a balance request names, or undefined for the first one. */
@@ -199,19 +234,26 @@ export function readJsonBody(req, limit = USERAUTH_BODY_LIMIT) {
 }
 
 /** Parse `?days=` / `?site=` into the range the store queries take. */
-export function parseQuery(url) {
+export function parseQuery(url, options = {}) {
 	let params;
 	try {
 		params = new URL(url ?? "/", "http://localhost").searchParams;
 	} catch {
 		return { range: {}, site: undefined };
 	}
-	const days = Number.parseInt(params.get("days") ?? "", 10);
+	const raw = params.get("days");
 	const site = params.get("site") ?? undefined;
-	return {
-		range: Number.isFinite(days) && days > 0 ? { from: fromDaysAgo(days) } : {},
-		site: site === "" ? undefined : site
-	};
+	const query = { range: {}, site: site === "" ? undefined : site };
+	if (raw === null || raw.trim() === "") return query;
+	// A `days` that is not a small positive integer is REFUSED (`error`), not
+	// silently widened to "everything" and not overflowed into a `NaN-NaN-NaN`
+	// day bound — both shapes came back as a lying 200 in red-team testing.
+	const days = Number.parseInt(raw, 10);
+	if (!/^\d{1,6}$/.test(raw.trim()) || !Number.isFinite(days) || days < 1) {
+		return { ...query, error: "bad-days" };
+	}
+	query.range = { from: fromDaysAgo(days, options.dayOffsetMinutes) };
+	return query;
 }
 
 /**
@@ -226,8 +268,8 @@ export function parseQuery(url) {
  *
  * @returns `{ cost, currency }` or `null`.
  */
-export function priceToday(store, site = undefined, rates = undefined) {
-	const day = dayKey(Date.now());
+export function priceToday(store, site = undefined, rates = undefined, dayOffsetMinutes = undefined) {
+	const day = dayKey(Date.now(), dayOffsetMinutes);
 	const rows = store.byRoute({ from: day }, site).filter((row) => row.provider === "deepseek-official");
 	if (rows.length === 0) return null;
 	const table = rates === undefined ? new RateTable(DEEPSEEK_OFFICIAL_RATES) : new RateTable(rates);
@@ -271,8 +313,8 @@ export function usagePayload(deps, query) {
 		// "all time" are the questions people actually ask, and reading them off
 		// one selector means changing it three times.
 		windows: {
-			today: store.totals({ from: dayKey(Date.now()) }, site, provider),
-			month: store.totals({ from: monthStart() }, site, provider),
+			today: store.totals({ from: dayKey(Date.now(), deps.dayOffsetMinutes) }, site, provider),
+			month: store.totals({ from: monthStart(deps.dayOffsetMinutes) }, site, provider),
 			all: store.totals({}, site, provider)
 		},
 		// What today's tokens cost, for the sidebar badge. Independent of the
@@ -282,12 +324,12 @@ export function usagePayload(deps, query) {
 		// The activity strip has its OWN window, deliberately. Tied to the
 		// selected range it collapsed to a single cell whenever "today" was
 		// picked — a heatmap of one day is not a heatmap, and it read as broken.
-		activity: store.byDay({ from: fromDaysAgo(ACTIVITY_DAYS) }, site, provider),
+		activity: store.byDay({ from: fromDaysAgo(ACTIVITY_DAYS, deps.dayOffsetMinutes) }, site, provider),
 		// Per-day, per-model rows for the same window, so hovering a cell can
 		// show what ran that day rather than only how much. Sent with the panel
 		// rather than fetched per hover: a request on mouseover would lag behind
 		// the pointer, and these are counts, not content.
-		activityModels: dailyModels(store.byRoute({ from: fromDaysAgo(ACTIVITY_DAYS) }, site, provider)),
+		activityModels: dailyModels(store.byRoute({ from: fromDaysAgo(ACTIVITY_DAYS, deps.dayOffsetMinutes) }, site, provider)),
 		models: store.byModel(range, site, provider),
 		// Site rows are never filtered by the current selection: the breakdown is
 		// how you CHANGE that selection, so hiding the others would strand you.
@@ -451,8 +493,10 @@ function attachRoutes(ctx, httpServer, deps) {
 					handler: async (req, res) => {
 						const refused = screenRequest(req);
 						if (refused !== undefined) return send(res, refused.status, refused.body);
+						const query = parseQuery(req.url, { dayOffsetMinutes: deps.dayOffsetMinutes });
+						if (query.error !== undefined) return send(res, 400, { ok: false, error: query.error });
 						try {
-							send(res, 200, await build(parseQuery(req.url), req.url));
+							send(res, 200, await build(query, req.url));
 						} catch (error) {
 							// A failed read is this plugin's problem, never the harness's.
 							logger?.warn?.("tokenledger: %s failed: %s", path, error?.message ?? error);

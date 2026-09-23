@@ -57,19 +57,25 @@ function pad(text, width, align = "left") {
 	return align === "right" ? fill + s : s + fill;
 }
 
+/** Cells are clipped: a log-supplied name is unbounded and padding every row to the widest of them is quadratic. */
+function cell(value) {
+	const s = String(value ?? "");
+	return s.length > 200 ? `${s.slice(0, 199)}…` : s;
+}
+
 /** Render a table from a column spec and rows. */
 export function table(columns, rows) {
 	const widths = columns.map((c, i) =>
 		Math.max(
 			[...String(c.title)].reduce((n, ch) => n + (/[　-鿿＀-￯]/.test(ch) ? 2 : 1), 0),
 			...rows.map((r) => {
-				const s = String(r[i] ?? "");
+				const s = cell(r[i]);
 				return [...s].reduce((n, ch) => n + (/[　-鿿＀-￯]/.test(ch) ? 2 : 1), 0);
 			})
 		)
 	);
 	const line = (cells) =>
-		cells.map((cell, i) => pad(cell, widths[i], columns[i].align ?? "left")).join("  ").trimEnd();
+		cells.map((c, i) => pad(cell(c), widths[i], columns[i].align ?? "left")).join("  ").trimEnd();
 	return [line(columns.map((c) => c.title)), ...rows.map(line)];
 }
 

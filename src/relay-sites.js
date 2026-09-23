@@ -66,6 +66,22 @@ export function domainOf(baseUrl) {
 }
 
 /**
+ * The first value that is a non-empty, non-whitespace string, else undefined.
+ *
+ * A blank or junk `baseURL` in a stored profile is read as ABSENT, not as a
+ * decision: `??` alone treats `""` as a real value, which shadowed the
+ * built-in origin table and re-opened the exact mis-attribution the table
+ * exists to prevent. Shared by discovery and the balance list so both sides
+ * answer the same way for the same profile.
+ */
+export function firstString(...values) {
+	for (const value of values) {
+		if (typeof value === "string" && value.trim() !== "") return value;
+	}
+	return undefined;
+}
+
+/**
  * A short, non-reversible fingerprint of a credential, so several keys on one
  * domain remain distinguishable in the UI without the secret ever being stored.
  * Not a security boundary — it exists to label rows, not to protect the key.

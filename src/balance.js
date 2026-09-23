@@ -46,7 +46,8 @@ import { detectRelaySoftware } from "./adapters/detect.js";
 import { compileEndpoint, indexEndpoints } from "./declarative.js";
 import { unitFromStatus } from "./newapi-user.js";
 import { normalizeWindows } from "./quota.js";
-import { normalizeOrigin } from "./relay-sites.js";
+import { firstString, normalizeOrigin } from "./relay-sites.js";
+import { DEFAULT_MAX_BYTES, fetchNoCrossOriginRedirect, readCapped } from "./transport.js";
 import { KIMI, MINIMAX, OPENCODE_GO, readZaiCodingPlan } from "./subscriptions.js";
 
 /** The vendor's own endpoint, and the only origin the `deepseek` scheme calls. */
@@ -136,74 +137,6 @@ export const BUILTIN_PROVIDER_ORIGINS = new Map([
 	["zai-coding-cn", "https://open.bigmodel.cn"],
 	["xiaomi", "https://api.xiaomimimo.com"]
 ]);
-
-/** How many hops to follow before giving up on a same-origin redirect loop. */
-const MAX_REDIRECTS = 3;
-
-/**
- * Fetch, following redirects only while they stay on the same origin.
- *
- * The default `follow` sends the Authorization header wherever the redirect
- * points, so a relay that answers `302 https://collector.example/` is handed
- * the user's key. That is the cheapest way around every other rule this module
- * has, and it costs one option to close: take the hops manually and stop at the
- * first one that changes origin.
- *
- * A stub `fetch` in a test returns no `status` and no `headers`, so the 3xx
- * branch is simply never entered.
- */
-async function fetchNoCrossOriginRedirect(doFetch, url, init) {
-	let current = url;
-	for (let hop = 0; ; hop++) {
-		const response = await doFetch(current, { ...init, redirect: "manual" });
-		const status = response?.status;
-		if (status !== 301 && status !== 302 && status !== 303 && status !== 307 && status !== 308) return response;
-
-		const location = response.headers?.get?.("location");
-		if (location === undefined || location === null || location === "" || hop >= MAX_REDIRECTS) {
-			throw Object.assign(new Error(`http-${status}`), { status });
-		}
-		const next = new URL(location, current);
-		if (next.origin !== new URL(current).origin) {
-			// Not a transport failure — a refusal to hand the credential over.
-			throw Object.assign(new Error("cross-origin-redirect"), { kind: "cross-origin-redirect" });
-		}
-		current = next.href;
-	}
-}
-
-/**
- * Read a response body with a byte ceiling.
- *
- * A declared endpoint is not one of ours, so its answer is not assumed to be a
- * reasonable size. Streamed where the runtime gives us a reader — which is what
- * actually bounds the cost — and length-checked otherwise, which at least
- * bounds the parse.
- */
-async function readCapped(response, maxBytes) {
-	const tooLarge = () => Object.assign(new Error("response-too-large"), { kind: "too-large" });
-
-	const reader = response.body?.getReader?.();
-	if (reader === undefined || reader === null) {
-		const text = await response.text();
-		if (text.length > maxBytes) throw tooLarge();
-		return text;
-	}
-
-	const chunks = [];
-	let size = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		size += value.byteLength;
-		if (size > maxBytes) {
-			await reader.cancel().catch(() => {});
-			throw tooLarge();
-		}
-		chunks.push(value);
-	}
-	return Buffer.concat(chunks).toString("utf8");
-}
 
 /** A trimmed non-empty string, or undefined. */
 function label(value) {
@@ -642,7 +575,7 @@ export async function readBalance(options = {}) {
 	 *   rides the Authorization header and never a query string.
 	 */
 	const get = async (url, options = {}) => {
-		const { anonymous = false, raw = false, maxBytes } = options;
+		const { anonymous = false, raw = false, maxBytes = DEFAULT_MAX_BYTES } = options;
 		const response = await fetchNoCrossOriginRedirect(doFetch, url, {
 			headers: anonymous
 				? { accept: "application/json" }
@@ -652,7 +585,10 @@ export async function readBalance(options = {}) {
 		if (!response.ok) throw Object.assign(new Error(`http-${response.status}`), { status: response.status });
 		let body;
 		try {
-			body = maxBytes === undefined ? await response.json() : JSON.parse(await readCapped(response, maxBytes));
+			// Under a ceiling always: a hostile relay answers with a body of
+			// whatever size it likes, and a bare `response.json()` grew the heap
+			// from 8 MB to 367 MB on a 120 MB answer in red-team testing.
+			body = JSON.parse(await readCapped(response, maxBytes));
 		} catch (error) {
 			if (error?.kind === "too-large") throw error;
 			// A host that answers HTML where JSON was asked for is not serving
@@ -777,8 +713,13 @@ export function listAccounts(ctx, options = {}) {
 		// one of the installation's built-in routes, whose origin lives in the
 		// harness's catalog, not in the stored settings. The table names those;
 		// everything else keeps the DeepSeek convention it always had.
+		// A blank or junk base URL is not a decision: `""`, whitespace and
+		// non-strings are read as absent, exactly like a profile that never
+		// named one. Otherwise `""` shadowed the built-in origin table and
+		// `vendorOf` answered DeepSeek — a live-shaped case swallowed the
+		// DeepSeek card and sent a Z.ai key at DeepSeek's balance endpoint.
 		const baseUrl =
-			profile?.baseURL ?? profile?.baseUrl ?? BUILTIN_PROVIDER_ORIGINS.get(entry.provider);
+			firstString(profile?.baseURL, profile?.baseUrl) ?? BUILTIN_PROVIDER_ORIGINS.get(entry.provider);
 		const vendor = vendorOf(baseUrl);
 		const origin = isOfficialDeepSeek(baseUrl) ? (normalizeOrigin(baseUrl) ?? DEEPSEEK_ORIGIN) : normalizeOrigin(baseUrl);
 		if (origin === undefined) continue;
