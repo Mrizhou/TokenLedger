@@ -25,7 +25,7 @@ consumers share the same host-owned aggregation. Zero configuration.
 | 📊 | **用量分析** | 今日/本月/累计三窗口、按站点/模型下钻、缓存命中率、一年活跃度热力图（悬停看当天模型构成） |
 | 🧮 | **费用估算** | 生效日期分段的费率表、分桶计价、峰谷时段；未定价的模型显示破折号而不是 0 |
 | 🗂 | **导出与诊断** | CSV / JSON 导出，索引健康度，归因不上的行数单独列出 |
-| 🔒 | **只读回环** | 两个端点仅接受回环 GET，且在 peer socket 地址上设防；从不读取提示词、工具参数或响应内容 |
+| 🔒 | **只读回环** | 三个端点位于回环围栏后（两个 GET 读；POST 写仅 userauth 一处，需 x-tokenledger 写头并拒外来 Origin）；从不读取提示词、工具参数或响应内容 |
 
 ## 快速安装 / Quick start
 
@@ -75,7 +75,7 @@ dsh plugin --profile web remove dsh-tokenledger
 /tokenledger site rm <路由名>
 
 /tokenledger export csv 30        # 导出
-/tokenledger diagnostics          # 索引健康度
+/tokenledger diagnostics          # 索引健康度（doctor 是它的别名）
 /tokenledger reindex              # 丢弃索引，从头重建
 ```
 
@@ -215,17 +215,18 @@ DSH 的工作区（`ctx.workspace`）是**一个目录的登记**——`create(p
 
 - **从不读取内容。** 只有计数和标识符：token 数、模型名、provider 路由名、站点域名。提示词、工具参数、响应正文既不读也不存。
 - **凭据只在宿主侧。** key 由宿主的 credentials 服务按引用（`apiKeyEnv`）在请求时解析、用完即弃，始终走 `Authorization` 头，绝不进 URL 查询串。浏览器永远拿不到 key。
-- **回环防护。** 两个 HTTP 端点注册为 exact 路由，因此位于 RPC 信任边界**之外**，处理器自己设防：拒绝非 GET，并同时校验 **peer socket 地址**（不可伪造）与 Host 头。
+- **回环防护。** 三个 HTTP 端点注册为 exact 路由，因此位于 RPC 信任边界**之外**，处理器自己设防：方法白名单（GET 读、POST 仅 userauth）、写类请求要求 x-tokenledger 写头且拒绝外来 Origin，并同时校验 **peer socket 地址**（不可伪造）与 Host 头。
 - **中转站指纹识别不用凭据**，靠路由的 404/401 特征。
 
 ## API
 
-浏览器面板读这两个端点，仅限回环 GET：
+浏览器面板读写这三个端点（读两个 GET；写仅 userauth 的 POST，带写头）：
 
 | 端点 | 说明 |
 | --- | --- |
 | `GET /api/tokenledger/usage?days=&site=` | 整个面板的数据：三窗口合计、按天/模型/站点、一年活跃度与逐日模型构成、账户列表、索引诊断 |
 | `GET /api/tokenledger/balance?account=` | 某个账户的余额 |
+| `POST /api/tokenledger/userauth` | 设置余额对话框：保存/清除某站点的控制台凭据（唯一写口，4KB 顶，token 永不回显） |
 
 包也可作为库使用，供 DSH 之外的消费者：
 

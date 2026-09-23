@@ -13,6 +13,7 @@ DSH Desktop 的第三方 token 计量插件。**这是 fork，不是原创**：
 **上游其实很勤快**（2026-09-15 查证：外部 PR 常在当天合，我们的 #63 从提到合 2 小时）——
 早先「上游不活跃」的说法已推翻。留着 fork 的理由：我们有几样**不打算上游**的东西，
 而 DSH 装的就是这个 fork（见红线 1）。
+**2026-09-23 用户定：本插件改为「自用专用」**（原话「以后这个插件我自己专用」）——同步纪律降级为「上游有修复就择优合并」，不为通用性克制功能；文档以本机实际为准。同日对三路对抗审计的全部发现（4 Critical、8 必修、5 次级）做了整体加固：CSRF 写闸、传输围栏与响应体上限、fold 类型混淆/\0/去重键、schema 降级拒毁、CSV 公式闸、成本只计官方路由、`dayOffsetMinutes` 切日、空串/垃圾 baseURL 族。
 
 **同步纪律：尽量跟随上游。** 我们只在上游没有的地方保留：本文件的中文规则部分（2026-09-22 起 `AGENTS.md` 合并了原 `CLAUDE.md` 全文，
 `CLAUDE.md` 只剩 `@AGENTS.md` 导入行；文末「附」段随上游同步）、
@@ -54,7 +55,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 493/493
+npm test                           # 全量，当前基线 516/516
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -104,7 +105,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **493/493**。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **516/516**。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
@@ -174,4 +175,4 @@ unloads or fails to register.
 
 Run `npm test` and `npm pack --dry-run --json` from the repository root. The
 package intentionally has no build step. New exports must stay under `src/`, be
-listed in `package.json`, and be covered by `test/packaging.test.js`.
+listed in `package.json`, and be covered by `test/packaging.test.js`.（本 fork 消歧：『listed in package.json』指模块子路径列进 exports 映射、行为有测试覆盖即可；命名导出无法『列进』exports 映射。2026-09-23 记。）

@@ -1,6 +1,6 @@
 # TokenLedger 功能变更与新增说明
 
-> 版本 0.1.1 · 本文档覆盖本批次全部修改与新增功能，供使用、验收与后续维护参考。
+> 版本 0.1.1-blue.0 · 本文档覆盖本批次全部修改与新增功能，供使用、验收与后续维护参考。
 
 ---
 
@@ -120,15 +120,15 @@ New API 站点默认限流 **20 分钟 5 次**。系统按站点（origin）维�
 
 ## 五、安装与部署
 
-- 本地开发版通过 **link 方式**接入宿主：`profiles/web/node_modules/dsh-tokenledger` → Junction → 仓库目录；profile `package.json` 依赖为 `link:G:/dev/merge/TokenLedger`（ bundles 列表不变，备份在 `package.json.bak-tokenledger`）。
+- 装机版按红线 1 从 fork 以 40 位完整 SHA 安装、装完重启宿主（下面的 link/junction 描述为历史做法，已作废）：`profiles/web/node_modules/dsh-tokenledger` → Junction → 仓库目录；profile `package.json` 依赖为 `link:G:/dev/merge/TokenLedger`（ bundles 列表不变，备份在 `package.json.bak-tokenledger`）。
 - 仓库自带 `node_modules/@deepseek-ai/schemastery`（→ profile 副本）与 `@deepseek-ai/cordis`（→ profile 副本）junction，供 link 模式下解析 peer/dev 依赖（Node 按 realpath 解析，仓库必须自带依赖）；`node_modules/` 已在 `.gitignore`。
-- 宿主半区改动需**完全退出并重启桌面应用**生效；client 半区改动刷新页面即生效。面板数据版本号可通过 `GET /api/tokenledger/usage` 的 `version` 字段核对（当前 0.1.1）。
+- 宿主半区改动需**完全退出并重启桌面应用**生效；client 半区改动刷新页面即生效。面板数据版本号可通过 `GET /api/tokenledger/usage` 的 `version` 字段核对（当前 0.1.1-blue.0）。
 
 ---
 
 ## 六、测试与质量
 
-- 测试总量 **438 项，438 通过，0 失败，0 跳过（100%）**。
+- 测试总量 **516 项，516 通过，0 失败，0 跳过（100%）**（2026-09-23 对抗式审计整体加固后的基线；含 `test/hardening.test.js` 的 17 条变异验证守卫）。
 - 新增/覆盖：
   - `test/newapi-user.test.js`：钱包读取映射（双头认证、金额换算、货币单位）、缓存零请求、force 语义、限流退避（含 Retry-After 优先与连续限流翻倍）、401/信封拒绝、`shouldUseWallet` 决策表、`unitFromStatus`；
   - `test/http.test.js`：POST 仅限 userauth 路径、回环栅栏对写请求同样生效、body 上限、userauth 路由 GET 脱敏/POST 落库、balance 查询参数解析；
