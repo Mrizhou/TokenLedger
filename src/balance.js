@@ -126,10 +126,15 @@ export function vendorOf(baseUrl) {
  * never names 智谱 at all, which is what a live install showed. An explicit
  * `baseURL` on the route always wins over this table: a route called anything
  * may point anywhere.
+ *
+ * `discovery.js` shares the table: the same absence that misroutes a balance
+ * read also folds the route's traffic into the one undifferentiated `direct`
+ * bucket, so the site list had nothing naming xiaomi after the user added it.
  */
-const BUILTIN_PROVIDER_ORIGINS = new Map([
+export const BUILTIN_PROVIDER_ORIGINS = new Map([
 	["zai", "https://api.z.ai"],
-	["zai-coding-cn", "https://open.bigmodel.cn"]
+	["zai-coding-cn", "https://open.bigmodel.cn"],
+	["xiaomi", "https://api.xiaomimimo.com"]
 ]);
 
 /** How many hops to follow before giving up on a same-origin redirect loop. */

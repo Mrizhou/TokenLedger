@@ -672,6 +672,29 @@ test("an explicit baseURL beats the built-in origin table", () => {
 	assert.equal(accounts[0].host, "relay-one.example");
 });
 
+test("a catalog route the harness resolves by itself still gets its own card", () => {
+	// The live failure this exists for: `llm-pi-ai.providers.xiaomi` lists the
+	// MiMo models and a key but no `baseURL`, because the harness resolves
+	// api.xiaomimimo.com from its own catalog. Reading that absence as "the
+	// shipped DeepSeek default" pointed MiMo at api.deepseek.com, where the
+	// vendor collapse then swallowed it into the DeepSeek card — a picker that
+	// never named the account the user had just added.
+	const accounts = listAccounts(
+		ctxWith(
+			[
+				{ provider: "deepseek-official", displayName: "DeepSeek", settingsNs: "llm-deepseek", settingsPath: [] },
+				{ ...piAi("xiaomi"), declared: false }
+			],
+			{ providers: { xiaomi: { apiKeyEnv: "XIAOMI_API_KEY" } } }
+		),
+		{ softwareOf: new Map() }
+	);
+	assert.deepEqual(accounts.map((a) => a.id), ["deepseek-official", "xiaomi"]);
+	assert.deepEqual(accounts.map((a) => a.origin), ["https://api.deepseek.com", "https://api.xiaomimimo.com"]);
+	assert.equal(accounts[1].displayName, "api.xiaomimimo.com");
+	assert.equal(accounts[1].hasCredential, true);
+});
+
 test("two routes at one vendor collapse, because they draw on one wallet", () => {
 	// The opposite of the relay rule directly above: there, two keys are two
 	// quotas and must stay apart. Here they are one account seen twice.

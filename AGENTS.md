@@ -18,7 +18,8 @@ DSH Desktop 的第三方 token 计量插件。**这是 fork，不是原创**：
 `CLAUDE.md` 只剩 `@AGENTS.md` 导入行；文末「附」段随上游同步）、
 `test/blue-packaging.test.js` 的 Windows shell spawn（**有意不上游**，见决策记录）、
 `test/plugin.test.js` 末尾两个 sweep 测试（上游 `test/sweep-handle-api.test.js` 覆盖更全，留作守卫），
-以及 **`src/` 里唯一一处与上游不同的地方**：
+以及 **`src/` 里与上游不同的两处**（同一族问题：宿主目录里「内置 provider 路由」的 origin 存在
+pi-ai catalog 里，settings 的 profile 看不见）：
 
 - `src/balance.js` `listAccounts()` 跳过「`declared: false` 且无存储配置」的目录项
   （2026-09-17，**用户明确不提 PR**）。宿主目录列出 pi-ai 全部内置 provider，
@@ -26,6 +27,14 @@ DSH Desktop 的第三方 token 计量插件。**这是 fork，不是原创**：
   排在前面的空路由还会顶掉 `deepseek-official` 占走 DeepSeek 那一项。
   守卫测试：`test/balance.test.js`「a shipped catalog route nobody configured is not an account」。
   **合上游时这一处要保留**；上游若自己修了，取上游那份并确认守卫测试仍绿。
+- `src/balance.js` 的 `BUILTIN_PROVIDER_ORIGINS`（上游 PR #55 建的表）加 `xiaomi` 一项并 `export`，
+  `src/discovery.js` 共用它：**已配置**的路由若 profile 没写 `baseURL`，按表里的 catalog origin 归因、
+  自成站点行（2026-09-23）。不做这件事的话，加了 MiMo 那天面板上什么都没有：无 `baseURL` 一律
+  按「DeepSeek 默认」合并 —— 账户卡被 vendor 压缩吞进 DeepSeek，用量整包落进「直连/官方」。
+  「没配过的路由不冒出来」的门槛两处同款（profile 为空就不用表）。
+  守卫测试：`test/balance.test.js`「a catalog route the harness resolves by itself still gets its own card」、
+  `test/discovery.test.js`「a catalog route's own endpoint is its origin…」与「…does not resurface as a site row」。
+  **合上游时这一处要保留**（可上游的形态：表项按需补 + discovery 共用表；上游若合了就取上游那份）。
 
 其余再出现重复实现，**取上游那份**。
 

@@ -48,6 +48,7 @@
  * @module dsh-tokenledger/discovery
  */
 
+import { BUILTIN_PROVIDER_ORIGINS } from "./balance.js";
 import { domainOf, normalizeOrigin } from "./relay-sites.js";
 
 /**
@@ -115,7 +116,18 @@ export function discoverSites(options = {}) {
 		if (typeof route !== "string" || route === "") continue;
 
 		const profile = readAtPath(sectionFor(entry.settingsNs), entry.settingsPath ?? []);
-		const baseUrl = profile?.baseURL ?? profile?.baseUrl;
+		// A catalog route the harness resolves by itself carries no `baseURL` in
+		// its profile; the shared table is where its endpoint lives, and without
+		// it the route's traffic lands in the one undifferentiated `direct` bucket
+		// and the site list never names it — a live install added the MiMo models
+		// and the panel showed nothing for them but DeepSeek's row. Only a route
+		// the install actually configured earns that attribution: the same line
+		// `listAccounts` draws, so a dormant catalog entry nobody set up does not
+		// resurface as a site row.
+		const baseUrl =
+			profile?.baseURL ??
+			profile?.baseUrl ??
+			(profile == null ? undefined : BUILTIN_PROVIDER_ORIGINS.get(route));
 		if (typeof baseUrl !== "string" || baseUrl === "") {
 			// A shipped catalog route with no override uses its vendor default. Keep
 			// the route in the directory as explicitly direct; dropping it here made

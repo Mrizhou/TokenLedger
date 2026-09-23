@@ -103,6 +103,39 @@ test("a shipped route with no configured endpoint stays known as direct traffic"
 	assert.equal(skipped, 0, "a known vendor default is resolved, not skipped");
 });
 
+test("a catalog route's own endpoint is its origin even when the profile carries no baseURL", () => {
+	// The harness resolves built-in routes' endpoints from its own catalog, so
+	// their stored profile says nothing about a base URL. Landing every such
+	// route in the one `direct` bucket put MiMo's traffic in the same row as
+	// DeepSeek's and left the site list with nothing naming xiaomi at all. The
+	// catalog origin is the fact attribution needs, and the table that already
+	// holds it for the balance cards speaks here too.
+	const { sites, providerBaseUrls, directProviders, skipped } = discoverSites({
+		providers: [piAi("xiaomi", false)],
+		readSection: () => section({ xiaomi: { apiKeyEnv: "XIAOMI_API_KEY" } })
+	});
+	assert.deepEqual(providerBaseUrls, { xiaomi: "https://api.xiaomimimo.com" });
+	assert.equal(sites.length, 1);
+	assert.equal(sites[0].id, "api.xiaomimimo.com");
+	assert.deepEqual(sites[0].routes, ["xiaomi"]);
+	assert.deepEqual(directProviders, [], "its endpoint is known, so it is not undifferentiated direct traffic");
+	assert.equal(skipped, 0);
+});
+
+test("a catalog route nobody configured does not resurface as a site row", () => {
+	// Same line `listAccounts` draws, for the usage side: the directory lists
+	// every catalog provider, registered or dormant, and the catalog knows each
+	// one's endpoint. Attributing by that knowledge alone put routes the install
+	// never set up into the site list — the 2026-09-17 complaint all over again.
+	const { sites, providerBaseUrls, directProviders } = discoverSites({
+		providers: [piAi("zai", false)],
+		readSection: () => section({})
+	});
+	assert.deepEqual(sites, []);
+	assert.deepEqual(providerBaseUrls, {});
+	assert.deepEqual(directProviders, ["zai"]);
+});
+
 test("an unparseable base URL is skipped, not turned into a site named after garbage", () => {
 	const { sites, skipped } = discoverSites({
 		providers: [piAi("a", true), piAi("b", true)],
