@@ -70,18 +70,35 @@ export const UNROUTED = "unrouted";
 
 const SEP = "\u0000";
 
-/** Local-calendar `YYYY-MM-DD` key for a millisecond epoch. */
-export function dayKey(timeMs) {
-	const date = new Date(timeMs);
-	const month = String(date.getMonth() + 1).padStart(2, "0");
-	const day = String(date.getDate()).padStart(2, "0");
-	return `${date.getFullYear()}-${month}-${day}`;
+/** The day bucket for events that carry no usable timestamp. */
+export const UNKNOWN_DAY = "0000-00-00";
+
+const pad2 = (n) => String(n).padStart(2, "0");
+
+/**
+ * `YYYY-MM-DD` key for a millisecond epoch.
+ *
+ * With no `offsetMinutes` this is the host's LOCAL calendar — the store keys
+ * days by the clock of the process that folded them. With `offsetMinutes` it
+ * is that fixed offset from UTC instead (`480` for Asia/Shanghai), so an
+ * install cuts its days where its owner's days are cut rather than where the
+ * machine happens to sit. A non-finite time folds into {@link UNKNOWN_DAY}
+ * rather than into `"NaN-NaN-NaN"`.
+ */
+export function dayKey(timeMs, offsetMinutes = undefined) {
+	if (!Number.isFinite(timeMs)) return UNKNOWN_DAY;
+	if (offsetMinutes === undefined) {
+		const date = new Date(timeMs);
+		return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+	}
+	const date = new Date(timeMs + offsetMinutes * 60_000);
+	return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`;
 }
 
 /** Empty token bucket. */
 /** `YYYY-MM-DD` for N days back, inclusive of today. */
-export function fromDaysAgo(days) {
-	return dayKey(Date.now() - (days - 1) * 86_400_000);
+export function fromDaysAgo(days, offsetMinutes = undefined) {
+	return dayKey(Date.now() - (days - 1) * 86_400_000, offsetMinutes);
 }
 
 /**
@@ -129,10 +146,15 @@ export function hostTimeZone(now = new Date()) {
 	return { name, offset: `UTC${sign}${hh}:${mm}` };
 }
 
-/** First day of the current month, in local time — the store keys days that way. */
-export function monthStart() {
-	const now = new Date();
-	return dayKey(new Date(now.getFullYear(), now.getMonth(), 1).getTime());
+/** First day of the current month, in the same calendar days are keyed by. */
+export function monthStart(offsetMinutes = undefined) {
+	const now = Date.now();
+	if (offsetMinutes === undefined) {
+		const d = new Date(now);
+		return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-01`;
+	}
+	const d = new Date(now + offsetMinutes * 60_000);
+	return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-01`;
 }
 
 export function zeroBuckets() {
@@ -147,16 +169,25 @@ export function zeroBuckets() {
 }
 
 /**
- * Provider-reported usage → buckets. Cache and reasoning fields are optional in
- * `TokenUsage` and absent from some adapters' reports.
+ * Provider-reported usage → buckets. Cache and reasoning fields are optional
+ * in `TokenUsage` and absent from some adapters' reports.
+ *
+ * Log-supplied numbers are coerced and clamped here: a string field used to
+ * CONCATENATE into the totals (`"12"` made `"012"`) and a negative count was
+ * summed as a negative. A bucket is a count of tokens — finite, and at worst
+ * zero, never invented.
  */
 export function bucketsOf(usage) {
+	const count = (value) => {
+		const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : 0;
+		return Number.isFinite(n) && n > 0 ? n : 0;
+	};
 	return {
-		inputTokens: usage.inputTokens ?? 0,
-		outputTokens: usage.outputTokens ?? 0,
-		cacheReadTokens: usage.cacheReadTokens ?? 0,
-		cacheWriteTokens: usage.cacheWriteTokens ?? 0,
-		reasoningTokens: usage.reasoningTokens ?? 0,
+		inputTokens: count(usage.inputTokens),
+		outputTokens: count(usage.outputTokens),
+		cacheReadTokens: count(usage.cacheReadTokens),
+		cacheWriteTokens: count(usage.cacheWriteTokens),
+		reasoningTokens: count(usage.reasoningTokens),
 		requests: 1
 	};
 }
@@ -206,13 +237,23 @@ function subtractFrom(target, source) {
 
 /** Extract the usage sample an event carries, if any. */
 function sampleOf(event) {
-	if (event.type === "assistant/chunk" && event.data?.chunk?.type === "usage") {
-		return { key: `${event.data.turn}:${event.data.step}`, usage: event.data.chunk.usage };
-	}
-	if (event.type === "assistant/message" && event.data?.usage !== undefined) {
-		return { key: `${event.data.turn}:${event.data.step}`, usage: event.data.usage };
-	}
-	return undefined;
+	const usage =
+		event.type === "assistant/chunk" && event.data?.chunk?.type === "usage"
+			? event.data.chunk.usage
+			: event.type === "assistant/message" && event.data?.usage !== undefined
+				? event.data.usage
+				: undefined;
+	if (usage === undefined) return undefined;
+	// Re-reports are identified by `(turn, step)`. When either is missing there
+	// is NOTHING to identify a re-report by, and a shared fallback key made
+	// every such sample silently replace the last one (three samples counted
+	// as one). No key means count this sample and do not dedupe it — an
+	// overcount is visible in a bill, a lost sample is not.
+	const id = (value) =>
+		(typeof value === "number" && Number.isFinite(value)) || (typeof value === "string" && value !== "") ? String(value) : undefined;
+	const turn = id(event.data?.turn);
+	const step = id(event.data?.step);
+	return { key: turn !== undefined && step !== undefined ? `${turn}:${step}` : undefined, usage };
 }
 
 /**
@@ -238,9 +279,25 @@ function provenanceOf(event) {
 	return undefined;
 }
 
+/** Longest provider/model/site name the fold will store or render. */
+const MAX_NAME = 128;
+
+/**
+ * A name fit to live in a route key.
+ *
+ * Two demonstrated corruptions die here: a log-supplied name containing the
+ * separator silently split into other columns (`prov\0evil-site` ate the model
+ * column), and an unbounded name turned every padded table downstream into
+ * quadratic blowup. Both are neutralised at the one choke point every stored
+ * name passes through.
+ */
+function cleanName(value) {
+	return String(value).replaceAll(SEP, "�").slice(0, MAX_NAME);
+}
+
 /** Stable key for a `(site, provider, model)` route. */
 export function routeKey(site, provider, model) {
-	return `${site}${SEP}${provider}${SEP}${model}`;
+	return `${cleanName(site)}${SEP}${cleanName(provider)}${SEP}${cleanName(model)}`;
 }
 
 /** Split a route key back into its components. */
@@ -290,8 +347,16 @@ export function createUsageState() {
  */
 export function applyUsageDelta(state, events, options = {}) {
 	const resolveSite = options.resolveSite ?? (() => DIRECT);
+	const dayOffset = options.dayOffsetMinutes;
 	let last = state.lastSample;
 	let currentRoute = state.currentRoute;
+	// Re-report replacement is looked up across the WHOLE pass, not just
+	// against the immediately preceding sample: interleaved steps (A, B, A)
+	// used to leave A's first sample counted, double-charging one step's
+	// tokens. Seeded with the previous pass's last sample so a slice that
+	// begins mid-step stays exact.
+	const seen = new Map();
+	if (last !== null && last.key !== undefined) seen.set(last.key, last);
 
 	for (const event of events) {
 		if (typeof event.seq === "number" && event.seq > state.consumedSeq) {
@@ -305,9 +370,8 @@ export function applyUsageDelta(state, events, options = {}) {
 
 		const sample = sampleOf(event);
 		if (sample === undefined) continue;
-		if (typeof event.time === "number" && Number.isFinite(event.time)) {
-			state.lastUsageAt = Math.max(state.lastUsageAt ?? -Infinity, event.time);
-		}
+		const timed = typeof event.time === "number" && Number.isFinite(event.time);
+		if (timed) state.lastUsageAt = Math.max(state.lastUsageAt ?? -Infinity, event.time);
 
 		const provenance = provenanceOf(event) ?? currentRoute;
 		const provider = provenance?.provider ?? UNKNOWN;
@@ -318,17 +382,24 @@ export function applyUsageDelta(state, events, options = {}) {
 		const site = provider === UNKNOWN ? DIRECT : (resolveSite(provider) ?? UNROUTED);
 		const key = routeKey(site, provider, model);
 
-		const day = dayKey(event.time);
+		// An event without a usable timestamp joins the last day it saw rather
+		// than inventing `"NaN-NaN-NaN"` — a day key nothing could query.
+		const day = timed
+			? dayKey(event.time, dayOffset)
+			: state.lastUsageAt !== undefined
+				? dayKey(state.lastUsageAt, dayOffset)
+				: UNKNOWN_DAY;
 		const buckets = bucketsOf(sample.usage);
 
-		if (last !== null && last.key === sample.key) {
-			// Same (turn, step) re-reported: undo the earlier sample from the exact
-			// day and route it was attributed to, then add the new one.
-			const previous = state.days.get(last.day);
-			if (previous !== undefined) {
-				subtractFrom(previous.totals, last.buckets);
-				const previousRoute = previous.routes.get(last.route);
-				if (previousRoute !== undefined) subtractFrom(previousRoute, last.buckets);
+		// Same (turn, step) re-reported: undo the earlier sample from the exact
+		// day and route it was attributed to, then add the new one.
+		const previous = sample.key === undefined ? undefined : seen.get(sample.key);
+		if (previous !== undefined) {
+			const earlier = state.days.get(previous.day);
+			if (earlier !== undefined) {
+				subtractFrom(earlier.totals, previous.buckets);
+				const previousRoute = earlier.routes.get(previous.route);
+				if (previousRoute !== undefined) subtractFrom(previousRoute, previous.buckets);
 			}
 		}
 
@@ -337,6 +408,7 @@ export function applyUsageDelta(state, events, options = {}) {
 		addInto(routeBucketOf(entry, key), buckets);
 
 		last = { key: sample.key, day, route: key, buckets };
+		if (sample.key !== undefined) seen.set(sample.key, last);
 	}
 
 	state.lastSample = last;

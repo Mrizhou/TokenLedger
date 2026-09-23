@@ -176,6 +176,16 @@ export class LedgerStore {
 			return;
 		}
 		const version = Number(found.value);
+		if (version > SCHEMA_VERSION) {
+			// A store written by a NEWER build is not ours to discard: dropping
+			// it would destroy rows this build cannot even read, and only the
+			// logs that still exist could ever rebuild them. Refuse to open —
+			// the plugin's `apply` catches this, logs it and stays unloaded,
+			// which costs the panel and spares the ledger.
+			throw new Error(
+				`tokenledger store schema ${found.value} is newer than this build's ${SCHEMA_VERSION}; refusing to drop it. Upgrade the plugin, or delete the store file yourself if the rows really are expendable.`
+			);
+		}
 		if (version !== SCHEMA_VERSION) {
 			// The index is disposable by design, so a version mismatch is discarded
 			// rather than migrated. The logs it was built from are untouched.
@@ -508,6 +518,11 @@ export class LedgerStore {
 
 function csvCell(value) {
 	if (value === null || value === undefined) return "";
-	const text = String(value);
+	let text = String(value);
+	// Formula injection: a model or project name comes from session logs, and
+	// Excel executes a leading `=`/`+`/`-`/`@` as a formula (or DDE) on open —
+	// quoting and comma-escaping do not touch that. A leading apostrophe is
+	// spreadsheet convention for "this is text".
+	if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
 	return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }

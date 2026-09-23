@@ -49,7 +49,7 @@
  */
 
 import { BUILTIN_PROVIDER_ORIGINS } from "./balance.js";
-import { domainOf, normalizeOrigin } from "./relay-sites.js";
+import { domainOf, firstString, normalizeOrigin } from "./relay-sites.js";
 
 /**
  * Walk a dotted path into a resolved settings section.
@@ -91,17 +91,24 @@ export function discoverSites(options = {}) {
 	// One read per namespace, not per route: pi-ai answers the same namespace
 	// for every route it serves, and `get` resolves the whole document section.
 	const sections = new Map();
+	const readable = new Map();
 	const sectionFor = (ns) => {
 		if (!sections.has(ns)) {
 			let value;
+			let ok = true;
 			try {
 				value = readSection?.(ns);
 			} catch {
 				// A namespace this composition cannot resolve costs its routes,
-				// not the discovery pass.
+				// not the discovery pass. It also costs the origin table below:
+				// an unreadable profile is NOT an absent one, and asserting a
+				// catalog origin for a route whose override we could not read
+				// names a destination we do not know.
 				value = undefined;
+				ok = false;
 			}
 			sections.set(ns, value);
+			readable.set(ns, ok);
 		}
 		return sections.get(ns);
 	};
@@ -123,17 +130,18 @@ export function discoverSites(options = {}) {
 		// kept glm traffic inside DeepSeek's `direct` row on a live install, since
 		// `zai` was mounted by a preset and never configured. (`listAccounts`
 		// draws a different line on purpose: the balance picker lists what is set
-		// up to be read, so a route nobody configured still gets no card.)
+		// up to be read, so a route nobody configured still gets no card.) A
+		// blank/junk base URL is read as absent, and an UNREADABLE namespace gets
+		// no table answer at all — see `firstString` and `sectionFor`.
 		const baseUrl =
-			profile?.baseURL ??
-			profile?.baseUrl ??
-			BUILTIN_PROVIDER_ORIGINS.get(route);
+			firstString(profile?.baseURL, profile?.baseUrl) ??
+			(readable.get(entry.settingsNs) !== false ? BUILTIN_PROVIDER_ORIGINS.get(route) : undefined);
 		if (typeof baseUrl !== "string" || baseUrl === "") {
 			// A shipped catalog route with no override uses its vendor default. Keep
 			// the route in the directory as explicitly direct; dropping it here made
 			// the resolver later mistake that known official route for an unknown one.
 			const builtInDeepSeek =
-				route === "deepseek-official" && entry.settingsNs === "llm-deepseek" && entry.settingsPath?.length === 0;
+				route === "deepseek-official" && entry.settingsNs === "llm-deepseek" && (entry.settingsPath ?? []).length === 0;
 			if (entry.declared === false || builtInDeepSeek) {
 				directProviders.push(route);
 				continue;
@@ -149,7 +157,9 @@ export function discoverSites(options = {}) {
 			skipped++;
 			continue;
 		}
-		providerBaseUrls[route] = baseUrl;
+		// `defineProperty`, not plain assignment: a route named `__proto__`
+		// would set the prototype instead of the entry, losing its origin.
+		Object.defineProperty(providerBaseUrls, route, { value: baseUrl, enumerable: true, writable: true, configurable: true });
 		if (official.has(origin)) continue;
 
 		const existing = byOrigin.get(origin);
@@ -248,6 +258,9 @@ export function mergeSites(discovered = {}, manual = {}) {
 	return {
 		sites: [...sites.values()],
 		providerBaseUrls,
-		directProviders: (discovered.directProviders ?? []).filter((route) => !(route in providerBaseUrls))
+		// `Object.hasOwn`, not `in`: `in` sees the prototype chain, so a route
+		// named `toString`/`constructor` was filtered out of `directProviders`
+		// as "already mapped" and folded as unknown.
+		directProviders: (discovered.directProviders ?? []).filter((route) => !Object.hasOwn(providerBaseUrls, route))
 	};
 }
