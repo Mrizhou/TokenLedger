@@ -65,10 +65,22 @@ function dayKeyDaysAgo(daysBack) {
  * broken. The official list prices the deepseek models only; anything else
  * stays unpriced (`null`, never zero). A user-supplied `rates` always wins.
  */
-function priceWithConfiguredRates(store, range, site, rates, provider = undefined) {
+export function priceWithConfiguredRates(store, range, site, rates, provider = undefined) {
 	try {
 		const table = new RateTable(rates === undefined ? DEEPSEEK_OFFICIAL_RATES : rates);
 		const day = range.to ?? range.from ?? dayKey(Date.now());
+		// The shipped list is DeepSeek OFFICIAL prices, so it prices the
+		// official ROUTE's rows and nothing else: `deepseek-v4-flash` served
+		// through Ali or a relay is billed at that site's prices, and printing
+		// DeepSeek's numbers for it was a confidently wrong figure — the same
+		// scope `priceToday` has always applied to the badge. A user-supplied
+		// `rates` is the user's own pricing and prices every row, as before.
+		if (rates === undefined) {
+			if (provider !== undefined && provider !== "deepseek-official") {
+				return { rows: [], totals: {}, unpricedModels: [] };
+			}
+			return priceRows(store.byModel(range, site, "deepseek-official"), table, day);
+		}
 		return priceRows(store.byModel(range, site, provider), table, day);
 	} catch {
 		// A malformed rate table costs the cost column, not the report.
@@ -267,19 +279,48 @@ export async function sweep(persistence, store, options = {}) {
 			let state;
 			if (typeof persistence.open === "function") {
 				const handle = await persistence.open(sessionId, "read");
+				const seedLength = snapshot.header?.seedLength ?? 0;
 				try {
-					({ events } = await handle.read(0));
+					// Self-verifying incremental read. The full re-read below is
+					// the safety net for v1→v2 seq RE-NUMBERING (a checkpoint past
+					// the renumbered end read an empty tail and silently stopped
+					// counting a session forever) — but paying it on every change
+					// made one appended event cost a whole 400k-event log re-fold
+					// on every sweep. A tail is trusted only when it continues our
+					// own sequence exactly; anything else falls through to the
+					// full re-fold below, so the safety net is never skipped on a
+					// log we cannot prove is contiguous.
+					const prior = checkpoint === undefined ? undefined : store.loadState(sessionId);
+					let incremental = false;
+					if (prior !== undefined && prior.consumedSeq >= 0 && prior.consumedSeq + 1 >= seedLength) {
+						const tail = await handle.read(prior.consumedSeq + 1);
+						const list = tail?.events ?? [];
+						let expect = prior.consumedSeq + 1;
+						incremental = list.length > 0;
+						for (const event of list) {
+							if (event.seq !== expect++) {
+								incremental = false;
+								break;
+							}
+						}
+						if (incremental) {
+							events = list;
+							state = prior;
+						}
+					}
+					if (!incremental) ({ events } = await handle.read(0));
 				} finally {
 					await handle.close();
 				}
-				// A fork's durable log starts with a copy of its parent's event
-				// prefix; DSH records the exclusive end of that inherited prefix
-				// as seedLength. A full re-read sees the prefix again, so the
-				// fold starts past it — counting it under the child's session id
-				// would inflate every fork's ledger.
-				const seedLength = snapshot.header?.seedLength ?? 0;
-				events = (events ?? []).filter((event) => (event.seq ?? 0) >= seedLength);
-				state = createUsageState();
+				if (state === undefined) {
+					// A fork's durable log starts with a copy of its parent's event
+					// prefix; DSH records the exclusive end of that inherited prefix
+					// as seedLength. A full re-read sees the prefix again, so the
+					// fold starts past it — counting it under the child's session id
+					// would inflate every fork's ledger.
+					events = (events ?? []).filter((event) => (event.seq ?? 0) >= seedLength);
+					state = createUsageState();
+				}
 			} else {
 				// The pre-handle seam still reads a tail. A fork's durable log
 				// starts with a copy of its parent's event prefix. DSH records
@@ -299,7 +340,7 @@ export async function sweep(persistence, store, options = {}) {
 				continue;
 			}
 
-			applyUsageDelta(state, events, { resolveSite });
+			applyUsageDelta(state, events, { resolveSite, dayOffsetMinutes: options.dayOffsetMinutes });
 			store.commitSession(sessionId, state, {
 				logRevision: revision,
 				dshVersion: options.dshVersion,
@@ -573,7 +614,11 @@ export function staleAttributions(store, directory) {
 	const out = [];
 	for (const row of store.distinctRoutes()) {
 		if (row.provider === UNKNOWN) continue; // no route to resolve; DIRECT by rule
-		const expected = directory.resolveSite?.(row.provider) ?? UNROUTED;
+		// Mirror `applyUsageDelta` exactly: with no resolver AT ALL every row
+		// folds to DIRECT, so DIRECT is what "expected" has to mean here.
+		// Reading it as UNROUTED called the whole index stale and rebuilt the
+		// store on every sweep — forever.
+		const expected = directory.resolveSite === undefined ? DIRECT : (directory.resolveSite(row.provider) ?? UNROUTED);
 		if (expected !== row.site) out.push({ site: row.site, provider: row.provider, expected });
 	}
 	return out;
@@ -793,7 +838,8 @@ export function apply(ctx, userConfig = {}) {
 			const stats = await sweep(ctx.sessionPersistence, store, {
 				resolveSite: directory.resolveSite,
 				logger,
-				dshVersion: config.dshVersion
+				dshVersion: config.dshVersion,
+				dayOffsetMinutes: config.dayOffsetMinutes
 			});
 			if (stats.updated > 0 || stats.failed > 0) {
 				logger?.info?.(
@@ -1145,10 +1191,11 @@ export function apply(ctx, userConfig = {}) {
 			// only — anything else stays unpriced).
 			priced: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider),
 			// The badge's "today" figure, same rate default as `priced`.
-			todayPriced: (site) => priceToday(store, site, config.rates),
+			todayPriced: (site) => priceToday(store, site, config.rates, config.dayOffsetMinutes),
 			accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 			projectTitles: () => projectTitles,
 			lastSweepAt: () => lastSweepAt,
+			dayOffsetMinutes: config.dayOffsetMinutes,
 			balance,
 			userAuth,
 			saveUserAuth,
@@ -1168,10 +1215,11 @@ export function apply(ctx, userConfig = {}) {
 		store,
 		sites: () => directory.sites,
 		priced: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider),
-		todayPriced: (site) => priceToday(store, site, config.rates),
+		todayPriced: (site) => priceToday(store, site, config.rates, config.dayOffsetMinutes),
 		accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 		projectTitles: () => projectTitles,
-		lastSweepAt: () => lastSweepAt
+		lastSweepAt: () => lastSweepAt,
+		dayOffsetMinutes: config.dayOffsetMinutes
 	};
 	const readUsage = (query) => usagePayload(usageDeps, query);
 	try {

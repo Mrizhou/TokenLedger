@@ -126,6 +126,18 @@ export function buildSchema(z) {
 		database: z.string().default("tokenledger.sqlite")
 			.description("数据库路径")
 			.comment("TokenLedger 汇总数据库文件"),
+		/**
+		 * Fixed offset in minutes EAST of UTC that cuts the ledger's days.
+		 *
+		 * Unset, days are the host's LOCAL calendar — where the machine sits,
+		 * which is not always where its owner's days are cut (a London-zone
+		 * host read by a UTC+8 owner sees "today" seven or eight hours off).
+		 * `480` cuts the ledger on Beijing days. Changing it re-keys history at
+		 * the next rebuild, the same way changing the host's own zone would.
+		 */
+		dayOffsetMinutes: z.number().step(1).min(-840).max(840)
+			.description("切日时区偏移（分钟）")
+			.comment("账本按此时区切「天」；不配则按宿主机本地时区。北京填 480"),
 		/** Milliseconds between background sweeps; 0 disables the timer. */
 		sweepIntervalMs: z.number().step(1).min(0).default(60_000)
 			.description("后台汇总间隔（毫秒）")
