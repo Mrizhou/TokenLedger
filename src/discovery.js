@@ -117,17 +117,17 @@ export function discoverSites(options = {}) {
 
 		const profile = readAtPath(sectionFor(entry.settingsNs), entry.settingsPath ?? []);
 		// A catalog route the harness resolves by itself carries no `baseURL` in
-		// its profile; the shared table is where its endpoint lives, and without
-		// it the route's traffic lands in the one undifferentiated `direct` bucket
-		// and the site list never names it — a live install added the MiMo models
-		// and the panel showed nothing for them but DeepSeek's row. Only a route
-		// the install actually configured earns that attribution: the same line
-		// `listAccounts` draws, so a dormant catalog entry nobody set up does not
-		// resurface as a site row.
+		// its profile; the shared table is where its endpoint lives. Attribution
+		// asks where the call went, not what the install set up, so the table
+		// speaks for every route in it either way — gating it on a stored profile
+		// kept glm traffic inside DeepSeek's `direct` row on a live install, since
+		// `zai` was mounted by a preset and never configured. (`listAccounts`
+		// draws a different line on purpose: the balance picker lists what is set
+		// up to be read, so a route nobody configured still gets no card.)
 		const baseUrl =
 			profile?.baseURL ??
 			profile?.baseUrl ??
-			(profile == null ? undefined : BUILTIN_PROVIDER_ORIGINS.get(route));
+			BUILTIN_PROVIDER_ORIGINS.get(route);
 		if (typeof baseUrl !== "string" || baseUrl === "") {
 			// A shipped catalog route with no override uses its vendor default. Keep
 			// the route in the directory as explicitly direct; dropping it here made

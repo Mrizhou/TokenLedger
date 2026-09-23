@@ -122,18 +122,21 @@ test("a catalog route's own endpoint is its origin even when the profile carries
 	assert.equal(skipped, 0);
 });
 
-test("a catalog route nobody configured does not resurface as a site row", () => {
-	// Same line `listAccounts` draws, for the usage side: the directory lists
-	// every catalog provider, registered or dormant, and the catalog knows each
-	// one's endpoint. Attributing by that knowledge alone put routes the install
-	// never set up into the site list — the 2026-09-17 complaint all over again.
+test("a catalog route nobody configured still attributes to its own endpoint", () => {
+	// Attribution asks where the CALL WENT, not what the install set up: a
+	// provider preset mounted `zai` on 2026-09-02, and gating the origin table
+	// on a stored profile left its glm traffic inside DeepSeek's `direct` row —
+	// "是哪个就进哪个": every route to its own account. The balance picker draws
+	// a different line deliberately (see the listAccounts guard): it lists what
+	// is set up to be read, not what happened to be called.
 	const { sites, providerBaseUrls, directProviders } = discoverSites({
 		providers: [piAi("zai", false)],
 		readSection: () => section({})
 	});
-	assert.deepEqual(sites, []);
-	assert.deepEqual(providerBaseUrls, {});
-	assert.deepEqual(directProviders, ["zai"]);
+	assert.deepEqual(providerBaseUrls, { zai: "https://api.z.ai" });
+	assert.equal(sites.length, 1);
+	assert.equal(sites[0].id, "api.z.ai");
+	assert.deepEqual(directProviders, [], "its endpoint is known, so it is not undifferentiated direct traffic");
 });
 
 test("an unparseable base URL is skipped, not turned into a site named after garbage", () => {

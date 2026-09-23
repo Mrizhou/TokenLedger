@@ -28,12 +28,16 @@ pi-ai catalog 里，settings 的 profile 看不见）：
   守卫测试：`test/balance.test.js`「a shipped catalog route nobody configured is not an account」。
   **合上游时这一处要保留**；上游若自己修了，取上游那份并确认守卫测试仍绿。
 - `src/balance.js` 的 `BUILTIN_PROVIDER_ORIGINS`（上游 PR #55 建的表）加 `xiaomi` 一项并 `export`，
-  `src/discovery.js` 共用它：**已配置**的路由若 profile 没写 `baseURL`，按表里的 catalog origin 归因、
+  `src/discovery.js` 共用它：路由的 profile 没写 `baseURL` 就按表里的 catalog origin 归因、
   自成站点行（2026-09-23）。不做这件事的话，加了 MiMo 那天面板上什么都没有：无 `baseURL` 一律
   按「DeepSeek 默认」合并 —— 账户卡被 vendor 压缩吞进 DeepSeek，用量整包落进「直连/官方」。
-  「没配过的路由不冒出来」的门槛两处同款（profile 为空就不用表）。
-  守卫测试：`test/balance.test.js`「a catalog route the harness resolves by itself still gets its own card」、
-  `test/discovery.test.js`「a catalog route's own endpoint is its origin…」与「…does not resurface as a site row」。
+  归因是**两面各有各的线**（同日用户定「是哪个就进哪个」后改）：用量归因看**去向**，表对所有路由
+  生效 —— 没配过的 `zai` 也按 api.z.ai 归行，glm 的量不许混进 DeepSeek 的桶；账户列表（余额卡）
+  仍按 09-17 只列**配过的**，没配过的没有余额可读、不冒卡。
+  守卫测试：`test/balance.test.js`「a catalog route the harness resolves by itself still gets its own card」
+  与「a shipped catalog route nobody configured is not an account」、
+  `test/discovery.test.js`「a catalog route's own endpoint is its origin…」
+  与「…nobody configured still attributes to its own endpoint」。
   **合上游时这一处要保留**（可上游的形态：表项按需补 + discovery 共用表；上游若合了就取上游那份）。
 
 其余再出现重复实现，**取上游那份**。
