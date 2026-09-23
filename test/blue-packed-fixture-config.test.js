@@ -18,7 +18,20 @@ function runFixture(args) {
 	assert.equal(result.error, undefined);
 	assert.equal(result.signal, null);
 	assert.equal(result.status, 1);
-	assert.equal(result.stderr, "");
+	// A blanket "stderr is empty" made this suite red for reasons that have
+	// nothing to do with the fixture: any machine with `NODE_USE_ENV_PROXY`
+	// set makes every node process print an experimental EnvHttpProxyAgent
+	// warning. Strip known runtime noise; anything else still fails the assert.
+	const stray = String(result.stderr ?? "")
+		.split("\n")
+		.filter(
+			(line) =>
+				line.trim() !== "" &&
+				!/^\(node:\d+\) (\[UNDICI-EHPA\]|ExperimentalWarning)/.test(line) &&
+				!/^\(Use `node --trace-warnings/.test(line)
+		)
+		.join("\n");
+	assert.equal(stray, "");
 	return JSON.parse(result.stdout);
 }
 
