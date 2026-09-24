@@ -215,6 +215,35 @@ export function buildResolver({ sites = [], providerBaseUrls = {}, directProvide
 }
 
 /**
+ * Whether an opaque backend revision still names the log bytes we folded.
+ *
+ * Strict equality covers every stable revision. Since the 0.1.7 handle seam
+ * the JSONL backend also serves logs it migrates from an older session format
+ * as `fileRevision(identity)` + ":" + `historicalCorpusRevision()` — and that
+ * corpus hash moves between observations even when the log does not (seen two
+ * sweep waves apart on 0.1.7-rc.2). The stat identity
+ * (`dev:ino:size:mtimeNs:ctimeNs`) is the part that actually changes on
+ * append, so two revisions that share it name the same bytes and the session
+ * can be skipped. Any other opaque shape falls back to strict equality: an
+ * unknown format can only ever over-read, never under-count. After a migration
+ * catalog changes what a historical log folds into, `/tokenledger reindex`
+ * rebuilds the derived rows.
+ *
+ * @param stored - the revision recorded at the last fold.
+ * @param current - the revision the backend reports now.
+ * @returns whether the log behind both revisions is unchanged.
+ */
+function revisionUnchanged(stored, current) {
+	if (stored === current) return true;
+	if (typeof stored !== "string" || typeof current !== "string") return false;
+	const prior = stored.split(":");
+	const now = current.split(":");
+	// Five stat fields, plus at most the one corpus-revision field 0.1.7 appends.
+	if (prior.length < 5 || prior.length > 6 || now.length < 5 || now.length > 6) return false;
+	return prior.slice(0, 5).join(":") === now.slice(0, 5).join(":");
+}
+
+/**
  * Sweep every session once.
  *
  * @returns `{ scanned, updated, skipped, failed, events }` — counts only. No
@@ -262,7 +291,7 @@ export async function sweep(persistence, store, options = {}) {
 
 			// An unchanged log needs no read at all. This is what keeps a sweep
 			// cheap enough to run on a timer.
-			if (checkpoint !== undefined && revision !== undefined && checkpoint.logRevision === revision) {
+			if (checkpoint !== undefined && revision !== undefined && revisionUnchanged(checkpoint.logRevision, revision)) {
 				stats.skipped++;
 				continue;
 			}

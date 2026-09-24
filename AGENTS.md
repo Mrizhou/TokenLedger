@@ -19,8 +19,8 @@ DSH Desktop 的第三方 token 计量插件。**这是 fork，不是原创**：
 `CLAUDE.md` 只剩 `@AGENTS.md` 导入行；文末「附」段随上游同步）、
 `test/blue-packaging.test.js` 的 Windows shell spawn（**有意不上游**，见决策记录）、
 `test/plugin.test.js` 末尾两个 sweep 测试（上游 `test/sweep-handle-api.test.js` 覆盖更全，留作守卫），
-以及 **`src/` 里与上游不同的两处**（同一族问题：宿主目录里「内置 provider 路由」的 origin 存在
-pi-ai catalog 里，settings 的 profile 看不见）：
+以及 **`src/` 里与上游不同的三处**（前两处同一族问题：宿主目录里「内置 provider 路由」的 origin 存在
+pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revision 语义适配）：
 
 - `src/balance.js` `listAccounts()` 跳过「`declared: false` 且无存储配置」的目录项
   （2026-09-17，**用户明确不提 PR**）。宿主目录列出 pi-ai 全部内置 provider，
@@ -40,6 +40,16 @@ pi-ai catalog 里，settings 的 profile 看不见）：
   `test/discovery.test.js`「a catalog route's own endpoint is its origin…」
   与「…nobody configured still attributes to its own endpoint」。
   **合上游时这一处要保留**（可上游的形态：表项按需补 + discovery 共用表；上游若合了就取上游那份）。
+- `src/plugin.js` 的 `revisionUnchanged()`（2026-09-24，**0.1.7 revision 语义适配**）：0.1.7 起 JSONL 后端对
+   「从旧会话格式迁移的」日志把 revision 报成 `fileRevision`（`dev:ino:size:mtimeNs:ctimeNs`）**再拼一段**
+   `historicalCorpusRevision()`，而这段语料哈希**每次观测都会变**（0.1.7-rc.2 实测：相邻两个 sweep 波次给出
+   `4ed11c4f…` / `e9b84ccd…`）。于是「日志没变」的严格相等判据永不成立 → 每 60 秒把全部会话 `read(0)` 全量
+   重折叠（Windows + SQLite 实测：118 个会话每分钟整表重写、WAL 不停涨，且因红线 5 全程静音）。修复：revision
+   形如「5 段 stat 身份 + 至多 1 段语料哈希」时只比 stat 五元组；**任何不认识的形态退回严格相等**（宁可多读、
+   不可少算）。语料目录升级改变老日志折叠结果时用 `/tokenledger reindex` 重建。守卫测试：「a moving corpus
+   suffix on an unchanged log is skipped without reading it」「a changed file identity under a corpus suffix
+   still refolds the tail」「an unknown revision shape falls back to exact comparison」（钉死「不认识就退回」）。
+   **合上游时这一处要保留**（上游在 0.1.7 线同样会撞上；上游若修了取上游那份，确认三个守卫测试仍绿）。
 
 其余再出现重复实现，**取上游那份**。
 

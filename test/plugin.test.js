@@ -123,6 +123,76 @@ test("a changed revision reads only the tail and stays exact", async () => {
 	});
 });
 
+// Revisions copied from a live 0.1.7-rc.2 JSONL backend: a five-field stat
+// identity (`dev:ino:size:mtimeNs:ctimeNs`), plus one corpus-revision field
+// for logs it migrates from an older session format. That corpus hash moves
+// between observations of an UNCHANGED log — strict equality therefore never
+// held again and every sweep re-folded every session from seq 0.
+const FILE_REV = "25:102663:616:1790060732550935800:1790060732550935800";
+const corpusRev = (hex) => `${FILE_REV}:${hex}`;
+
+test("a moving corpus suffix on an unchanged log is skipped without reading it", async () => {
+	await withStore(async (store) => {
+		let reads = 0;
+		const sessions = new Map([
+			["s1", {
+				revision: corpusRev("4ed11c4f4dd6f5e28e631261ee9cbd729c3727cd2c9cbd40cd3488d13f45fd8c"),
+				events: [header("p", "m"), message(1, 1, "p", "m", { inputTokens: 100, outputTokens: 10 })]
+			}]
+		]);
+		const persistence = fakePersistence(sessions);
+		const counting = { ...persistence, readFrom: (...a) => (reads++, persistence.readFrom(...a)) };
+
+		await sweep(counting, store, {});
+		assert.equal(reads, 1);
+		// Same bytes on disk: only the corpus hash moved, as it does between
+		// observations of the same historical log on 0.1.7.
+		sessions.get("s1").revision = corpusRev("e9b84ccdacaa7b44f326bf3bae1aa0fa794b4d7f985aecad8d33d2115e0a8fcc");
+		const second = await sweep(counting, store, {});
+		assert.equal(reads, 1, "a moved corpus suffix is not a change to the log");
+		assert.equal(second.skipped, 1);
+	});
+});
+
+test("a changed file identity under a corpus suffix still refolds the tail", async () => {
+	await withStore(async (store) => {
+		const events = [header("p", "m"), message(1, 1, "p", "m", { inputTokens: 100, outputTokens: 10 })];
+		const sessions = new Map([["s1", {
+			revision: corpusRev("4ed11c4f4dd6f5e28e631261ee9cbd729c3727cd2c9cbd40cd3488d13f45fd8c"),
+			events
+		}]]);
+		const persistence = fakePersistence(sessions);
+		await sweep(persistence, store, {});
+
+		// Appending moved size and mtimeNs — the stat identity must still see it.
+		events.push(message(2, 1, "p", "m", { inputTokens: 50, outputTokens: 5 }));
+		sessions.get("s1").revision = "25:102663:700:1790266659740975400:1790266659740975400:e9b84ccdacaa7b44f326bf3bae1aa0fa794b4d7f985aecad8d33d2115e0a8fcc";
+		const stats = await sweep(persistence, store, {});
+
+		assert.equal(stats.updated, 1, "size and mtimeNs moved — the log grew");
+		assert.equal(store.totals().inputTokens, 150);
+	});
+});
+
+test("an unknown revision shape falls back to exact comparison", async () => {
+	await withStore(async (store) => {
+		let reads = 0;
+		const sessions = new Map([
+			["s1", {
+				revision: "memory:host:1",
+				events: [header("p", "m"), message(1, 1, "p", "m", { inputTokens: 100, outputTokens: 10 })]
+			}]
+		]);
+		const persistence = fakePersistence(sessions);
+		const counting = { ...persistence, readFrom: (...a) => (reads++, persistence.readFrom(...a)) };
+
+		await sweep(counting, store, {});
+		sessions.get("s1").revision = "memory:host:2";
+		await sweep(counting, store, {});
+		assert.equal(reads, 2, "an unrecognized shape must never be trusted as unchanged");
+	});
+});
+
 test("a fork counts only usage recorded after its inherited seed", async () => {
 	await withStore(async (store) => {
 		const parentEvents = [headerAt(0), messageAt(1, 1, 100, 10)];
