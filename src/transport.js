@@ -25,8 +25,30 @@
  * @module dsh-tokenledger/transport
  */
 
+import { gunzipSync } from "node:zlib";
+
 /** How many hops to follow before giving up on a same-origin redirect loop. */
 export const MAX_REDIRECTS = 3;
+
+/**
+ * Ask for an uncompressed body unless the caller chose an encoding.
+ *
+ * The desktop host (0.1.7-rc.2) swaps the process-wide dispatcher for one
+ * built on its own bundled undici 8, while the global `fetch` is Node's
+ * built-in undici. Across that seam `content-encoding` is lost: `fetch` no
+ * longer knows the body is gzip and hands the compressed bytes through, so a
+ * relay that gzips (every nginx default) reads as `invalid-response` — while
+ * the same request in a plain process parses fine. `identity` sidesteps the
+ * seam entirely; `readCapped` still inflates gzip if a server ignores it.
+ */
+function withIdentityEncoding(headers) {
+	if (headers !== undefined && (headers === null || typeof headers !== "object" || Array.isArray(headers) || typeof headers.get === "function")) {
+		return headers;
+	}
+	const own = headers ?? {};
+	if (Object.keys(own).some((name) => name.toLowerCase() === "accept-encoding")) return own;
+	return { ...own, "accept-encoding": "identity" };
+}
 
 /**
  * Fetch, following redirects only while they stay on the same origin.
@@ -37,7 +59,7 @@ export const MAX_REDIRECTS = 3;
 export async function fetchNoCrossOriginRedirect(doFetch, url, init) {
 	let current = url;
 	for (let hop = 0; ; hop++) {
-		const response = await doFetch(current, { ...init, redirect: "manual" });
+		const response = await doFetch(current, { ...init, headers: withIdentityEncoding(init?.headers), redirect: "manual" });
 		const status = response?.status;
 		if (status !== 301 && status !== 302 && status !== 303 && status !== 307 && status !== 308) return response;
 
@@ -89,7 +111,18 @@ export async function readCapped(response, maxBytes) {
 		}
 		chunks.push(value);
 	}
-	return Buffer.concat(chunks).toString("utf8");
+	const body = Buffer.concat(chunks);
+	// gzip magic with no decoding done upstream — see `withIdentityEncoding`.
+	// Inflated under the same ceiling, so a small bomb cannot bypass it.
+	if (body.length >= 2 && body[0] === 0x1f && body[1] === 0x8b) {
+		try {
+			return gunzipSync(body, { maxOutputLength: maxBytes }).toString("utf8");
+		} catch (error) {
+			if (error?.code === "ERR_BUFFER_TOO_LARGE") throw tooLarge();
+			throw error;
+		}
+	}
+	return body.toString("utf8");
 }
 
 /** The ceiling applied when a caller names none: 1 MiB of JSON is generous. */

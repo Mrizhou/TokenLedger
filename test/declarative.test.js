@@ -141,7 +141,9 @@ test("nothing in a declaration reaches the request but the path", async () => {
 	await createBalanceReader(ctxWith(), { endpoints: [loaded], fetch })();
 	assert.equal(seen[0].method, undefined, "no method is ever set, so it is a GET");
 	assert.equal(seen[0].body, undefined);
-	assert.deepEqual(Object.keys(seen[0].headers).sort(), ["accept", "authorization"]);
+	// `accept-encoding: identity` is the transport's own (the desktop host loses
+	// content-encoding across its dispatcher seam), not the declaration's.
+	assert.deepEqual(Object.keys(seen[0].headers).sort(), ["accept", "accept-encoding", "authorization"]);
 });
 
 // --- boundary 4: the credential is the route's own -------------------------------
