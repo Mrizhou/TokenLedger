@@ -668,16 +668,59 @@ function readAt(section, path) {
  * come only from `describe()`, one form per entry keyed by `ns`. Reading `get`
  * alone there saw every route as unconfigured — each one fell back to the
  * DeepSeek origin, collapsed into a single account, and the picker vanished.
+ *
+ * `describe()` is not a lookup. It re-validates and re-serialises the config of
+ * EVERY plugin entry in the profile, synchronously, on the host's one thread —
+ * and the first version of this reader called it once per namespace asked for.
+ * `listAccounts` asks once per catalog route, so on 0.1.7-rc.2 a single account
+ * listing froze the whole harness for ~4.5 s, the sweep timer did it every
+ * minute with the panel shut, and a panel open (usage + balance, several
+ * listings each) took 9–18 s. One `describe()` now answers every namespace for
+ * the reader's whole life, and a snapshot younger than {@link DESCRIBE_TTL_MS}
+ * is shared across readers, so one request costs at most one call.
  */
-export function sectionReader(settings) {
+export function sectionReader(settings, options = {}) {
+	const now = options.now ?? Date.now;
+	let described = false;
+	let forms;
 	return (ns) => {
 		if (typeof settings?.get === "function") return settings.get(ns);
-		try {
-			return settings?.describe?.()?.find((form) => form?.ns === ns)?.value;
-		} catch {
-			return undefined;
+		if (!described) {
+			described = true;
+			forms = describedForms(settings, now());
 		}
+		return forms?.get(ns);
 	};
+}
+
+/**
+ * How long one `describe()` snapshot is reused across readers. Long enough to
+ * cover every listing inside one request or one sweep; short enough that an
+ * edited provider is seen on the next one.
+ */
+export const DESCRIBE_TTL_MS = 2_000;
+
+const describedSnapshots = new WeakMap();
+
+/** `ns → value` from one `describe()`, or undefined when it cannot be read. */
+function describedForms(settings, at) {
+	if (settings === null || (typeof settings !== "object" && typeof settings !== "function")) return undefined;
+	const cached = describedSnapshots.get(settings);
+	if (cached !== undefined && at >= cached.at && at - cached.at < DESCRIBE_TTL_MS) return cached.forms;
+	let described;
+	try {
+		described = settings.describe?.();
+	} catch {
+		// Not cached: a service that is still settling must be asked again.
+		return undefined;
+	}
+	const forms = new Map();
+	for (const form of Array.isArray(described) ? described : []) {
+		// First form wins, as `find` did.
+		if (form != null && !forms.has(form.ns)) forms.set(form.ns, form.value);
+	}
+	describedSnapshots.set(settings, { at, forms });
+	return forms;
 }
 
 /**
@@ -712,7 +755,7 @@ export function listAccounts(ctx, options = {}) {
 	// silently hid the other.
 	//
 	// DeepSeek is still collapsed, because there the account really is the unit.
-	const seenVendor = new Set();
+	const seenVendor = new Map();
 	const perHost = new Map();
 	const out = [];
 	for (const entry of entries) {
@@ -743,18 +786,11 @@ export function listAccounts(ctx, options = {}) {
 		const vendor = vendorOf(baseUrl);
 		const origin = isOfficialDeepSeek(baseUrl) ? (normalizeOrigin(baseUrl) ?? DEEPSEEK_ORIGIN) : normalizeOrigin(baseUrl);
 		if (origin === undefined) continue;
-		// Vendors collapse per origin: two routes at one vendor draw on one
-		// wallet. Relays do not — there the quota belongs to the key.
-		if (vendor !== undefined) {
-			if (seenVendor.has(origin)) continue;
-			seenVendor.add(origin);
-		}
+		const hasCredential = typeof profile?.apiKeyEnv === "string" && profile.apiKeyEnv !== "";
 		// Keyed by ORIGIN, not hostname: two relays on one machine differ only by
 		// port, and a hostname key had the second inherit the first's software.
 		const host = hostLabel(origin);
-		perHost.set(host, (perHost.get(host) ?? 0) + 1);
-
-		out.push({
+		const account = {
 			id: entry.provider,
 			route: entry.provider,
 			host,
@@ -764,9 +800,32 @@ export function listAccounts(ctx, options = {}) {
 			// lazily, when a balance is actually requested for that site. A
 			// vendor needs no probe: its origin names its scheme.
 			scheme: vendor?.scheme ?? softwareOf.get(origin),
-			hasCredential: typeof profile?.apiKeyEnv === "string" && profile.apiKeyEnv !== ""
-		});
+			hasCredential
+		};
+		// Vendors collapse per origin: two routes at one vendor draw on one
+		// wallet. Relays do not — there the quota belongs to the key.
+		if (vendor !== undefined) {
+			const seen = seenVendor.get(origin);
+			if (seen !== undefined) {
+				// The card belongs to a route that holds a key. 0.1.7 ships a
+				// keyless `deepseek-account` (sign-in) route beside the API-key one;
+				// whichever the catalog listed first took the DeepSeek card, and
+				// when it was the sign-in route the balance read "no key".
+				if (!out[seen].hasCredential && hasCredential) out[seen] = account;
+				continue;
+			}
+			seenVendor.set(origin, out.length);
+		}
+		perHost.set(host, (perHost.get(host) ?? 0) + 1);
+		out.push(account);
 	}
+
+	// Vendors first, otherwise in catalog order. The first account is the card
+	// a panel opens on, and the catalog's own order put a relay nobody can read
+	// a balance from there (0.1.7 lists xiaomi first): every open showed
+	// "unsupported" and paid a fingerprint probe to say so.
+	const vendorOrigins = new Set(seenVendor.keys());
+	out.sort((a, b) => Number(!vendorOrigins.has(a.origin)) - Number(!vendorOrigins.has(b.origin)));
 
 	// Name the route only where the host alone would be ambiguous. Two keys on
 	// one relay are two quotas, and a picker offering the same label twice
@@ -777,6 +836,9 @@ export function listAccounts(ctx, options = {}) {
 	return out;
 }
 
+/** How long a site that fingerprinted as nothing we know is left unprobed. */
+export const UNRECOGNIZED_RETRY_MS = 10 * 60_000;
+
 /**
  * Build the reader the HTTP route serves.
  *
@@ -786,6 +848,12 @@ export function listAccounts(ctx, options = {}) {
  *   lazily detected one so the next read skips the probe.
  */
 export function createBalanceReader(ctx, options = {}) {
+	const now = options.now ?? Date.now;
+	// origin → when a miss may be probed again. Only hits were remembered, so a
+	// site running nothing we recognise (a vendor console, a local proxy) was
+	// re-probed — six requests, up to 10 s each when unreachable — on every
+	// balance read, and the card for it never loaded faster than that.
+	const misses = new Map();
 	return async (id, request = {}) => {
 		const signal = request.signal;
 		if (signal?.aborted === true) return { ok: true, supported: true, fetched: false, reason: "aborted" };
@@ -799,13 +867,17 @@ export function createBalanceReader(ctx, options = {}) {
 		// unauthenticated requests for a column nothing read; probing the one a
 		// user just asked about is the same work with a reason behind it.
 		let scheme = account.scheme;
-		if (scheme === undefined) {
+		const retryAt = misses.get(account.origin);
+		if (scheme === undefined && (request.force === true || retryAt === undefined || now() >= retryAt)) {
 			try {
 				const detect = options.detect ?? detectRelaySoftware;
 				const result = await detect(account.origin);
 				if (result.billingAvailable) {
 					scheme = result.software;
+					misses.delete(account.origin);
 					options.learnSoftware?.(account.origin, scheme);
+				} else {
+					misses.set(account.origin, now() + UNRECOGNIZED_RETRY_MS);
 				}
 			} catch {
 				// Leave it unknown; the answer below says so.

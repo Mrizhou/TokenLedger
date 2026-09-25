@@ -36,6 +36,7 @@ const jsxRuntime = {
 async function loadBundle(options = {}) {
 	const registered = [];
 	const effects = [];
+	const intervals = [];
 	const dictionaries = [];
 	const dom = options.document ?? fakeDom();
 	let materialized;
@@ -111,12 +112,26 @@ async function loadBundle(options = {}) {
 			stateCells[index] = value;
 		},
 		readState: (index) => stateCells[index],
-		/** Run every effect the last render registered, returning them. */
+		/**
+		 * Run every effect the last render registered, returning them. Timers an
+		 * effect starts are recorded, not scheduled: this stub never runs an
+		 * effect's cleanup, and a live interval would hold the test process open.
+		 */
 		runEffects: () => {
 			const pending = effects.splice(0);
-			for (const fn of pending) fn();
+			const { setInterval: realSetInterval } = globalThis;
+			globalThis.setInterval = (fn, ms) => {
+				intervals.push({ fn, ms });
+				return intervals.length;
+			};
+			try {
+				for (const fn of pending) fn();
+			} finally {
+				globalThis.setInterval = realSetInterval;
+			}
 			return pending;
 		},
+		intervals,
 		renderWithState: (Component, props, cells) => {
 			cell = 0;
 			stateCells = cells.slice();
@@ -1406,6 +1421,27 @@ test("the outside-press listener is only registered while the panel is open", as
 	} finally {
 		delete globalThis.document.addEventListener;
 		delete globalThis.document.removeEventListener;
+	}
+});
+
+test("the badge reads today's figure with the panel shut, and keeps it current", async () => {
+	// Reading only on open left the badge blank from start-up until the first
+	// click, although it exists to answer "how much today" at a glance.
+	const harness = await loadBundle();
+	const requested = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async (path) => {
+		requested.push(path);
+		return { ok: true, json: async () => ({ ok: true, windows: { today: { tokens: 1 } } }) };
+	};
+	try {
+		harness.render(exports_of(harness).TokenLedgerPanel, { wide: true }); // closed
+		harness.runEffects();
+		assert.ok(requested.some((path) => path.startsWith(exports_of(harness).USAGE_PATH)), `no usage read: ${requested}`);
+		assert.equal(requested.some((path) => path.startsWith("/api/tokenledger/balance?account")), false, "the balance card waits for the panel");
+		assert.ok(harness.intervals.some((t) => t.ms === 5 * 60_000), "and it is re-read on a timer");
+	} finally {
+		globalThis.fetch = realFetch;
 	}
 });
 

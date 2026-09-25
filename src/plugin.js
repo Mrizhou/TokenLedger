@@ -1170,7 +1170,7 @@ export function apply(ctx, userConfig = {}) {
 				// to the per-key read: that spends the site's query budget the
 				// wallet exists to save, and a page load would pay it every time.
 				if (warmOrigin !== undefined) return { ok: true, warmed: false };
-				return baseBalance(id, { signal: request.signal });
+				return baseBalance(id, { signal: request.signal, force });
 			}
 			try {
 				const card = await walletReader.read({

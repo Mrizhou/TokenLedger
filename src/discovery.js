@@ -55,6 +55,17 @@ import { BUILTIN_PROVIDER_ORIGINS, sectionReader } from "./balance.js";
 import { domainOf, firstString, normalizeOrigin } from "./relay-sites.js";
 
 /**
+ * The DeepSeek routes the harness ships, by the settings entry that owns each.
+ * With no baseURL override both call DeepSeek's own API, so their traffic is
+ * direct. `deepseek-account` (0.1.7, sign-in instead of an API key) was missing
+ * here and its whole history landed in `unrouted`.
+ */
+const SHIPPED_DEEPSEEK_ROUTES = new Map([
+	["deepseek-official", "llm-deepseek"],
+	["deepseek-account", "llm-deepseek-account"]
+]);
+
+/**
  * Walk a dotted path into a resolved settings section.
  *
  * @param section - the resolved section, or anything at all.
@@ -144,7 +155,7 @@ export function discoverSites(options = {}) {
 			// the route in the directory as explicitly direct; dropping it here made
 			// the resolver later mistake that known official route for an unknown one.
 			const builtInDeepSeek =
-				route === "deepseek-official" && entry.settingsNs === "llm-deepseek" && (entry.settingsPath ?? []).length === 0;
+				SHIPPED_DEEPSEEK_ROUTES.get(route) === entry.settingsNs && (entry.settingsPath ?? []).length === 0;
 			if (entry.declared === false || builtInDeepSeek) {
 				directProviders.push(route);
 				continue;

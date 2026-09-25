@@ -103,6 +103,26 @@ test("a shipped route with no configured endpoint stays known as direct traffic"
 	assert.equal(skipped, 0, "a known vendor default is resolved, not skipped");
 });
 
+test("0.1.7's sign-in route to DeepSeek is direct traffic too, not unrouted", () => {
+	// `deepseek-account` shipped with 0.1.7-rc.2: DeepSeek's own API, signed in
+	// rather than keyed, and its section holds model options, never a baseURL.
+	// Unknown to this list, 257 of its requests were filed under `unrouted`.
+	const { directProviders, skipped } = discoverSites({
+		providers: [{ provider: "deepseek-account", displayName: "DeepSeek Account", settingsNs: "llm-deepseek-account", settingsPath: [] }],
+		readSection: () => ({ reasoningEffort: "high" })
+	});
+	assert.deepEqual(directProviders, ["deepseek-account"]);
+	assert.equal(skipped, 0);
+
+	// The name alone proves nothing: under someone else's entry it is not ours.
+	const foreign = discoverSites({
+		providers: [{ provider: "deepseek-account", settingsNs: "some-plugin", settingsPath: [] }],
+		readSection: () => ({})
+	});
+	assert.deepEqual(foreign.directProviders, []);
+	assert.equal(foreign.skipped, 1);
+});
+
 test("a catalog route's own endpoint is its origin even when the profile carries no baseURL", () => {
 	// The harness resolves built-in routes' endpoints from its own catalog, so
 	// their stored profile says nothing about a base URL. Landing every such

@@ -11,7 +11,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SCHEMES, createBalanceReader, isOfficialDeepSeek, listAccounts, readBalance, sectionReader } from "../src/balance.js";
+import {
+	DESCRIBE_TTL_MS,
+	SCHEMES,
+	UNRECOGNIZED_RETRY_MS,
+	createBalanceReader,
+	isOfficialDeepSeek,
+	listAccounts,
+	readBalance,
+	sectionReader
+} from "../src/balance.js";
 
 test("official is decided by origin, not by what the route is called", () => {
 	// The same reason site attribution is: a route named `deepseek` may point at
@@ -446,6 +455,33 @@ test("a relay running nothing recognisable says so instead of failing", async ()
 	assert.equal(result.reason, "unknown-software");
 });
 
+test("an unrecognisable relay is not re-probed on every read, until the retry window or a forced refresh", async () => {
+	// Only hits used to be remembered: a vendor console or a local proxy paid
+	// six probes — up to 10 s each when unreachable — on every balance read.
+	let probes = 0;
+	let clock = 5_000_000;
+	const read = createBalanceReader(
+		ctxWith([piAi("api99")], { providers: { api99: { baseURL: "https://odd.example/v1", apiKeyEnv: "K" } } }, {
+			resolve: async () => ({ value: "k" })
+		}),
+		{
+			now: () => clock,
+			detect: async () => {
+				probes++;
+				return { billingAvailable: false, software: "unknown" };
+			}
+		}
+	);
+	assert.equal((await read("api99")).reason, "unknown-software");
+	assert.equal((await read("api99")).reason, "unknown-software");
+	assert.equal(probes, 1, "the miss is remembered");
+	await read("api99", { force: true });
+	assert.equal(probes, 2, "the refresh button asks again");
+	clock += UNRECOGNIZED_RETRY_MS;
+	await read("api99");
+	assert.equal(probes, 3, "and so does the next read after the window");
+});
+
 test("the credential comes from the route that serves that account", async () => {
 	let resolved;
 	const read = createBalanceReader(
@@ -699,6 +735,99 @@ test("sectionReader prefers get(), falls back to describe(), and survives a thro
 	assert.equal(sectionReader({ describe: () => [{ ns: "y", value: {} }] })("x"), undefined);
 	assert.equal(sectionReader({ describe: () => { throw new Error("not settled"); } })("x"), undefined);
 	assert.equal(sectionReader(undefined)("x"), undefined);
+});
+
+test("0.1.7 live shape: the keyed DeepSeek route owns the card, and vendors open the picker", () => {
+	// The catalog order 0.1.7-rc.2 actually serves: xiaomi first, then the
+	// sign-in route `deepseek-account` (no key, no baseURL) ahead of the API-key
+	// route. First-wins handed the DeepSeek card to the keyless route, and the
+	// panel opened on xiaomi, whose balance cannot be read.
+	const directory = [
+		{ provider: "xiaomi", settingsNs: "llm-pi-ai", settingsPath: ["providers", "xiaomi"], declared: false },
+		{ provider: "deepseek-account", displayName: "DeepSeek Account", settingsNs: "llm-deepseek-account", settingsPath: [] },
+		{ provider: "yos", settingsNs: "llm-pi-ai", settingsPath: ["providers", "yos"], declared: true },
+		{ provider: "deepseek-official", displayName: "DeepSeek", settingsNs: "llm-deepseek", settingsPath: [] }
+	];
+	const forms = [
+		{ ns: "llm-deepseek-account", value: { reasoningEffort: "high" } },
+		{ ns: "llm-deepseek", value: { apiKeyEnv: "DEEPSEEK_API_KEY" } },
+		{
+			ns: "llm-pi-ai",
+			value: {
+				providers: {
+					xiaomi: { apiKeyEnv: "XIAOMI_API_KEY" },
+					yos: { baseURL: "https://api2.yoshub.com/v1", apiKeyEnv: "YOS_API_KEY" }
+				}
+			}
+		}
+	];
+	const ctx = {
+		get: (name) =>
+			name === "llm" ? { listConfigurableProviders: () => directory } : name === "settings" ? { describe: () => forms } : undefined
+	};
+	const accounts = listAccounts(ctx, { softwareOf: new Map() });
+	assert.deepEqual(accounts.map((a) => a.id), ["deepseek-official", "xiaomi", "yos"]);
+	assert.equal(accounts[0].hasCredential, true);
+});
+
+test("one account listing costs one describe(), however many routes the catalog has", () => {
+	// describe() re-validates every plugin entry synchronously on the host
+	// thread. Called once per route, one listing froze 0.1.7-rc.2 for ~4.5 s.
+	const directory = Array.from({ length: 30 }, (_, i) => ({
+		provider: `route-${i}`,
+		settingsNs: `ns-${i}`,
+		settingsPath: [],
+		declared: true
+	}));
+	const forms = directory.map((e, i) => ({ ns: e.settingsNs, value: { baseURL: `https://relay-${i}.example.com/v1`, apiKeyEnv: `K${i}` } }));
+	let calls = 0;
+	const settings = {
+		describe: () => {
+			calls++;
+			return forms;
+		}
+	};
+	const ctx = { get: (name) => (name === "llm" ? { listConfigurableProviders: () => directory } : name === "settings" ? settings : undefined) };
+	assert.equal(listAccounts(ctx, { softwareOf: new Map() }).length, 30);
+	assert.equal(calls, 1);
+});
+
+test("a describe() snapshot is shared across readers only while it is fresh", () => {
+	let calls = 0;
+	let value = { v: 1 };
+	const settings = {
+		describe: () => {
+			calls++;
+			return [{ ns: "x", value }];
+		}
+	};
+	let clock = 1_000_000;
+	const now = () => clock;
+	assert.deepEqual(sectionReader(settings, { now })("x"), { v: 1 });
+	value = { v: 2 };
+	clock += DESCRIBE_TTL_MS - 1;
+	assert.deepEqual(sectionReader(settings, { now })("x"), { v: 1 }, "a second reader inside the window reuses the snapshot");
+	assert.equal(calls, 1);
+	clock += 1;
+	assert.deepEqual(sectionReader(settings, { now })("x"), { v: 2 }, "an expired snapshot is read again");
+	assert.equal(calls, 2);
+
+	// A throwing describe() is not remembered: the next reader asks again.
+	let broken = true;
+	const settling = {
+		describe: () => {
+			calls++;
+			if (broken) throw new Error("not settled");
+			return [{ ns: "x", value: "ok" }];
+		}
+	};
+	calls = 0;
+	const reader = sectionReader(settling, { now });
+	assert.equal(reader("x"), undefined);
+	assert.equal(reader("y"), undefined);
+	assert.equal(calls, 1, "one reader does not retry per namespace");
+	broken = false;
+	assert.equal(sectionReader(settling, { now })("x"), "ok");
 });
 
 test("an explicit baseURL beats the built-in origin table", () => {

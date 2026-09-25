@@ -636,11 +636,18 @@ window.__ModuleLoader__.load({
 		 * quickly is the normal way to use this panel, and without the abort the
 		 * slower of two requests wins whenever it happens to land last.
 		 */
-		function useUsage(open, days, site, nonce) {
+		function useUsage(open, days, site, nonce, tick) {
 			const [state, setState] = react.useState({ status: "idle" });
+			const wasOpen = react.useRef(false);
 
 			react.useEffect(() => {
-				if (!open) return undefined;
+				// Read with the panel shut too: the badge shows today's figure, and
+				// reading only on open left it blank until the first click. Closing
+				// is the one change that needs no read — the badge keeps what the
+				// panel just had.
+				const closing = wasOpen.current && !open;
+				wasOpen.current = open;
+				if (closing) return undefined;
 				const controller = new AbortController();
 				// Keep the previous data while reloading: blanking the panel on every
 				// range change makes it flicker through an empty state it is not in.
@@ -655,10 +662,13 @@ window.__ModuleLoader__.load({
 					}
 				);
 				return () => controller.abort();
-			}, [open, days, site, nonce]);
+			}, [open, days, site, nonce, tick]);
 
 			return state;
 		}
+
+		/** How often the badge re-reads while nobody is looking at the panel. */
+		const BADGE_REFRESH_MS = 5 * 60_000;
 
 		/**
 		 * The official account balance, fetched once per opening.
@@ -1972,8 +1982,13 @@ window.__ModuleLoader__.load({
 			// from becoming a request.
 			const [forceNonce, setForceNonce] = react.useState(0);
 			const [dialogFor, setDialogFor] = react.useState(undefined);
+			const [tick, setTick] = react.useState(0);
+			react.useEffect(() => {
+				const timer = setInterval(() => setTick((n) => n + 1), BADGE_REFRESH_MS);
+				return () => clearInterval(timer);
+			}, []);
 			const days = (RANGES.find((r) => r.id === range) ?? RANGES[2]).days();
-			const state = useUsage(open, days, site, nonce);
+			const state = useUsage(open, days, site, nonce, tick);
 			const balance = useBalance(open, account, nonce, forceNonce);
 			const reload = () => setNonce((n) => n + 1);
 			const translate = translateWith(t);
