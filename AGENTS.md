@@ -61,6 +61,21 @@ pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revi
    守卫测试：`test/client.test.js`「the 0.1.7 seat is given a box back, or the badge is laid out of it」
    （变异验证：换成 `display:contents` 即 `not ok`）。
    **合上游时这一处要保留**（上游若改回盒子或提供席位容器 API，取上游那份并确认守卫仍绿）。
+- **0.1.7 首开慢 / 宿主周期性卡顿的一组修复**（2026-09-25）：
+  - `src/balance.js` `sectionReader()`：0.1.7 的 `settings.describe()` 会**同步**重校验、重序列化 profile 里
+    **全部**插件条目，旧写法每个路由调一次 → 一次账户列举在宿主主线程上卡 ~4.5 s；60 秒定时 sweep
+    关着面板也卡，打开面板（usage + balance 各列举几次）9–18 s。改为一个 reader 只调一次、2 秒内跨 reader 共享快照。
+    实测定位法：面板请求进行中同时轮询 `/api/tokenledger/userauth`（平时 2 ms），它被整段卡住 = 同步阻塞。
+  - `createBalanceReader()`：识别不出的站点（阿里 MaaS、小米、本地反代）以前每次读余额都重探 6 个路由，
+    现在记 10 分钟，刷新按钮（`force`）可绕过。
+  - `listAccounts()`：同一厂商多条路由合并时，卡片归**有 key 的那条**（0.1.7 新增无 key 的 `deepseek-account`）；
+    厂商账户排在最前（catalog 把 xiaomi 排第一，面板默认开在读不了余额的卡上）。
+  - `src/discovery.js`：`deepseek-account`（`llm-deepseek-account` 条目、无 baseURL）归「直连/官方」，不再进 unrouted。
+  - `src/client.js`：徽章关着面板也读一次并每 5 分钟刷新（以前要点开一次才有数字）。
+  守卫测试：`test/balance.test.js`「one account listing costs one describe()…」「a describe() snapshot is shared…」
+  「an unrecognisable relay is not re-probed…」「0.1.7 live shape: the keyed DeepSeek route owns the card…」、
+  `test/discovery.test.js`「0.1.7's sign-in route to DeepSeek is direct traffic too…」、
+  `test/client.test.js`「the badge reads today's figure with the panel shut…」（每条都做过变异验证）。
 
 其余再出现重复实现，**取上游那份**。
 
@@ -76,7 +91,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 516/516
+npm test                           # 全量，当前基线 534/534（2026-09-25）
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -84,9 +99,11 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 ## 红线
 
 1. **🔴 改这个仓库不会修好运行中的 DSH —— 要 push 之后按新 SHA 重装。**
-   2026-09-17 起宿主是命令行 `dsh web`，装机版**直接从本 fork 装**：
-   `dsh plugin --profile web add "github:Mrizhou/TokenLedger#<40 位完整 SHA>"`
-   （短 SHA 解析不了），装完重启 `dsh web`。**不再手工打补丁。**
+   2026-09-24 起宿主是**桌面版 0.1.7-rc.2**，装机版**直接从本 fork 装**进 `~/.dsh/profiles/desktop`：
+   用桌面版自带的 node + pnpm 执行 `add "github:Mrizhou/TokenLedger#<40 位完整 SHA>"`
+   （短 SHA 解析不了；完整命令与 `DSH_DESKTOP_NODE_EXECUTABLE` 的坑见知识库「DSH配置与排障」），
+   装完**完全退出桌面版（含托盘）再开** —— 服务端代码不热加载。**不再手工打补丁。**
+   （09-17 ~ 09-24 是 `dsh plugin --profile web add` + 重启 `dsh web`，web 版已删。）
    **别从 npm 装**：npm 上只有 08-15 的 0.1.0，缺句柄式 persistence 兼容，在现在的宿主上
    **静音不记账**（09-11、09-16 两次都是这样死的）。
    换装会触发账本重建：store schema 不一致时整表 DROP、从会话日志重折叠，
@@ -126,7 +143,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **516/516**。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **534/534**（2026-09-25）。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
@@ -145,7 +162,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 
 ## 已知的坑
 
-- 装机版是 fork 的**某个 SHA**，不一定是仓库 HEAD。排障时先看 `~/.dsh/profiles/web/package.json`
+- 装机版是 fork 的**某个 SHA**，不一定是仓库 HEAD。排障时先看 `~/.dsh/profiles/desktop/package.json`
   里 `dsh-tokenledger` 钉的是哪个 SHA，再对仓库。
 - `~/.dsh/tokenledger.sqlite` 是唯一的历史来源，**换插件会丢历史**
   （知识库决策记录 2026-08-31 已为此否掉过换 `dsh-usage-stats`）。
