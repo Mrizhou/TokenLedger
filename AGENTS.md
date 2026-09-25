@@ -149,7 +149,14 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
   里 `dsh-tokenledger` 钉的是哪个 SHA，再对仓库。
 - `~/.dsh/tokenledger.sqlite` 是唯一的历史来源，**换插件会丢历史**
   （知识库决策记录 2026-08-31 已为此否掉过换 `dsh-usage-stats`）。
-- git 作者身份是 gitee 的 `zhou-synn`，但 origin 在 GitHub（`Mrizhou`）。两边别搞混。
+- git 作者身份：全局配置是 gitee 的 `zhou-synn`，**本仓库用 local override 换成 GitHub noreply**
+  （`57312813+Mrizhou@users.noreply.github.com`），提交才归到 `Mrizhou` 名下。这个 override 只存在
+  本目录的 `.git/config` 里，**重新 clone 不会带过去**。
+- **🔴 唯一工作区是 `D:\Workspace\Projects\工程\TokenLedger`，别在别处另 clone 一份。**
+  2026-09-24 有个会话在 `Projects\` 根下另 clone 了 `Projects\TokenLedger`，在里面提交了
+  `2dd93f1`、`e634cf7` 并 push —— 因为新 clone 没有上面那条 override，这两个提交用的是 gitee 邮箱，
+  在 GitHub 上不归 `Mrizhou`（已推上 main，没改写历史）。那份副本随后丢了 pack 文件、git 历史断掉，
+  内容与 `e634cf7` 一致、无独有改动，2026-09-25 已删除。开工先 `git log -1` 确认在这个目录、HEAD 是最新。
 
 ---
 
