@@ -77,6 +77,23 @@ pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revi
   `test/discovery.test.js`「0.1.7's sign-in route to DeepSeek is direct traffic too…」、
   `test/client.test.js`「the badge reads today's figure with the panel shut…」（每条都做过变异验证）。
 
+- **小米 MiMo 余额走控制台 cookie + 凭据本地文件**（2026-09-25，**推翻 09-23「cookie 方案不做」**，用户原话「mimo 推翻，改成读cookie」）：
+  - MiMo 的 API key（按量 key 与 Token Plan `tp-*` key）**没有任何余额接口**；只有控制台
+    `https://platform.xiaomimimo.com/api/v1/{balance,tokenPlan/usage,tokenPlan/detail}` 能读，鉴权是登录 cookie
+    （需含 `serviceToken` 与 `userId`，约 24 小时过期）。接口形状参照 MIT 的 `Han-1413141/dsh-cost-meter` PR #166。
+  - `src/balance.js`：`api.xiaomimimo.com` 与三个 `token-plan-*` 主机登记为厂商 `mimo`；scheme 声明
+    `credential: { kind: "console-cookie", origin }`，`readBalance` 对它发 `Cookie` 头（不发 Authorization）且只发往该控制台 origin；
+    缺 cookie / 过期各有 hint，卡片据此给「设置 Cookie」按钮。
+  - **凭据存储**：0.1.7 的 settings 服务**没有 `register()`**，插件命名空间注册失败 → 原「设置查询API」对话框
+    **自升级起就存不进去**（接口回 500 `internal`）。新增 `src/credentials-file.js`：宿主没有可写命名空间时，
+    New API 钱包凭据与控制台 cookie 写进账本旁的 `tokenledger-credentials.json`（整份写临时文件再 rename），启动时读回。
+    `saveUserAuth` 的拒绝原因带 `kind`，`invalid-*` 回 400。
+  - 顺带：`withKnownSoftware` 也按 origin 认余额卡懒探测记下的程序类型（以前只按站点 id，站点行永远无类型），
+    站点行悬停提示显示程序类型。
+  守卫测试：`test/balance.test.js` MiMo 五条、`test/apply.test.js`「on a host with no settings namespace…」、
+  `test/client.test.js`「a MiMo card without a live console session…」「the panel opens the cookie dialog…」、
+  `test/discovery.test.js`「a type the balance card learned by origin reaches the site row」（均变异验证）。
+
 其余再出现重复实现，**取上游那份**。
 
 **架构约束的正本**是本文件末尾「附：上游 AGENTS.md 原文」那一段（renderer 无关性、
@@ -91,7 +108,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 534/534（2026-09-25）
+npm test                           # 全量，当前基线 543/543（2026-09-25）
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -143,7 +160,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **534/534**（2026-09-25）。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **543/543**（2026-09-25）。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
