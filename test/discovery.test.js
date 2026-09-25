@@ -317,6 +317,16 @@ test("withKnownSoftware does not mutate what it is given", () => {
 	assert.equal(original[0].type, undefined);
 });
 
+test("a type the balance card learned by origin reaches the site row", () => {
+	// The card's on-demand probe records by ORIGIN; the site row is keyed by
+	// domain. Read by id alone, yos stayed typeless although its card had
+	// already said "New API".
+	const known = new Map([["https://api2.yoshub.com", "newapi"]]);
+	const out = withKnownSoftware([{ id: "api2.yoshub.com", baseUrl: "https://api2.yoshub.com/v1" }, { id: "b.example", baseUrl: "https://b.example" }], known);
+	assert.equal(out[0].type, "newapi");
+	assert.equal(out[1].type, undefined);
+});
+
 // --- reconciliation stays out of the way ------------------------------------
 
 let seq = 0;

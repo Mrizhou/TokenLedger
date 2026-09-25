@@ -95,8 +95,64 @@ const VENDORS = new Map([
 	["api.minimax.io", { scheme: "minimax", displayName: "MiniMax" }],
 	["www.minimax.io", { scheme: "minimax", displayName: "MiniMax" }],
 	["api.minimaxi.com", { scheme: "minimax", displayName: "MiniMax", currency: "CNY" }],
-	["www.minimaxi.com", { scheme: "minimax", displayName: "MiniMax", currency: "CNY" }]
+	["www.minimaxi.com", { scheme: "minimax", displayName: "MiniMax", currency: "CNY" }],
+	// 小米 MiMo: pay-as-you-go and the three Token Plan regions draw on one
+	// console account. See `SCHEMES.mimo` for why the key cannot read it.
+	["api.xiaomimimo.com", { scheme: "mimo", displayName: "小米 MiMo" }],
+	["token-plan-cn.xiaomimimo.com", { scheme: "mimo", displayName: "小米 MiMo" }],
+	["token-plan-sgp.xiaomimimo.com", { scheme: "mimo", displayName: "小米 MiMo" }],
+	["token-plan-ams.xiaomimimo.com", { scheme: "mimo", displayName: "小米 MiMo" }]
 ]);
+
+/** Where 小米 MiMo keeps its account API — the console, not the inference host. */
+export const MIMO_CONSOLE_ORIGIN = "https://platform.xiaomimimo.com";
+
+/**
+ * A pasted console `Cookie` header, cleaned, or undefined when it cannot sign
+ * in: a leading `Cookie:`, wrapping quotes and line breaks are tolerated, and
+ * both halves of the session — `userId` and a `serviceToken`
+ * (`api-platform_serviceToken` on the platform) — must be present. An API key
+ * pasted by mistake fails here rather than at the vendor.
+ */
+export function normalizeConsoleCookie(value) {
+	let text = typeof value === "string" ? value.trim() : "";
+	text = text.replace(/^(?:set-)?cookie\s*:\s*/i, "").replace(/[\r\n]+/g, " ").trim();
+	if (text.length >= 2 && (text[0] === '"' || text[0] === "'") && text.at(-1) === text[0]) text = text.slice(1, -1).trim();
+	if (text === "") return undefined;
+	const lower = text.toLowerCase();
+	const hasToken = /(?:^|;\s*)(?:api-platform_)?servicetoken=/.test(lower);
+	const hasUser = /(?:^|;\s*)userid=/.test(lower);
+	return hasToken && hasUser ? text : undefined;
+}
+
+/**
+ * The Token Plan's monthly allowance, when the account has one. The plan's
+ * period end is a bare `yyyy-MM-dd HH:mm:ss` the console shows in Beijing time.
+ */
+async function readMimoPlan(get) {
+	const usage = await get(`${MIMO_CONSOLE_ORIGIN}/api/v1/tokenPlan/usage`);
+	const root = usage?.data ?? {};
+	const items = [root.monthUsage, root.usage, root].find((bucket) => Array.isArray(bucket?.items))?.items ?? [];
+	const month = items.find((row) => row?.name === "month_total_token" || row?.name === "plan_total_token");
+	if (month === undefined) return undefined;
+
+	let resetsAt;
+	let plan;
+	try {
+		const detail = (await get(`${MIMO_CONSOLE_ORIGIN}/api/v1/tokenPlan/detail`))?.data ?? {};
+		const end = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})$/.exec(String(detail.currentPeriodEnd ?? "").trim());
+		if (end !== null) resetsAt = `${end[1]}T${end[2]}+08:00`;
+		plan = label(detail.planCode);
+	} catch {
+		// The allowance stands without its reset time.
+	}
+	// Counts when there are counts: `percent` is the same ratio, rounded, and
+	// near the bottom of a month it rounds a real 0.4% down to nothing.
+	const used = toNumber(month.used);
+	const limit = toNumber(month.limit ?? month.total);
+	const fill = used !== undefined && limit !== undefined && limit > 0 ? { used, limit } : { usedRatio: toNumber(month.percent) };
+	return { plan, window: { kind: "billing", ...fill, ...(resetsAt === undefined ? {} : { resetsAt }) } };
+}
 
 /**
  * The vendor a provider profile addresses, if it is one we can read.
@@ -403,6 +459,45 @@ export const SCHEMES = {
 	kimi: KIMI,
 	minimax: MINIMAX,
 
+	/**
+	 * 小米 MiMo. No route on the inference hosts answers for money with a key —
+	 * pay-as-you-go keys and Token Plan keys (`tp-*`) alike; every balance path
+	 * tried 404s. The console's own API does, signed in by the console's
+	 * session cookie, which the user pastes into the panel and which lasts
+	 * about a day. So this scheme's credential is that cookie, not the route's
+	 * key, and it is sent to the console origin only.
+	 */
+	mimo: {
+		label: "小米 MiMo",
+		credential: { kind: "console-cookie", origin: MIMO_CONSOLE_ORIGIN },
+		missingHint: "mimo-cookie-missing",
+		unauthorizedHint: "mimo-cookie-expired",
+		// `{ code: 0, data }` on success; an expired session answers 401 in the
+		// status line or `code: 401` in the body.
+		envelope: (body) =>
+			typeof body?.code === "number" && body.code !== 0
+				? { status: body.code, message: typeof body.message === "string" ? body.message : undefined }
+				: undefined,
+		async read({ get }) {
+			const [wallet, plan] = await Promise.allSettled([get(`${MIMO_CONSOLE_ORIGIN}/api/v1/balance`), readMimoPlan(get)]);
+			if (wallet.status === "rejected" && (plan.status === "rejected" || plan.value === undefined)) {
+				throw wallet.reason;
+			}
+			const data = wallet.status === "fulfilled" ? (wallet.value?.data ?? {}) : {};
+			const total = toNumber(data.balance);
+			const coding = plan.status === "fulfilled" ? plan.value : undefined;
+			return {
+				isAvailable: total === undefined ? undefined : total > 0,
+				currency: typeof data.currency === "string" && data.currency !== "" ? data.currency.toUpperCase() : undefined,
+				total,
+				granted: toNumber(data.giftBalance),
+				toppedUp: toNumber(data.cashBalance),
+				...(coding?.plan === undefined ? {} : { plan: coding.plan }),
+				windows: coding === undefined ? [] : [coding.window]
+			};
+		}
+	},
+
 	newapi: {
 		label: "New API",
 		async read({ origin, get }) {
@@ -559,8 +654,15 @@ export async function readBalance(options = {}) {
 		return { supported: true, fetched: false, scheme, reason: "aborted" };
 	}
 	if (typeof apiKey !== "string" || apiKey === "") {
-		return { supported: true, fetched: false, reason: "no-credential" };
+		// The scheme rides along when a missing credential is one the PANEL can
+		// supply: the card needs it to offer the button that stores one.
+		return spec.missingHint === undefined
+			? { supported: true, fetched: false, reason: "no-credential" }
+			: { supported: true, fetched: false, scheme, reason: "no-credential", hint: spec.missingHint };
 	}
+	// A console session goes in a Cookie header, never in Authorization, and
+	// only to the console origin the scheme names.
+	const consoleCookie = spec.credential?.kind === "console-cookie";
 
 	const doFetch = options.fetch ?? globalThis.fetch;
 	const controller = new AbortController();
@@ -576,10 +678,15 @@ export async function readBalance(options = {}) {
 	 */
 	const get = async (url, options = {}) => {
 		const { anonymous = false, raw = false, maxBytes = DEFAULT_MAX_BYTES } = options;
+		if (consoleCookie && !anonymous && new URL(url).origin !== spec.credential.origin) {
+			throw Object.assign(new Error("cross-origin-redirect"), { kind: "cross-origin-redirect" });
+		}
 		const response = await fetchNoCrossOriginRedirect(doFetch, url, {
 			headers: anonymous
 				? { accept: "application/json" }
-				: { authorization: raw ? apiKey : `Bearer ${apiKey}`, accept: "application/json" },
+				: consoleCookie
+					? { cookie: apiKey, accept: "application/json" }
+					: { authorization: raw ? apiKey : `Bearer ${apiKey}`, accept: "application/json" },
 			signal: controller.signal
 		});
 		if (!response.ok) throw Object.assign(new Error(`http-${response.status}`), { status: response.status });
@@ -896,14 +1003,22 @@ export function createBalanceReader(ctx, options = {}) {
 			scheme = "declared";
 		}
 
-		const credentials = typeof ctx.get === "function" ? ctx.get("credentials") : undefined;
-		const reference = referenceFor(ctx, account, options);
-		const apiKey =
-			reference === undefined || credentials === undefined
-				? undefined
-				: await Promise.resolve(credentials.resolve?.(reference))
-						.then((hit) => hit?.value ?? hit)
-						.catch(() => undefined);
+		// A scheme read with a console session takes the session the panel stored
+		// for that console, not the route's key.
+		const session = SCHEMES[scheme]?.credential;
+		let apiKey;
+		if (session?.kind === "console-cookie") {
+			apiKey = options.consoleCookie?.(session.origin);
+		} else {
+			const credentials = typeof ctx.get === "function" ? ctx.get("credentials") : undefined;
+			const reference = referenceFor(ctx, account, options);
+			apiKey =
+				reference === undefined || credentials === undefined
+					? undefined
+					: await Promise.resolve(credentials.resolve?.(reference))
+							.then((hit) => hit?.value ?? hit)
+							.catch(() => undefined);
+		}
 		if (signal?.aborted === true) return { ok: true, account: account.id, supported: true, fetched: false, reason: "aborted" };
 
 		return {

@@ -19,6 +19,7 @@ test("the settings schema exposes Chinese labels without changing resolved defau
 	assert.deepEqual(schema({}), {
 		endpoints: [],
 		userAuth: {},
+		consoleCookies: {},
 		relays: {},
 		officialOrigins: [],
 		fingerprint: false,
@@ -40,4 +41,7 @@ test("wallet tokens are schema-declared write-only secrets", () => {
 	const wallet = serialized.refs[userAuth.inner];
 	const serializedToken = serialized.refs[wallet.dict.token];
 	assert.equal(serializedToken.meta.role, "secret");
+
+	// A console session cookie signs in to the vendor's whole account.
+	assert.equal(schema.dict.consoleCookies.inner.meta.role, "secret");
 });

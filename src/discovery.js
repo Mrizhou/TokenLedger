@@ -244,12 +244,20 @@ export function discoverFromContext(ctx, options = {}) {
  * The learned answers therefore live in a map that outlives the rebuild, and are
  * re-applied here.
  *
+ * The map has two writers with two keys: eager fingerprinting records by site
+ * id, the balance card's on-demand probe by ORIGIN (two relays on one host
+ * differ only by port). Reading the id alone left every site that was only
+ * ever identified by the card — the normal case, eager probing is off —
+ * without a type.
+ *
  * @param sites - freshly built site records.
- * @param known - site id → software, from fingerprinting.
+ * @param known - site id or origin → software, from fingerprinting.
  * @returns new records; a hand-written `type` is an override and is kept.
  */
 export function withKnownSoftware(sites = [], known = new Map()) {
-	return sites.map((s) => (s.type === undefined ? { ...s, type: known.get(s.id) } : s));
+	return sites.map((s) =>
+		s.type === undefined ? { ...s, type: known.get(s.id) ?? known.get(normalizeOrigin(s.baseUrl)) } : s
+	);
 }
 
 /**

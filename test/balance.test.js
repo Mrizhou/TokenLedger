@@ -18,6 +18,7 @@ import {
 	createBalanceReader,
 	isOfficialDeepSeek,
 	listAccounts,
+	normalizeConsoleCookie,
 	readBalance,
 	sectionReader
 } from "../src/balance.js";
@@ -37,6 +38,7 @@ test("every scheme answers the same shape, so one card renders all of them", () 
 	assert.deepEqual(Object.keys(SCHEMES).sort(), [
 		"deepseek",
 		"kimi",
+		"mimo",
 		"minimax",
 		"moonshot",
 		"newapi",
@@ -766,8 +768,9 @@ test("0.1.7 live shape: the keyed DeepSeek route owns the card, and vendors open
 			name === "llm" ? { listConfigurableProviders: () => directory } : name === "settings" ? { describe: () => forms } : undefined
 	};
 	const accounts = listAccounts(ctx, { softwareOf: new Map() });
-	assert.deepEqual(accounts.map((a) => a.id), ["deepseek-official", "xiaomi", "yos"]);
-	assert.equal(accounts[0].hasCredential, true);
+	// Vendors first, in catalog order — MiMo is a vendor since its console reader.
+	assert.deepEqual(accounts.map((a) => a.id), ["xiaomi", "deepseek-official", "yos"]);
+	assert.equal(accounts[1].hasCredential, true);
 });
 
 test("one account listing costs one describe(), however many routes the catalog has", () => {
@@ -864,7 +867,8 @@ test("a catalog route the harness resolves by itself still gets its own card", (
 	);
 	assert.deepEqual(accounts.map((a) => a.id), ["deepseek-official", "xiaomi"]);
 	assert.deepEqual(accounts.map((a) => a.origin), ["https://api.deepseek.com", "https://api.xiaomimimo.com"]);
-	assert.equal(accounts[1].displayName, "api.xiaomimimo.com");
+	assert.equal(accounts[1].displayName, "小米 MiMo");
+	assert.equal(accounts[1].scheme, "mimo", "a vendor now: its console, not a relay probe, reads the money");
 	assert.equal(accounts[1].hasCredential, true);
 });
 
@@ -1221,4 +1225,91 @@ test("a vendor response missing every field fails soft, with no zeros invented",
 		assert.equal(result.total, undefined, `${scheme}: an unreported balance is not a balance of zero`);
 		assert.equal(result.isAvailable, undefined, scheme);
 	}
+});
+
+// --- 小米 MiMo: the console, signed in by its session cookie ------------------
+
+const MIMO_COOKIE = 'api-platform_serviceToken="st"; userId=123';
+
+/** A console stub: a map of path → body, and a record of what was asked. */
+function mimoConsole(bodies) {
+	const seen = [];
+	return {
+		seen,
+		fetch: async (url, init) => {
+			seen.push({ url, headers: init.headers });
+			const path = new URL(url).pathname;
+			const body = bodies[path];
+			if (body === undefined) return { ok: false, status: 404, json: async () => ({}) };
+			if (typeof body === "number") return { ok: false, status: body, json: async () => ({}) };
+			return { ok: true, status: 200, json: async () => body };
+		}
+	};
+}
+
+test("MiMo reads its wallet from the console with the cookie, never the route key", async () => {
+	const stub = mimoConsole({
+		"/api/v1/balance": { code: 0, data: { balance: "25.51", currency: "usd", cashBalance: "20", giftBalance: "5.51" } },
+		"/api/v1/tokenPlan/usage": { code: 0, data: { monthUsage: { percent: 0.05, items: [{ name: "month_total_token", used: 10_000_000, limit: 200_000_000 }] } } },
+		"/api/v1/tokenPlan/detail": { code: 0, data: { planCode: "standard", currentPeriodEnd: "2026-10-04 23:59:59", expired: false } }
+	});
+	const result = await readBalance({ scheme: "mimo", origin: "https://api.xiaomimimo.com", apiKey: MIMO_COOKIE, fetch: stub.fetch, now: 0 });
+	assert.equal(result.fetched, true);
+	assert.equal(result.total, 25.51);
+	assert.equal(result.currency, "USD");
+	assert.equal(result.granted, 5.51);
+	assert.equal(result.toppedUp, 20);
+	assert.equal(result.plan, "standard");
+	assert.deepEqual(result.windows, [{ kind: "billing", resetsAt: "2026-10-04T15:59:59.000Z", usedPercent: 5 }], "the console's period end is Beijing time");
+	for (const { url, headers } of stub.seen) {
+		assert.equal(new URL(url).origin, "https://platform.xiaomimimo.com");
+		assert.equal(headers.cookie, MIMO_COOKIE);
+		assert.equal(headers.authorization, undefined, "a session cookie is not a bearer key");
+	}
+});
+
+test("MiMo without a plan still shows its wallet; without a cookie the card can ask for one", async () => {
+	const stub = mimoConsole({ "/api/v1/balance": { code: 0, data: { balance: "3", currency: "CNY" } } });
+	const result = await readBalance({ scheme: "mimo", origin: "https://api.xiaomimimo.com", apiKey: MIMO_COOKIE, fetch: stub.fetch });
+	assert.equal(result.fetched, true);
+	assert.equal(result.total, 3);
+	assert.equal(result.windows, undefined);
+
+	let called = 0;
+	const none = await readBalance({ scheme: "mimo", origin: "https://api.xiaomimimo.com", fetch: async () => (called++, {}) });
+	assert.deepEqual(none, { supported: true, fetched: false, scheme: "mimo", reason: "no-credential", hint: "mimo-cookie-missing" });
+	assert.equal(called, 0);
+});
+
+test("an expired MiMo session says so, whether the console refuses in the status line or the body", async () => {
+	for (const bodies of [{ "/api/v1/balance": 401, "/api/v1/tokenPlan/usage": 401 }, { "/api/v1/balance": { code: 401, message: "login required" }, "/api/v1/tokenPlan/usage": { code: 401 } }]) {
+		const result = await readBalance({ scheme: "mimo", origin: "https://api.xiaomimimo.com", apiKey: MIMO_COOKIE, fetch: mimoConsole(bodies).fetch });
+		assert.equal(result.fetched, false);
+		assert.equal(result.hint, "mimo-cookie-expired", JSON.stringify(bodies));
+	}
+});
+
+test("the MiMo account reads the cookie stored for its console", async () => {
+	const stub = mimoConsole({ "/api/v1/balance": { code: 0, data: { balance: "1", currency: "CNY" } } });
+	const asked = [];
+	const read = createBalanceReader(
+		ctxWith([{ provider: "xiaomi", settingsNs: "llm-pi-ai", settingsPath: ["providers", "xiaomi"], declared: false }], { providers: { xiaomi: { apiKeyEnv: "XIAOMI_API_KEY" } } }, {
+			resolve: async () => ({ value: "sk-route-key" })
+		}),
+		{ fetch: stub.fetch, consoleCookie: (origin) => (asked.push(origin), MIMO_COOKIE) }
+	);
+	const result = await read("xiaomi");
+	assert.equal(result.total, 1);
+	assert.deepEqual(asked, ["https://platform.xiaomimimo.com"]);
+	assert.equal(stub.seen[0].headers.cookie, MIMO_COOKIE);
+});
+
+test("a pasted console cookie is cleaned, and anything that cannot sign in is refused", () => {
+	assert.equal(normalizeConsoleCookie(`Cookie: ${MIMO_COOKIE}`), MIMO_COOKIE);
+	assert.equal(normalizeConsoleCookie(`"${MIMO_COOKIE}"\n`), MIMO_COOKIE);
+	assert.equal(normalizeConsoleCookie('serviceToken="a"; userId=1'), 'serviceToken="a"; userId=1');
+	assert.equal(normalizeConsoleCookie("userId=123"), undefined);
+	assert.equal(normalizeConsoleCookie('api-platform_serviceToken="st"'), undefined);
+	assert.equal(normalizeConsoleCookie("tp-abcdef123456"), undefined);
+	assert.equal(normalizeConsoleCookie(undefined), undefined);
 });

@@ -373,3 +373,71 @@ test("no llm and no settings still collects, attributing everything to direct", 
 	assert.deepEqual(api.sites(), []);
 	assert.equal(api.totals({}).outputTokens, 100, "usage accounting does not depend on knowing the site");
 });
+
+test("on a host with no settings namespace, panel credentials land in a file and survive a restart", async () => {
+	// 0.1.7 dropped `settings.register`, so the namespace never registered and
+	// every save from the panel was refused as "internal" — the New API wallet
+	// dialog had stored nothing since the upgrade. The MiMo console cookie
+	// needs the same seat.
+	const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const { PassThrough } = await import("node:stream");
+	const dir = mkdtempSync(join(tmpdir(), "tokenledger-cred-"));
+	const credentialsPath = join(dir, "tokenledger-credentials.json");
+	const cookie = 'api-platform_serviceToken="st"; userId=123; api-platform_slh="s"';
+	try {
+		const routes = [];
+		const httpServer = { register: (spec) => (routes.push(spec), () => {}) };
+		const { ctx, dispose } = fakeContext({ services: { httpServer } });
+		apply(ctx, { database: ":memory:", credentialsPath, sweepIntervalMs: 0, sweepOnStart: false });
+		await settle();
+		const auth = routes.find((r) => r.path === "/api/tokenledger/userauth");
+		const post = async (body) => {
+			const sent = [];
+			const stream = new PassThrough();
+			stream.end(JSON.stringify(body));
+			await auth.handler(
+				Object.assign(stream, {
+					method: "POST",
+					url: auth.path,
+					headers: { host: "127.0.0.1", "x-tokenledger": "1" },
+					socket: { remoteAddress: "127.0.0.1" }
+				}),
+				{ writeHead: (s) => sent.push(s), end: (b) => sent.push(b) }
+			);
+			return { status: sent[0], body: JSON.parse(sent[1]) };
+		};
+
+		assert.deepEqual(await post({ origin: "https://platform.xiaomimimo.com", kind: "cookie", cookie: "sk-not-a-cookie" }), {
+			status: 400,
+			body: { ok: false, error: "invalid-cookie" }
+		});
+		assert.equal((await post({ origin: "https://evil.example", kind: "cookie", cookie })).body.error, "invalid-origin", "a session is only kept for a console we read");
+		assert.equal((await post({ origin: "https://platform.xiaomimimo.com", kind: "cookie", cookie: `Cookie: ${cookie}` })).status, 200);
+		assert.equal((await post({ origin: "https://relay.example", userId: 7, token: "tok" })).status, 200, "the New API dialog saves again");
+
+		const onDisk = JSON.parse(readFileSync(credentialsPath, "utf8"));
+		assert.equal(onDisk.consoleCookies["https://platform.xiaomimimo.com"], cookie, "stored without the pasted prefix");
+		assert.deepEqual(onDisk.userAuth["https://relay.example"], { userId: 7, token: "tok" });
+		await dispose();
+
+		// A restart reads them back; the renderer only ever learns that they exist.
+		const again = [];
+		const second = fakeContext({ services: { httpServer: { register: (spec) => (again.push(spec), () => {}) } } });
+		apply(second.ctx, { database: ":memory:", credentialsPath, sweepIntervalMs: 0, sweepOnStart: false });
+		await settle();
+		const sent = [];
+		await again.find((r) => r.path === "/api/tokenledger/userauth").handler(
+			{ method: "GET", url: "/api/tokenledger/userauth", headers: { host: "127.0.0.1" }, socket: { remoteAddress: "127.0.0.1" } },
+			{ writeHead: (s) => sent.push(s), end: (b) => sent.push(b) }
+		);
+		const origins = JSON.parse(sent[1]).origins;
+		assert.equal(origins["https://platform.xiaomimimo.com"].hasCookie, true);
+		assert.equal(origins["https://relay.example"].hasToken, true);
+		assert.equal(sent[1].includes("serviceToken"), false, "the cookie never crosses back out");
+		await second.dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

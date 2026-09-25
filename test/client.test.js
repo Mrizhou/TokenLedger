@@ -1445,6 +1445,47 @@ test("the badge reads today's figure with the panel shut, and keeps it current",
 	}
 });
 
+test("a MiMo card without a live console session says which, and offers the cookie dialog", async () => {
+	const { exports, render } = await loadBundle();
+	for (const hint of ["mimo-cookie-missing", "mimo-cookie-expired"]) {
+		const text = textOf(
+			render(exports.BalanceCard, {
+				state: { status: "ready", data: { ok: true, supported: true, fetched: false, scheme: "mimo", reason: "no-credential", hint } },
+				translate: T,
+				onConfigure: () => {}
+			})
+		);
+		assert.ok(text.includes(`balance.hint.${hint}`), text);
+		assert.ok(text.includes("balance.setCookie"), `no way to fix it from the card: ${text}`);
+		assert.equal(text.includes("balance.noKey"), false, "the route key is not what is missing");
+	}
+	for (const hint of ["mimo-cookie-missing", "mimo-cookie-expired"]) {
+		assert.ok(`balance.hint.${hint}` in exports.zh && `balance.hint.${hint}` in exports.en);
+	}
+});
+
+test("the panel opens the cookie dialog for a console-read account, the wallet dialog otherwise", async () => {
+	const harness = await loadBundle();
+	const dialogOf = (account) => {
+		// [open, range, site, account, nonce, forceNonce, dialogFor]
+		const tree = harness.renderWithState(exports_of(harness).TokenLedgerPanel, { wide: true }, [false, "all", undefined, undefined, 0, 0, account]);
+		const found = [];
+		const walk = (node) => {
+			if (node === null || typeof node !== "object") return;
+			if (Array.isArray(node)) return node.forEach(walk);
+			if (typeof node.type === "function") found.push(node.type);
+			walk(node.props?.children);
+		};
+		walk(tree);
+		return found;
+	};
+	const mimo = dialogOf({ id: "xiaomi", scheme: "mimo", origin: "https://api.xiaomimimo.com", displayName: "小米 MiMo" });
+	assert.ok(mimo.includes(exports_of(harness).CookieDialog));
+	assert.equal(mimo.includes(exports_of(harness).UserAuthDialog), false);
+	const relay = dialogOf({ id: "yos", scheme: "newapi", origin: "https://api2.yoshub.com", displayName: "api2.yoshub.com" });
+	assert.ok(relay.includes(exports_of(harness).UserAuthDialog));
+});
+
 /** The bundle's exports, named for readability at the call sites above. */
 function exports_of(harness) {
 	return harness.exports;

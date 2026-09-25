@@ -556,7 +556,9 @@ function attachRoutes(ctx, httpServer, deps) {
 							}
 							send(res, 405, { ok: false, error: "method-not-allowed" });
 						} catch (error) {
-							const status = error?.kind === "payload-too-large" || error?.kind === "invalid-json" ? 400 : 500;
+							// A refusal of what was sent (`invalid-*`) is the caller's to fix.
+							const status =
+								error?.kind === "payload-too-large" || (typeof error?.kind === "string" && error.kind.startsWith("invalid-")) ? 400 : 500;
 							logger?.warn?.("tokenledger: %s failed: %s", USERAUTH_PATH, error?.message ?? error);
 							send(res, status, { ok: false, error: error?.kind ?? "internal" });
 						}

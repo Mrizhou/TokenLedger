@@ -900,13 +900,14 @@ window.__ModuleLoader__.load({
 							const known = byId.get(id);
 							const label = id === "direct" ? translate("sites.direct") : id === "unrouted" ? translate("sites.unrouted") : id;
 							const routes = known?.routes?.length ? known.routes.join(", ") : undefined;
+							const software = SCHEME_LABELS[known?.type];
 							return jsxs(
 								"button",
 								{
 									type: "button",
 									className: S.row,
 									...(id === site ? { "data-on": "" } : {}),
-									title: routes === undefined ? label : `${label} · ${routes}`,
+									title: [label, routes, software].filter(Boolean).join(" · "),
 									onClick: () => onSelect(id === site ? undefined : id),
 									children: [
 										jsx("span", { className: S.swatch, style: { background: row.color } }),
@@ -1407,12 +1408,12 @@ window.__ModuleLoader__.load({
 		 * figure first, the action that re-aims it second — and under the note
 		 * on a failed read, where there is no figure to follow.
 		 */
-		function SetBalanceButton({ onConfigure, translate }) {
+		function SetBalanceButton({ onConfigure, translate, label = "balance.setButton" }) {
 			return jsx("button", {
 				type: "button",
 				className: S.setBtn,
 				onClick: onConfigure,
-				children: translate("balance.setButton")
+				children: translate(label)
 			});
 		}
 
@@ -1435,8 +1436,8 @@ window.__ModuleLoader__.load({
 			const balance = state.data;
 			if (balance === undefined) return null;
 			const setChip = () =>
-				balance.scheme === "newapi" && typeof onConfigure === "function"
-					? jsx(SetBalanceButton, { onConfigure, translate })
+				(balance.scheme === "newapi" || balance.scheme === "mimo") && typeof onConfigure === "function"
+					? jsx(SetBalanceButton, { onConfigure, translate, label: balance.scheme === "mimo" ? "balance.setCookie" : undefined })
 					: null;
 
 			if (balance.supported === false) {
@@ -1605,7 +1606,10 @@ window.__ModuleLoader__.load({
 		 * origin and the software, and deliberately NOT the username: the 账号
 		 * belongs to the site's console, not to a card the picker attributes.
 		 */
-		const SCHEME_LABELS = { deepseek: "API 余额", newapi: "New API", sub2api: "Sub2API" };
+		const SCHEME_LABELS = { deepseek: "API 余额", newapi: "New API", sub2api: "Sub2API", mimo: "控制台余额" };
+
+		/** Where a scheme read through a console session signs in; the cookie is stored per console. */
+		const CONSOLE_ORIGINS = { mimo: "https://platform.xiaomimimo.com" };
 
 		/**
 		 * The 设置查询API dialog: per-site console credentials for New API's
@@ -1791,6 +1795,157 @@ window.__ModuleLoader__.load({
 												className: `${S.btn} ${S.btnDanger}${busy ? ` ${S.busy}` : ""}`,
 												disabled: busy,
 												onClick: remove,
+												children: translate("dialog.remove")
+											})
+										: null,
+									jsx("button", { type: "button", className: S.btn, disabled: busy, onClick: onClose, children: translate("action.close") }),
+									jsx("button", {
+										type: "button",
+										className: `${S.btn} ${S.btnPrimary}${busy ? ` ${S.busy}` : ""}`,
+										disabled: busy,
+										onClick: save,
+										children: translate("dialog.save")
+									})
+								]
+							})
+						]
+					})
+				]
+			});
+		}
+
+		/**
+		 * The 设置 Cookie dialog: a vendor console's session, for a vendor whose
+		 * balance no API key can read (小米 MiMo).
+		 *
+		 * The session lasts about a day, so this is a dialog people come back to:
+		 * the steps say exactly which request to copy the header from, and a
+		 * stored cookie shows as STATE only — the read route answers `hasCookie`,
+		 * never the value.
+		 */
+		function CookieDialog({ account, translate, onClose, onSaved }) {
+			const consoleOrigin = CONSOLE_ORIGINS[account.scheme];
+			const [cookie, setCookie] = react.useState("");
+			const [saved, setSaved] = react.useState(undefined);
+			const [busy, setBusy] = react.useState(false);
+			const [error, setError] = react.useState(undefined);
+
+			react.useEffect(() => {
+				let live = true;
+				fetchJson(`${USERAUTH_PATH}?origin=${encodeURIComponent(consoleOrigin)}`).then(
+					(payload) => {
+						if (live) setSaved(payload.origins?.[consoleOrigin]);
+					},
+					() => {}
+				);
+				return () => {
+					live = false;
+				};
+			}, [consoleOrigin]);
+
+			react.useEffect(() => {
+				const onKey = (event) => {
+					if (event.key === "Escape") {
+						event.stopPropagation();
+						onClose();
+					}
+				};
+				window.addEventListener("keydown", onKey, true);
+				return () => window.removeEventListener("keydown", onKey, true);
+			}, [onClose]);
+
+			const post = async (payload) => {
+				const response = await fetch(USERAUTH_PATH, {
+					method: "POST",
+					headers: { "content-type": "application/json", "x-tokenledger": "1" },
+					body: JSON.stringify({ origin: consoleOrigin, kind: "cookie", ...payload })
+				});
+				if (response.status === 404) throw new Error(translate("dialog.hostStale"));
+				const result = await response.json().catch(() => undefined);
+				if (result?.error === "invalid-cookie") throw new Error(translate("cookie.invalid"));
+				if (result?.ok !== true) throw new Error(result?.error ?? `HTTP ${response.status}`);
+			};
+
+			const run = async (payload) => {
+				setBusy(true);
+				setError(undefined);
+				try {
+					await post(payload);
+					onSaved();
+				} catch (e) {
+					setError(translate("dialog.saveFailed", { reason: String(e?.message ?? e) }));
+				} finally {
+					setBusy(false);
+				}
+			};
+
+			const save = () => {
+				if (cookie.trim() === "") {
+					setError(translate("cookie.needCookie"));
+					return;
+				}
+				void run({ cookie });
+			};
+
+			return jsxs("div", {
+				className: S.dlgOverlay,
+				onPointerDown: (event) => {
+					if (event.target === event.currentTarget) onClose();
+				},
+				children: [
+					jsxs("div", {
+						className: S.dlg,
+						role: "dialog",
+						"aria-label": translate("cookie.title"),
+						children: [
+							jsxs("div", {
+								className: S.dlgHead,
+								children: [
+									jsx("span", { className: S.dlgTitle, children: `${translate("cookie.title")} · ${account.displayName}` }),
+									jsx("button", {
+										type: "button",
+										className: S.iconButton,
+										"aria-label": translate("action.close"),
+										onClick: onClose,
+										children: jsx(IconClose, { size: 16 })
+									})
+								]
+							}),
+							jsxs("ol", {
+								className: S.steps,
+								children: [
+									jsx("li", { children: translate("cookie.step1", { origin: consoleOrigin }) }),
+									jsx("li", { children: translate("cookie.step2") }),
+									jsx("li", { children: translate("cookie.step3") })
+								]
+							}),
+							jsx("p", { className: S.note, children: translate("cookie.note") }),
+							jsxs("label", {
+								className: S.field,
+								children: [
+									jsx("span", { className: S.fieldLabel, children: translate("cookie.label") }),
+									jsx("input", {
+										className: S.input,
+										type: "text",
+										value: cookie,
+										onChange: (event) => setCookie(event.target.value),
+										placeholder: saved?.hasCookie === true ? translate("cookie.keep") : translate("cookie.placeholder"),
+										autoComplete: "off",
+										spellCheck: false
+									})
+								]
+							}),
+							saved?.hasCookie === true ? jsx("p", { className: S.note, children: translate("cookie.configured") }) : null,
+							error === undefined ? null : jsx("p", { className: S.error, children: error }),
+							jsxs("div", {
+								className: S.actions,
+								children: [
+									saved?.hasCookie === true
+										? jsx("button", {
+												type: "button",
+												className: `${S.btn} ${S.btnDanger}${busy ? ` ${S.busy}` : ""}`,
+												disabled: busy,
+												onClick: () => void run({ remove: true }),
 												children: translate("dialog.remove")
 											})
 										: null,
@@ -2110,7 +2265,7 @@ window.__ModuleLoader__.load({
 						}),
 						dialogFor === undefined
 							? null
-							: jsx(UserAuthDialog, {
+							: jsx(CONSOLE_ORIGINS[dialogFor.scheme] === undefined ? UserAuthDialog : CookieDialog, {
 									account: dialogFor,
 									translate,
 									onClose: () => setDialogFor(undefined),
@@ -2204,6 +2359,20 @@ window.__ModuleLoader__.load({
 			"balance.grantedRecharge": "其中累计充值 {amount}",
 			"balance.failedPlain": "余额读取失败。",
 			"balance.setButton": "设置查询API",
+			"balance.setCookie": "设置 Cookie",
+			"balance.hint.mimo-cookie-missing": "小米 MiMo 的余额只能从控制台读：API key 没有余额接口。点「设置 Cookie」粘贴控制台的登录 Cookie。",
+			"balance.hint.mimo-cookie-expired": "小米控制台的登录已过期（Cookie 约一天失效）。重新登录后点「设置 Cookie」换一份。",
+			"cookie.title": "设置 Cookie — 控制台登录",
+			"cookie.step1": "浏览器登录 {origin}",
+			"cookie.step2": "F12 → 网络（Network）→ 刷新页面，点开任意一个 /api/v1/ 开头的请求（如 balance）",
+			"cookie.step3": "在「请求标头」里复制 cookie 的整段值，粘贴到下面保存",
+			"cookie.note": "Cookie 约一天过期，过期后余额卡会提示，照同样步骤换一份即可。它能登录你的整个控制台账户，只存在本机（~/.dsh/tokenledger-credentials.json），只发往上面这个控制台地址。",
+			"cookie.label": "Cookie",
+			"cookie.placeholder": "粘贴整段 cookie",
+			"cookie.keep": "已配置——粘贴新的即替换",
+			"cookie.configured": "已保存一份 Cookie。",
+			"cookie.needCookie": "请粘贴 Cookie。",
+			"cookie.invalid": "这不像控制台的登录 Cookie：需要同时含 serviceToken 和 userId 两项",
 			"balance.rateLimited": "查询已限流，{at} 后可再试。",
 			"balance.stale": "已限流，{at} 前不刷新 · {ago}的结果",
 			"balance.unparsed": "接口答了，但认不出配额字段（{reason}）。可以把这句话反馈给我们。",
@@ -2324,6 +2493,20 @@ window.__ModuleLoader__.load({
 			"balance.grantedRecharge": "of which recharged {amount}",
 			"balance.failedPlain": "Could not read the balance.",
 			"balance.setButton": "Set query API",
+			"balance.setCookie": "Set cookie",
+			"balance.hint.mimo-cookie-missing": "Xiaomi MiMo's balance is only readable from its console; API keys have no balance endpoint. Use \"Set cookie\" to paste the console's sign-in cookie.",
+			"balance.hint.mimo-cookie-expired": "The Xiaomi console session has expired (cookies last about a day). Sign in again and use \"Set cookie\" to replace it.",
+			"cookie.title": "Set cookie — console sign-in",
+			"cookie.step1": "Sign in to {origin} in a browser.",
+			"cookie.step2": "F12 → Network → reload, and open any request under /api/v1/ (balance, for one).",
+			"cookie.step3": "Copy the whole cookie value from its request headers and paste it below.",
+			"cookie.note": "The cookie expires after about a day; the balance card says so, and the same steps replace it. It signs in to your whole console account, is kept only on this machine (~/.dsh/tokenledger-credentials.json), and is sent only to the console above.",
+			"cookie.label": "Cookie",
+			"cookie.placeholder": "Paste the whole cookie",
+			"cookie.keep": "Stored — paste a new one to replace it",
+			"cookie.configured": "A cookie is stored.",
+			"cookie.needCookie": "Paste the cookie.",
+			"cookie.invalid": "That does not look like the console's sign-in cookie: it needs both serviceToken and userId",
 			"balance.rateLimited": "Rate-limited; retry after {at}.",
 			"balance.stale": "rate-limited until {at} · showing {ago}",
 			"balance.unparsed": "The endpoint answered, but none of the quota fields were where they were expected ({reason}). Worth reporting.",
@@ -2456,6 +2639,7 @@ window.__ModuleLoader__.load({
 		exports.BalanceCard = BalanceCard;
 		exports.SetBalanceButton = SetBalanceButton;
 		exports.UserAuthDialog = UserAuthDialog;
+		exports.CookieDialog = CookieDialog;
 		exports.QuotaWindows = QuotaWindows;
 		exports.AccountPicker = AccountPicker;
 		exports.Footer = Footer;

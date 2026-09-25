@@ -39,7 +39,8 @@ import { RelaySiteRegistry, SITE_TYPES, createSiteResolver, domainOf, normalizeO
 import { createFingerprintRegistry } from "./fingerprints.js";
 import { describeProject, readProjectTitles, workspaceRegistry } from "./projects.js";
 import { discoverFromContext, mergeSites, withKnownSoftware } from "./discovery.js";
-import { createBalanceReader, listAccounts } from "./balance.js";
+import { SCHEMES, createBalanceReader, listAccounts, normalizeConsoleCookie } from "./balance.js";
+import { createCredentialsFile, credentialsPathFor } from "./credentials-file.js";
 import { createNewApiWalletReader, shouldUseWallet } from "./newapi-user.js";
 import { VERSION, priceToday, registerRoutes, usagePayload } from "./http.js";
 import { DashboardController, DashboardControllerError } from "./dashboard-controller.js";
@@ -117,6 +118,13 @@ export const name = "tokenledger";
  * service that mounts later is picked up on its own.
  */
 export const inject = ["sessionPersistence"];
+
+/** Vendor consoles a built-in scheme signs in to; the only origins a cookie may be stored for. */
+const CONSOLE_ORIGINS = new Set(
+	Object.values(SCHEMES)
+		.map((spec) => spec.credential?.origin)
+		.filter((origin) => typeof origin === "string")
+);
 
 /** Defaults chosen so an unconfigured mount still does something useful. */
 const DEFAULTS = {
@@ -744,6 +752,15 @@ export function apply(ctx, userConfig = {}) {
 	let dashboardController;
 	const walletReader = createNewApiWalletReader();
 
+	// Credentials the panel stored where the host had no settings namespace to
+	// keep them (0.1.7). Entry config, where present, wins.
+	const credentialsFile = createCredentialsFile(config.credentialsPath ?? credentialsPathFor(config.database));
+	{
+		const stored = credentialsFile.load();
+		config.userAuth = { ...stored.userAuth, ...(config.userAuth ?? {}) };
+		config.consoleCookies = { ...stored.consoleCookies, ...(config.consoleCookies ?? {}) };
+	}
+
 	// --- the site directory -------------------------------------------------
 	//
 	// Sites are learned from the host, not configured: see `discovery.js`. The
@@ -1088,44 +1105,81 @@ export function apply(ctx, userConfig = {}) {
 	// to the per-key readers exactly as before.
 	let balance;
 
-	/** The stored credentials as a renderer may SEE them: never the token. */
+	/** The stored credentials as a renderer may SEE them: never the token, never the cookie. */
 	const userAuth = (origin) => {
-		const all = config.userAuth ?? {};
-		const view = (entry) => ({
-			userId: typeof entry?.userId === "number" ? entry.userId : undefined,
-			hasToken: typeof entry?.token === "string" && entry.token !== ""
-		});
-		if (origin !== undefined) {
-			const hit = all[origin];
-			return hit === undefined ? {} : { [origin]: view(hit) };
-		}
-		return Object.fromEntries(Object.entries(all).map(([key, entry]) => [key, view(entry)]));
+		const wallets = config.userAuth ?? {};
+		const cookies = config.consoleCookies ?? {};
+		const view = (key) => {
+			const entry = wallets[key];
+			return {
+				userId: typeof entry?.userId === "number" ? entry.userId : undefined,
+				hasToken: typeof entry?.token === "string" && entry.token !== "",
+				hasCookie: typeof cookies[key] === "string" && cookies[key] !== ""
+			};
+		};
+		const keys = origin !== undefined ? [origin] : [...new Set([...Object.keys(wallets), ...Object.keys(cookies)])];
+		return Object.fromEntries(keys.filter((key) => Object.hasOwn(wallets, key) || Object.hasOwn(cookies, key)).map((key) => [key, view(key)]));
 	};
 
-	/** Save or clear one origin's entry through the existing settings seam. */
+	/** A save failure the dialog can name, rather than "internal". */
+	const refuse = (kind) => Object.assign(new Error(kind), { kind });
+
+	/**
+	 * Persist both credential maps. The settings namespace where the host still
+	 * offers one (≤0.1.6); otherwise the file beside the ledger — 0.1.7 has no
+	 * `settings.register`, and without this every save was refused.
+	 */
+	const persistCredentials = async () => {
+		if (settingsScope !== undefined) {
+			await settingsScope.update({ userAuth: config.userAuth ?? {}, consoleCookies: config.consoleCookies ?? {} });
+			return;
+		}
+		credentialsFile.save({ userAuth: config.userAuth, consoleCookies: config.consoleCookies });
+	};
+
+	/**
+	 * Save or clear one origin's entry. `{ kind: "cookie" }` addresses a vendor
+	 * console's session cookie, and only for a console a built-in scheme reads.
+	 */
 	const saveUserAuth = async (body) => {
-		if (body === null || typeof body !== "object") throw new Error("invalid-body");
+		if (body === null || typeof body !== "object") throw refuse("invalid-body");
 		const origin = normalizeOrigin(body.origin);
-		if (origin === undefined) throw new Error("invalid-origin");
+		if (origin === undefined) throw refuse("invalid-origin");
+		if (body.kind === "cookie") {
+			if (!CONSOLE_ORIGINS.has(origin)) throw refuse("invalid-origin");
+			const next = { ...(config.consoleCookies ?? {}) };
+			if (body.remove === true) {
+				delete next[origin];
+			} else {
+				const cookie = normalizeConsoleCookie(body.cookie);
+				if (cookie === undefined) throw refuse("invalid-cookie");
+				next[origin] = cookie;
+			}
+			config.consoleCookies = next;
+			await persistCredentials();
+			dashboardController?.notifyChanged(true);
+			return;
+		}
 		if (body.remove === true) {
-			if (settingsRemoveUserAuth === undefined) throw new Error("settings-not-ready");
-			await settingsRemoveUserAuth(origin);
+			if (settingsRemoveUserAuth !== undefined) {
+				await settingsRemoveUserAuth(origin);
+			}
 			// Mirror the change now: the settings watch is asynchronous and a read
 			// immediately after this write must not see the removed credential.
 			const next = { ...(config.userAuth ?? {}) };
 			delete next[origin];
 			config.userAuth = next;
+			if (settingsRemoveUserAuth === undefined) credentialsFile.save({ userAuth: config.userAuth, consoleCookies: config.consoleCookies });
 		} else {
-			if (settingsScope === undefined) throw new Error("settings-not-ready");
 			const userId = body.userId;
 			if (typeof userId !== "number" || !Number.isInteger(userId) || userId <= 0) {
-				throw new Error("invalid-user-id");
+				throw refuse("invalid-user-id");
 			}
 			const previous = config.userAuth?.[origin];
 			const token = typeof body.token === "string" && body.token !== "" ? body.token : previous?.token;
-			if (typeof token !== "string" || token === "") throw new Error("invalid-token");
+			if (typeof token !== "string" || token === "") throw refuse("invalid-token");
 			config.userAuth = { ...(config.userAuth ?? {}), [origin]: { userId, token } };
-			await settingsScope.update({ userAuth: config.userAuth });
+			await persistCredentials();
 		}
 		walletReader.forget(origin);
 		dashboardController?.notifyChanged(true);
@@ -1134,6 +1188,7 @@ export function apply(ctx, userConfig = {}) {
 	try {
 		/** The per-key readers, unchanged underneath the wallet override. */
 		const baseBalance = createBalanceReader(ctx, {
+			consoleCookie: (origin) => config.consoleCookies?.[origin],
 			softwareOf: fingerprints.software,
 			// A lazily detected relay program is remembered, so the probe
 			// happens once per site rather than once per balance read.

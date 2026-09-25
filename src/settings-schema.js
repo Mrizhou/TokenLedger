@@ -101,6 +101,14 @@ export function buildSchema(z) {
 			.description("站点钱包凭据")
 			.comment("按站点源地址保存 New API 用户 ID 和访问令牌"),
 		/**
+		 * A vendor console's session `Cookie` header, keyed by the console's
+		 * origin, written by the panel's 设置 Cookie dialog. Only for a vendor
+		 * whose balance no API key can read (小米 MiMo).
+		 */
+		consoleCookies: z.dict(z.string().role("secret"))
+			.description("控制台 Cookie")
+			.comment("按控制台源地址保存登录 Cookie（小米 MiMo 余额查询用，约一天过期）"),
+		/**
 		 * Relay overrides, keyed by DSH provider route. Normally empty: sites are
 		 * discovered from the host's own provider configuration. An entry here is
 		 * for what discovery cannot see — a composition with no settings provider,

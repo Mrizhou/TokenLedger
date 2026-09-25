@@ -183,7 +183,7 @@ export function createNewApiWalletReader() {
  */
 export function shouldUseWallet(account, auth) {
 	const KNOWN_NON_NEWAPI = new Set([
-		"deepseek", "openrouter", "moonshot", "zai", "kimi", "minimax", "opencode-go", "sub2api"
+		"deepseek", "openrouter", "moonshot", "zai", "kimi", "minimax", "opencode-go", "sub2api", "mimo"
 	]);
 	if (auth === null || typeof auth !== "object") return false;
 	if (typeof auth.token !== "string" || auth.token === "") return false;
