@@ -21,6 +21,9 @@
  * // → walk settingsPath → that route's profile → its `baseURL`
  * ```
  *
+ * 0.1.7 removed `settings.get`; the same section now comes from
+ * `settings.describe()` — see `sectionReader` in `balance.js`.
+ *
  * ## Why the origin, and not the `declared` flag, is the key
  *
  * `declared` is upstream's word for a route "the owning adapter knows only
@@ -48,7 +51,7 @@
  * @module dsh-tokenledger/discovery
  */
 
-import { BUILTIN_PROVIDER_ORIGINS } from "./balance.js";
+import { BUILTIN_PROVIDER_ORIGINS, sectionReader } from "./balance.js";
 import { domainOf, firstString, normalizeOrigin } from "./relay-sites.js";
 
 /**
@@ -213,7 +216,7 @@ export function discoverFromContext(ctx, options = {}) {
 	return {
 		...discoverSites({
 			providers,
-			readSection: (ns) => settings.get?.(ns),
+			readSection: sectionReader(settings),
 			officialOrigins: options.officialOrigins
 		}),
 		available: true

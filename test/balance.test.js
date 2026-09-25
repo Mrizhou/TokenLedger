@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SCHEMES, createBalanceReader, isOfficialDeepSeek, listAccounts, readBalance } from "../src/balance.js";
+import { SCHEMES, createBalanceReader, isOfficialDeepSeek, listAccounts, readBalance, sectionReader } from "../src/balance.js";
 
 test("official is decided by origin, not by what the route is called", () => {
 	// The same reason site attribution is: a route named `deepseek` may point at
@@ -655,6 +655,50 @@ test("a shipped catalog route nobody configured is not an account", () => {
 	// all it is still the default, and still an account.
 	delete sections["llm-deepseek"];
 	assert.equal(listAccounts(ctx, { softwareOf: new Map() })[0].id, "deepseek-official");
+});
+
+test("0.1.7 settings without get(): routes are read from describe(), not collapsed into DeepSeek", () => {
+	// 0.1.7 dropped `settings.get` and serves live values only through
+	// `describe()`. Read through `get` alone, every declared route looked
+	// unconfigured, fell back to the DeepSeek origin, and collapsed into one
+	// account — the picker had nothing to pick.
+	const directory = [
+		{ provider: "deepseek-official", displayName: "DeepSeek", settingsNs: "llm-deepseek", settingsPath: [] },
+		{ provider: "yos", displayName: "Yos", settingsNs: "llm-pi-ai", settingsPath: ["providers", "yos"], declared: true },
+		{ provider: "ali", displayName: "ali", settingsNs: "llm-pi-ai", settingsPath: ["providers", "ali"], declared: true }
+	];
+	const forms = [
+		{ ns: "ui-theme", value: { preference: "system" } },
+		{
+			ns: "llm-pi-ai",
+			value: {
+				providers: {
+					yos: { baseURL: "https://api2.yoshub.com/v1", apiKeyEnv: "YOS_API_KEY" },
+					ali: { baseURL: "https://dashscope.example.com/compatible-mode/v1", apiKeyEnv: "ALI_API_KEY" }
+				}
+			}
+		}
+	];
+	const ctx = {
+		get: (name) =>
+			name === "llm"
+				? { listConfigurableProviders: () => directory }
+				: name === "settings"
+					? { describe: () => forms }
+					: undefined
+	};
+	const accounts = listAccounts(ctx, { softwareOf: new Map() });
+	assert.deepEqual(accounts.map((a) => a.id), ["deepseek-official", "yos", "ali"]);
+	assert.deepEqual(accounts.map((a) => a.origin), ["https://api.deepseek.com", "https://api2.yoshub.com", "https://dashscope.example.com"]);
+	assert.deepEqual(accounts.map((a) => a.hasCredential), [false, true, true]);
+});
+
+test("sectionReader prefers get(), falls back to describe(), and survives a throwing describe()", () => {
+	assert.deepEqual(sectionReader({ get: (ns) => ({ from: "get", ns }), describe: () => [] })("x"), { from: "get", ns: "x" });
+	assert.deepEqual(sectionReader({ describe: () => [{ ns: "x", value: { from: "describe" } }] })("x"), { from: "describe" });
+	assert.equal(sectionReader({ describe: () => [{ ns: "y", value: {} }] })("x"), undefined);
+	assert.equal(sectionReader({ describe: () => { throw new Error("not settled"); } })("x"), undefined);
+	assert.equal(sectionReader(undefined)("x"), undefined);
 });
 
 test("an explicit baseURL beats the built-in origin table", () => {

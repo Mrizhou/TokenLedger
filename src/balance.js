@@ -661,6 +661,26 @@ function readAt(section, path) {
 }
 
 /**
+ * Read one settings namespace across both generations of the settings service.
+ *
+ * Up to 0.1.6 the service kept `settings.yaml` and answered `get(ns)`. 0.1.7
+ * imported that file into the profile patch and dropped `get`: live values now
+ * come only from `describe()`, one form per entry keyed by `ns`. Reading `get`
+ * alone there saw every route as unconfigured — each one fell back to the
+ * DeepSeek origin, collapsed into a single account, and the picker vanished.
+ */
+export function sectionReader(settings) {
+	return (ns) => {
+		if (typeof settings?.get === "function") return settings.get(ns);
+		try {
+			return settings?.describe?.()?.find((form) => form?.ns === ns)?.value;
+		} catch {
+			return undefined;
+		}
+	};
+}
+
+/**
  * Every provider route, with what is known about how to read its balance.
  *
  * No keys and no network: this is the list the picker renders, and it must be
@@ -673,7 +693,7 @@ export function listAccounts(ctx, options = {}) {
 	const settings = typeof ctx.get === "function" ? ctx.get("settings") : undefined;
 	if (llm === undefined || settings === undefined) return [];
 
-	const readSection = options.readSection ?? ((ns) => settings.get?.(ns));
+	const readSection = options.readSection ?? sectionReader(settings);
 	const softwareOf = options.softwareOf ?? new Map();
 	let entries;
 	try {
@@ -832,7 +852,7 @@ function referenceFor(ctx, account, options) {
 	const settings = typeof ctx.get === "function" ? ctx.get("settings") : undefined;
 	const llm = typeof ctx.get === "function" ? ctx.get("llm") : undefined;
 	if (settings === undefined || llm === undefined) return undefined;
-	const readSection = options.readSection ?? ((ns) => settings.get?.(ns));
+	const readSection = options.readSection ?? sectionReader(settings);
 	for (const entry of llm.listConfigurableProviders?.() ?? []) {
 		if (entry.provider !== account.id) continue;
 		const profile = readAt(readSection(entry.settingsNs), entry.settingsPath ?? []);
