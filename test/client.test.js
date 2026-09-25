@@ -48,7 +48,7 @@ async function loadBundle(options = {}) {
 					if (name === "react") return reactStub;
 					if (name === "react/jsx-runtime") return jsxRuntime;
 					if (name === "@deepseek-ai/dsh-client-ui-primitives") {
-						return { IconDataOutline16: "IconData", IconRefreshOutline14: "IconRefresh", IconCloseOutline16: "IconClose" };
+						return options.primitives ?? { IconDataOutlineRegular: "IconData", IconRefreshOutlineRegular: "IconRefresh", IconCloseOutlineRegular: "IconClose" };
 					}
 					throw new Error(`unexpected require: ${name}`);
 				});
@@ -130,6 +130,25 @@ test("the bundle registers a factory under the package id and exports its seat",
 	assert.equal(typeof exports.apply, "function");
 	assert.deepEqual(exports.inject, ["slots", "locale"]);
 	assert.equal(typeof exports.TokenLedgerPanel, "function");
+});
+
+test("icons resolve on both icon generations, and a host with neither costs the icon, not the renderer", async () => {
+	// 0.1.7-rc.2 renamed `IconCloseOutline16` to `IconCloseOutlineRegular`. The
+	// old name resolved to undefined, React threw #130 inside the footer slot,
+	// and the whole desktop renderer crashed.
+	const iconWarnings = (logged) => logged.filter(([level, line]) => level === "warn" && line.includes("drawing no icon"));
+
+	const current = await loadBundle();
+	assert.deepEqual(iconWarnings(current.logged), []);
+
+	const legacy = await loadBundle({
+		primitives: { IconDataOutline16: "IconData", IconRefreshOutline14: "IconRefresh", IconCloseOutline16: "IconClose" }
+	});
+	assert.deepEqual(iconWarnings(legacy.logged), []);
+
+	const bare = await loadBundle({ primitives: {} });
+	assert.equal(iconWarnings(bare.logged).length, 3);
+	assert.equal(typeof bare.exports.TokenLedgerPanel, "function", "a missing icon must not take the panel down");
 });
 
 test("styles are injected once, tagged so a re-execution can find them", async () => {

@@ -99,6 +99,20 @@ window.__ModuleLoader__.load({
 			throw error;
 		}
 
+		// 0.1.7-rc.2 dropped the size-suffixed icons (`IconCloseOutline16`) for
+		// stroke variants (`IconCloseOutlineRegular`) that take `size` as a prop.
+		// An undefined element type is React #130, and inside a slot that takes
+		// the whole desktop renderer down — so resolve once, newest name first,
+		// and draw nothing rather than crash when a host has neither.
+		const icon = (...names) => {
+			for (const name of names) if (primitives[name]) return primitives[name];
+			console.warn(`[tokenledger] none of ${names.join(" / ")} is exported; drawing no icon`);
+			return () => null;
+		};
+		const IconClose = icon("IconCloseOutlineRegular", "IconCloseOutline16");
+		const IconData = icon("IconDataOutlineRegular", "IconDataOutline16");
+		const IconRefresh = icon("IconRefreshOutlineRegular", "IconRefreshOutline14");
+
 		const NS = "tokenLedger";
 		const USAGE_PATH = "/api/tokenledger/usage";
 		const BALANCE_PATH = "/api/tokenledger/balance";
@@ -1708,7 +1722,7 @@ window.__ModuleLoader__.load({
 										className: S.iconButton,
 										"aria-label": translate("action.close"),
 										onClick: onClose,
-										children: jsx(primitives.IconCloseOutline16, { size: 16 })
+										children: jsx(IconClose, { size: 16 })
 									})
 								]
 							}),
@@ -2016,7 +2030,7 @@ window.__ModuleLoader__.load({
 						"aria-label": translate("panel.title"),
 						onClick: () => setOpen((value) => !value),
 						children: [
-							jsx("span", { className: S.badgeIcon, children: jsx(primitives.IconDataOutline16, { size: 16 }) }),
+							jsx("span", { className: S.badgeIcon, children: jsx(IconData, { size: 16 }) }),
 							jsx("span", { className: S.badgeLabel, children: translate("panel.title") }),
 							jsx("span", { className: S.badgeValue, children: totalLabel })
 						]
@@ -2048,14 +2062,14 @@ window.__ModuleLoader__.load({
 															setForceNonce((f) => f + 1);
 														}
 													},
-													children: jsx(primitives.IconRefreshOutline14, { size: 14 })
+													children: jsx(IconRefresh, { size: 14 })
 												}),
 												jsx("button", {
 													type: "button",
 													className: S.iconButton,
 													"aria-label": translate("action.close"),
 													onClick: () => setOpen(false),
-													children: jsx(primitives.IconCloseOutline16, { size: 16 })
+													children: jsx(IconClose, { size: 16 })
 												})
 											]
 										})
