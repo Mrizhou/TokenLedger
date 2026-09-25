@@ -19,8 +19,8 @@ DSH Desktop 的第三方 token 计量插件。**这是 fork，不是原创**：
 `CLAUDE.md` 只剩 `@AGENTS.md` 导入行；文末「附」段随上游同步）、
 `test/blue-packaging.test.js` 的 Windows shell spawn（**有意不上游**，见决策记录）、
 `test/plugin.test.js` 末尾两个 sweep 测试（上游 `test/sweep-handle-api.test.js` 覆盖更全，留作守卫），
-以及 **`src/` 里与上游不同的三处**（前两处同一族问题：宿主目录里「内置 provider 路由」的 origin 存在
-pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revision 语义适配）：
+以及 **`src/` 里与上游不同的四处**（前两处同一族问题：宿主目录里「内置 provider 路由」的 origin 存在
+pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revision 语义适配；第四处是 0.1.7 的席位语义适配）：
 
 - `src/balance.js` `listAccounts()` 跳过「`declared: false` 且无存储配置」的目录项
   （2026-09-17，**用户明确不提 PR**）。宿主目录列出 pi-ai 全部内置 provider，
@@ -50,6 +50,17 @@ pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revi
    suffix on an unchanged log is skipped without reading it」「a changed file identity under a corpus suffix
    still refolds the tail」「an unknown revision shape falls back to exact comparison」（钉死「不认识就退回」）。
    **合上游时这一处要保留**（上游在 0.1.7 线同样会撞上；上游若修了取上游那份，确认三个守卫测试仍绿）。
+- `src/client.js` 的**侧边栏席位适配**（2026-09-25，**0.1.7 席位语义**）：0.1.7 把 `sidebar.footer.action` 的锚点
+   渲染成 `display:contents`、放进**高度受限的 nowrap 行** —— launcher 不再是盒子，占整行的 launcher 会被排到
+   席位之外（**渲染了、`opacity:1`、看不见**，与旧版那个 `:has()` 换行坑同形，同样静音）。实测定位链：宿主半边
+   运行中 → 插件列表无同步失败 → console 五段面包屑全走到「`sidebar.footer.action is available; registering`」
+   → `document.querySelectorAll` 命中槽 div，但界面上仍然没有。修复：给自己的样式表补
+   `body [data-slot='sidebar.footer.action']` 三条规则（**恢复盒子** + **纵向堆叠** + 席位保持高度受限可滚动），
+   做法对齐社区桌面插件 `anywhere-labs/dsh-desktop` 的
+   `dsh-plugin-desktop/src/client/sidebar-footer-styles.ts`（它开篇就写明上游是 `display: contents` 锚点）。
+   守卫测试：`test/client.test.js`「the 0.1.7 seat is given a box back, or the badge is laid out of it」
+   （变异验证：换成 `display:contents` 即 `not ok`）。
+   **合上游时这一处要保留**（上游若改回盒子或提供席位容器 API，取上游那份并确认守卫仍绿）。
 
 其余再出现重复实现，**取上游那份**。
 

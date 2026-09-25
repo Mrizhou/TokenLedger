@@ -131,6 +131,22 @@ window.__ModuleLoader__.load({
 			// Reached through `:has()` on the slot marker rather than the
 			// container's hashed CSS-module class, which is not ours to depend on.
 			"div:has(> [data-slot='sidebar.footer.action']){flex-wrap:wrap}",
+			// 0.1.7 moved the seat: the slot's own anchor is rendered
+			// `display: contents` inside a height-bounded row, so launchers stop
+			// being boxes and become flex siblings on one line — a full-row
+			// launcher like this badge is then laid out of the visible seat while
+			// still reporting `opacity: 1`. Give the anchor a box again and stack
+			// its launchers, the same repair the desktop-era community plugin
+			// ships for this exact seat (`dsh-plugin-desktop`'s
+			// sidebar-footer-styles): `display: contents` must lose to an
+			// explicit display, and the seat stays height-bounded so extra
+			// launchers cannot swallow the workspace list.
+			"body [data-slot='sidebar.footer.action']{display:flex !important;box-sizing:border-box;flex-direction:column;align-items:stretch;gap:4px;min-width:0;max-height:min(40vh,240px);overflow-y:auto;overscroll-behavior:contain}",
+			"body [data-slot='sidebar.footer.action']>*{flex:none;min-width:0}",
+			// Inside that column the layer's `flex: 0 0 100%` would claim the
+			// container's height instead of the row's width; it keeps its own
+			// height and spans the seat.
+			"body [data-slot='sidebar.footer.action'] .tkl_layer{flex:0 0 auto;width:100%}",
 			".tkl_layer{flex:0 0 100%;min-width:0;align-items:center;height:49px;margin:8px 0 0;display:flex;position:relative}",
 			".tkl_badge{width:100%;min-width:0;height:49px;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;border:none;border-radius:12px;align-items:center;gap:8px;padding:0 8px 0 6px;font-family:inherit;font-size:14px;display:inline-flex;overflow:hidden}",
 			".tkl_badge:hover{background:var(--dsw-alias-interactive-bg-hover-solid)}",

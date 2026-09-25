@@ -1144,6 +1144,38 @@ test("the footer-action container is made to wrap, or a second plugin lands off-
 	assert.match(css, /\.tkl_layer\{flex:0 0 100%/, "and the layer must claim a full row of its own");
 });
 
+test("the 0.1.7 seat is given a box back, or the badge is laid out of it", async () => {
+	// 0.1.7 renders the slot's own anchor `display: contents` inside a
+	// height-bounded row. Launchers therefore stop being boxes, become flex
+	// siblings on one line, and a full-row launcher is laid out of the visible
+	// seat while still reporting opacity 1 — the same silent failure as the
+	// wrap bug, one host version later. The repair is the one the desktop-era
+	// community plugin ships for this seat: the anchor takes a box back, its
+	// launchers stack, and the seat stays height-bounded so extra launchers
+	// cannot swallow the workspace list.
+	const { dom } = await loadBundle();
+	const css = dom.head.children[0].textContent;
+	assert.ok(
+		css.includes("body [data-slot='sidebar.footer.action']{display:flex !important"),
+		"without this the seat stays `display: contents` and the badge lands outside it"
+	);
+	assert.match(
+		css,
+		/body \[data-slot='sidebar\.footer\.action'\]\{[^}]*flex-direction:column/,
+		"launchers must stack instead of sharing one nowrap row"
+	);
+	assert.match(
+		css,
+		/body \[data-slot='sidebar\.footer\.action'\]\{[^}]*max-height:/,
+		"and the seat stays height-bounded"
+	);
+	assert.match(
+		css,
+		/body \[data-slot='sidebar\.footer\.action'\] \.tkl_layer\{flex:0 0 auto;width:100%\}/,
+		"inside a column the layer must span the seat without claiming its height"
+	);
+});
+
 test("a lone busy day is not rendered as the palest green", async () => {
 	// Quantiles need a distribution. With one distinct total every threshold is
 	// that same number, so the only active day in the window came out level 1 —
