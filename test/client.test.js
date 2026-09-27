@@ -1464,6 +1464,38 @@ test("a MiMo card without a live console session says which, and offers the cook
 	}
 });
 
+test("the sign-in wallet is labelled as the account's, not the API key's", async () => {
+	// One DeepSeek card owns both routes, so the label is the only thing that
+	// says whose money is on it: an API key's wallet and the signed-in
+	// account's are not necessarily one account.
+	const { exports, render } = await loadBundle();
+	const text = textOf(
+		render(exports.BalanceCard, {
+			state: {
+				status: "ready",
+				data: { ok: true, displayName: "DeepSeek", scheme: "deepseek-account", supported: true, fetched: true, isAvailable: true, currency: "CNY", total: 47.39 }
+			},
+			translate: T
+		})
+	);
+	assert.ok(text.includes("登录账户余额"), text);
+	assert.equal(text.includes("API 余额"), false, "a wallet read through the sign-in is not the key's");
+	assert.ok(text.includes("¥47.39"));
+});
+
+test("a Host whose account is signed out is told to sign in, and both dictionaries say so", async () => {
+	const { exports, render } = await loadBundle();
+	const text = textOf(
+		render(exports.BalanceCard, {
+			state: { status: "ready", data: { ok: true, supported: true, fetched: false, scheme: "deepseek", reason: "http-401", hint: "deepseek-signin" } },
+			translate: T
+		})
+	);
+	assert.ok(text.includes("balance.hint.deepseek-signin"), text);
+	assert.ok("balance.hint.deepseek-signin" in exports.zh && "balance.hint.deepseek-signin" in exports.en);
+	assert.ok(text.includes("http-401"), "the hint carries the reason, which is what the route did");
+});
+
 test("the panel opens the cookie dialog for a console-read account, the wallet dialog otherwise", async () => {
 	const harness = await loadBundle();
 	const dialogOf = (account) => {

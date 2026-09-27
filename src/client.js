@@ -1606,7 +1606,7 @@ window.__ModuleLoader__.load({
 		 * origin and the software, and deliberately NOT the username: the 账号
 		 * belongs to the site's console, not to a card the picker attributes.
 		 */
-		const SCHEME_LABELS = { deepseek: "API 余额", newapi: "New API", sub2api: "Sub2API", mimo: "控制台余额" };
+		const SCHEME_LABELS = { deepseek: "API 余额", "deepseek-account": "登录账户余额", newapi: "New API", sub2api: "Sub2API", mimo: "控制台余额" };
 
 		/** Where a scheme read through a console session signs in; the cookie is stored per console. */
 		const CONSOLE_ORIGINS = { mimo: "https://platform.xiaomimimo.com" };
@@ -2362,6 +2362,7 @@ window.__ModuleLoader__.load({
 			"balance.setCookie": "设置 Cookie",
 			"balance.hint.mimo-cookie-missing": "小米 MiMo 的余额只能从控制台读：API key 没有余额接口。点「设置 Cookie」粘贴控制台的登录 Cookie。",
 			"balance.hint.mimo-cookie-expired": "小米控制台的登录已过期（Cookie 约一天失效）。重新登录后点「设置 Cookie」换一份。",
+			"balance.hint.deepseek-signin": "DeepSeek 没有登录（或登录已失效），这条路由的 key 也读不到余额（{reason}）。在 DSH 里登录 DeepSeek 后，这里会显示登录账户的钱包。",
 			"cookie.title": "设置 Cookie — 控制台登录",
 			"cookie.step1": "浏览器登录 {origin}",
 			"cookie.step2": "F12 → 网络（Network）→ 刷新页面，点开任意一个 /api/v1/ 开头的请求（如 balance）",
@@ -2496,6 +2497,7 @@ window.__ModuleLoader__.load({
 			"balance.setCookie": "Set cookie",
 			"balance.hint.mimo-cookie-missing": "Xiaomi MiMo's balance is only readable from its console; API keys have no balance endpoint. Use \"Set cookie\" to paste the console's sign-in cookie.",
 			"balance.hint.mimo-cookie-expired": "The Xiaomi console session has expired (cookies last about a day). Sign in again and use \"Set cookie\" to replace it.",
+			"balance.hint.deepseek-signin": "DeepSeek is not signed in on this Host (or the sign-in lapsed), and the route's key could not read a balance either ({reason}). Sign in to DeepSeek in DSH and this card shows the account's wallet.",
 			"cookie.title": "Set cookie — console sign-in",
 			"cookie.step1": "Sign in to {origin} in a browser.",
 			"cookie.step2": "F12 → Network → reload, and open any request under /api/v1/ (balance, for one).",

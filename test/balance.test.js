@@ -16,10 +16,13 @@ import {
 	SCHEMES,
 	UNRECOGNIZED_RETRY_MS,
 	createBalanceReader,
+	deepSeekAccountClient,
 	isOfficialDeepSeek,
 	listAccounts,
+	mapDeepSeekAccountWallets,
 	normalizeConsoleCookie,
 	readBalance,
+	readDeepSeekAccountBalance,
 	sectionReader
 } from "../src/balance.js";
 
@@ -350,7 +353,7 @@ test("a window the gateway names something we do not know is dropped, not guesse
 
 const piAi = (route) => ({ provider: route, settingsNs: "llm-pi-ai", settingsPath: ["providers", route] });
 
-const ctxWith = (providers, section, credentials) => ({
+const ctxWith = (providers, section, credentials, services) => ({
 	get: (name) =>
 		name === "llm"
 			? { listConfigurableProviders: () => providers }
@@ -358,7 +361,7 @@ const ctxWith = (providers, section, credentials) => ({
 				? { get: () => section }
 				: name === "credentials"
 					? credentials
-					: undefined
+					: services?.[name]
 });
 
 test("the account list carries no keys and makes no requests", () => {
@@ -1312,4 +1315,211 @@ test("a pasted console cookie is cleaned, and anything that cannot sign in is re
 	assert.equal(normalizeConsoleCookie('api-platform_serviceToken="st"'), undefined);
 	assert.equal(normalizeConsoleCookie("tp-abcdef123456"), undefined);
 	assert.equal(normalizeConsoleCookie(undefined), undefined);
+});
+
+// --- the signed-in DeepSeek wallet -------------------------------------------
+
+/**
+ * What the Host's account service answers for `getBalance(client)`.
+ *
+ * `null` while signed out, `{ status: "failed" }` when Platform could not be
+ * asked, and `{ status: "ready", value, bonusWallets }` with the recharge and
+ * bonus wallets as decimal STRINGS. Shapes taken from the Host's own contract
+ * (`@deepseek-ai/dsh-api-account-controller`'s remote schema), not guessed.
+ */
+const signedIn = (result) => ({ getBalance: async () => result });
+
+const ACCOUNT_WALLETS = {
+	status: "ready",
+	value: [{ currency: "CNY", balance: "47.3913457000000000" }],
+	bonusWallets: [{ currency: "CNY", balance: "2.5" }]
+};
+
+test("the sign-in wallet is the DeepSeek card's source while the Host is signed in", async () => {
+	// 0.1.7 spends DeepSeek through `deepseek-account`, the Platform sign-in,
+	// whose wallet has no API key behind it. `/user/balance` wants a key: the
+	// keyless route read "no key", and a route whose key was revoked read 401 —
+	// both while the signed-in account's own money sat unread one hostname over.
+	// The Host's account service is the reader that can see it.
+	let requests = 0;
+	let resolved = 0;
+	const read = createBalanceReader(
+		ctxWith(
+			[piAi("official")],
+			{ providers: { official: { baseURL: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_KEY" } } },
+			{ resolve: async () => (resolved++, { value: "sk-live" }) },
+			{ deepseekAccount: signedIn(ACCOUNT_WALLETS) }
+		),
+		{ fetch: async () => void requests++ }
+	);
+	const result = await read("official");
+	assert.equal(requests, 0, "api.deepseek.com is not asked: this wallet is not behind a key");
+	assert.equal(resolved, 0, "and the route's key is not even looked up");
+	assert.equal(result.account, "official");
+	assert.equal(result.fetched, true);
+	assert.equal(result.scheme, "deepseek-account", "the card must say which wallet it is showing");
+	assert.equal(result.currency, "CNY");
+	assert.equal(result.toppedUp, 47.3913457);
+	assert.equal(result.granted, 2.5);
+	assert.equal(result.total, 49.8913457);
+	assert.equal(result.isAvailable, true);
+});
+
+test("a Host that is signed out still reads the route's key", async () => {
+	// The sign-in is the first source, never the only one: a key-only install
+	// and a Host whose session lapsed must keep reading the wallet they can.
+	let requests = 0;
+	const read = createBalanceReader(
+		ctxWith(
+			[piAi("official")],
+			{ providers: { official: { baseURL: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_KEY" } } },
+			{ resolve: async () => ({ value: "sk-live" }) },
+			{ deepseekAccount: signedIn(null) }
+		),
+		{
+			fetch: async () => {
+				requests++;
+				return { ok: true, json: async () => ({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "9.41" }] }) };
+			}
+		}
+	);
+	const result = await read("official");
+	assert.equal(requests, 1);
+	assert.equal(result.scheme, "deepseek");
+	assert.equal(result.total, 9.41);
+	assert.equal(result.hint, undefined, "the key answered; there is nothing to sign in for");
+});
+
+test("a failing account service never costs the balance the key can still read", async () => {
+	// Probe and degrade, the way every Host API is treated here: 0.1.7 exposes
+	// `deepseekAccount`, another host version may not, and either way one
+	// broken reader is not a reason to show nothing.
+	for (const service of [
+		{ getBalance: async () => { throw new Error("service exploded"); } },
+		{ getBalance: () => new Promise(() => {}) },
+		{ notGetBalance: true },
+		undefined
+	]) {
+		const read = createBalanceReader(
+			ctxWith(
+				[piAi("official")],
+				{ providers: { official: { baseURL: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_KEY" } } },
+				{ resolve: async () => ({ value: "sk-live" }) },
+				{ deepseekAccount: service }
+			),
+			{
+				accountTimeoutMs: 5,
+				fetch: async () => ({ ok: true, json: async () => ({ is_available: true, balance_infos: [{ currency: "CNY", total_balance: "9.41" }] }) })
+			}
+		);
+		const started = Date.now();
+		const result = await read("official");
+		assert.ok(Date.now() - started < 3000, "a stuck account service costs the deadline, not the card");
+		assert.equal(result.fetched, true, JSON.stringify(service));
+		assert.equal(result.total, 9.41);
+		assert.equal(result.scheme, "deepseek");
+	}
+});
+
+test("the account wallet is a DeepSeek-only source", async () => {
+	// A relay running on api.deepseek.com's hostname is not a thing, but a
+	// reader that matched on the route NAME would hand some other vendor's card
+	// DeepSeek's wallet. It must match on the origin, like everything else here.
+	let accountCalls = 0;
+	const read = createBalanceReader(
+		ctxWith(
+			[piAi("api99")],
+			{ providers: { api99: { baseURL: "https://api.relay-one.example/v1", apiKeyEnv: "K" } } },
+			{ resolve: async () => ({ value: "k" }) },
+			{
+				deepseekAccount: {
+					getBalance: async () => (accountCalls++, ACCOUNT_WALLETS)
+				}
+			}
+		),
+		{ detect: async () => ({ billingAvailable: true, software: "newapi" }), fetch: okJson({ data: { total_available: 1000 } }) }
+	);
+	const result = await read("api99");
+	assert.equal(accountCalls, 0);
+	assert.equal(result.scheme, "newapi");
+});
+
+test("a signed-out Host with a refused key says to sign in, rather than leaving a bare 401", async () => {
+	// This is the shape that broke the panel: the API key gone (revoked or
+	// deleted) and the sign-in left in place. "http-401" says the key is wrong;
+	// it does not say the account is signed out and has money sitting there.
+	const read = createBalanceReader(
+		ctxWith(
+			[piAi("official")],
+			{ providers: { official: { baseURL: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_KEY" } } },
+			{ resolve: async () => ({ value: "sk-revoked" }) },
+			{ deepseekAccount: signedIn(null) }
+		),
+		{ fetch: async () => ({ ok: false, status: 401 }) }
+	);
+	const result = await read("official");
+	assert.equal(result.fetched, false);
+	assert.equal(result.reason, "http-401");
+	assert.equal(result.hint, "deepseek-signin");
+});
+
+test("the account reader says why it cannot answer, and never guesses a zero", async () => {
+	assert.equal((await readDeepSeekAccountBalance({ get: () => undefined })).reason, "no-account-service");
+	assert.equal((await readDeepSeekAccountBalance({ get: (n) => (n === "deepseekAccount" ? signedIn(null) : undefined) })).reason, "signed-out");
+	assert.equal((await readDeepSeekAccountBalance({ get: (n) => (n === "deepseekAccount" ? signedIn({ status: "failed" }) : undefined) })).reason, "failed");
+	assert.equal(
+		(await readDeepSeekAccountBalance({ get: (n) => (n === "deepseekAccount" ? signedIn({ status: "ready", value: [], bonusWallets: [] }) : undefined) })).reason,
+		"no-wallets",
+		"an account that reports no wallet at all is not an account with nothing in it"
+	);
+	assert.equal(
+		(await readDeepSeekAccountBalance({ get: (n) => (n === "deepseekAccount" ? { getBalance: () => new Promise(() => {}) } : undefined) }, { timeoutMs: 5 })).reason,
+		"timeout",
+		"a balance read must not outlive the card that asked for it"
+	);
+	const ok = await readDeepSeekAccountBalance({ get: (n) => (n === "deepseekAccount" ? signedIn(ACCOUNT_WALLETS) : undefined) });
+	assert.equal(ok.ok, true);
+	assert.equal(ok.total, 49.8913457);
+});
+
+test("wallet strings are read as money, not as text", () => {
+	// Platform answers in the decimal grammar its own Web client feeds big.js:
+	// an omitted part and a decimal exponent are both legal, and `0E-16` is a
+	// real zero. NaN, Infinity and prose are not balances.
+	const wallets = (value, bonusWallets) => mapDeepSeekAccountWallets({ status: "ready", value, bonusWallets });
+	assert.equal(wallets([{ currency: "CNY", balance: "0E-16" }], []).total, 0);
+	assert.equal(wallets([{ currency: "CNY", balance: "0E-16" }], []).isAvailable, false, "a zero balance is a fact, and it is not 'unavailable'");
+	assert.equal(wallets([{ currency: "CNY", balance: "5.0000000000000000" }], []).total, 5);
+
+	// Recharge and bonus are two wallets on one account: the card's total is
+	// both, and its two lines know which is which.
+	const both = wallets([{ currency: "CNY", balance: "10" }, { currency: "USD", balance: "3" }], [{ currency: "CNY", balance: "1.5" }]);
+	assert.equal(both.currency, "CNY", "the account's own denomination wins");
+	assert.equal(both.toppedUp, 10);
+	assert.equal(both.granted, 1.5);
+	assert.equal(both.total, 11.5);
+
+	// Two entries in one currency are one wallet split in the answer.
+	assert.equal(wallets([{ currency: "CNY", balance: "1" }, { currency: "CNY", balance: "2" }], []).total, 3);
+
+	for (const bad of ["NaN", "Infinity", "abc", "", "   "]) {
+		assert.equal(wallets([{ currency: "CNY", balance: bad }], []), undefined, `${bad} is not money, and unreported is not zero`);
+	}
+	assert.equal(wallets(undefined, undefined), undefined);
+	assert.equal(mapDeepSeekAccountWallets(null), undefined);
+	assert.equal(mapDeepSeekAccountWallets({ status: "failed" }), undefined);
+	// Two wallet entries that carry no currency cannot be added up honestly.
+	assert.equal(wallets([{ balance: "1" }], []), undefined);
+});
+
+test("the account call carries a client identity of its own", () => {
+	// The Host derives Platform request headers from this. A borrowed or empty
+	// one is the kind of lie a vendor can act on.
+	const client = deepSeekAccountClient({ version: "dsh-tokenledger/1", locale: "zh-CN", timezoneOffsetSeconds: 0 });
+	assert.deepEqual(client, { version: "dsh-tokenledger/1", locale: "zh-CN", timezoneOffsetSeconds: 0 });
+	const fallback = deepSeekAccountClient();
+	assert.equal(typeof fallback.version, "string");
+	assert.notEqual(fallback.version, "", "Platform wants to know which client asked");
+	assert.equal(typeof fallback.locale, "string");
+	assert.equal(typeof fallback.timezoneOffsetSeconds, "number");
 });

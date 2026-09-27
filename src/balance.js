@@ -44,6 +44,7 @@
 
 import { detectRelaySoftware } from "./adapters/detect.js";
 import { compileEndpoint, indexEndpoints } from "./declarative.js";
+import { VERSION } from "./http.js";
 import { unitFromStatus } from "./newapi-user.js";
 import { normalizeWindows } from "./quota.js";
 import { firstString, normalizeOrigin } from "./relay-sites.js";
@@ -757,6 +758,147 @@ export async function readBalance(options = {}) {
 	}
 }
 
+/**
+ * The signed-in DeepSeek account's wallet — the one the 0.1.7 sign-in route
+ * actually spends.
+ *
+ * DeepSeek's money lives on two different planes. `/user/balance` reads the
+ * wallet behind an **API key**, and a route with no key — 0.1.7's
+ * `deepseek-account`, which signs in instead — can never answer it; worse, a
+ * key that was deleted or revoked comes back 401 while the signed-in account's
+ * own money sits unread one hostname over. Platform serves that wallet for the
+ * signed-in session at `get_user_summary`, and the Host already wraps it as the
+ * `deepseekAccount` service (`getBalance(client)` → `{ status: "ready", value,
+ * bonusWallets }`, or `null` with no grant). So this reader asks the Host, and
+ * the card has a balance again whether or not an API key still exists.
+ *
+ * The Host service is asked first and the route's key remains the fallback:
+ * a key-only install, or a Host whose session lapsed, keeps reading the wallet
+ * it can. Nothing here holds a token — the grant never leaves the Host.
+ */
+export const DEEPSEEK_ACCOUNT_SERVICE = "deepseekAccount";
+
+/** How long the account service may take before the key gets its turn. */
+export const ACCOUNT_TIMEOUT_MS = 15_000;
+
+/**
+ * Client identity for one account-service call.
+ *
+ * The Host turns this into Platform's `x-client-*` request headers — build
+ * version, UI language, UTC offset — and a caller borrowing another client's
+ * identity would be lying to the vendor about who is asking. `version` is this
+ * package's own: these calls are made on a plugin's initiative, not by a UI
+ * that has a build of its own to name.
+ */
+export function deepSeekAccountClient(options = {}) {
+	return {
+		version: options.version ?? VERSION,
+		locale: options.locale ?? (typeof Intl === "object" ? Intl.DateTimeFormat().resolvedOptions().locale : "en"),
+		timezoneOffsetSeconds: options.timezoneOffsetSeconds ?? -new Date().getTimezoneOffset() * 60
+	};
+}
+
+/** Two wallets at 47.3913457 and 2.5 must not add a 1e-14 to their total. */
+function money(value) {
+	return Math.round(value * 1e10) / 1e10;
+}
+
+/**
+ * The Platform wallets, read as money.
+ *
+ * `value` is the recharge wallet and `bonusWallets` the gifted one — two
+ * wallets on one account, which the card shows as `toppedUp` and `granted`
+ * under a total of both, exactly as `/user/balance`'s `topped_up_balance` and
+ * `granted_balance` map. Balances arrive as decimal STRINGS in the grammar
+ * Platform's own Web client feeds big.js: an omitted integer or fraction part
+ * and an exponent are both legal (`0E-16` is a real zero), while NaN, Infinity
+ * and prose are not balances at all.
+ *
+ * An account reporting no wallet is not an account with nothing in it, so this
+ * returns undefined rather than a zero — the same line this module walks
+ * everywhere between "nothing left" and "nothing known".
+ */
+export function mapDeepSeekAccountWallets(result) {
+	if (result?.status !== "ready") return undefined;
+	const recharge = Array.isArray(result.value) ? result.value : [];
+	const bonus = Array.isArray(result.bonusWallets) ? result.bonusWallets : [];
+	const wallets = [...recharge, ...bonus];
+	// The account's own denomination wins, and CNY is preferred because that is
+	// what DeepSeek bills it in: a figure under the wrong symbol is worse than
+	// a figure under none, so currencies are never added across.
+	const currency = wallets.find((wallet) => wallet?.currency === "CNY")?.currency ?? wallets[0]?.currency;
+	if (typeof currency !== "string" || currency === "") return undefined;
+	const sum = (list) => {
+		const amounts = list
+			.filter((wallet) => wallet?.currency === currency)
+			.map((wallet) => toNumber(wallet?.balance))
+			.filter((amount) => amount !== undefined);
+		return amounts.length === 0 ? undefined : money(amounts.reduce((total, amount) => total + amount, 0));
+	};
+	const toppedUp = sum(recharge);
+	const granted = sum(bonus);
+	if (toppedUp === undefined && granted === undefined) return undefined;
+	const total = money((toppedUp ?? 0) + (granted ?? 0));
+	return {
+		isAvailable: total > 0,
+		currency,
+		total,
+		...(granted === undefined ? {} : { granted }),
+		...(toppedUp === undefined ? {} : { toppedUp })
+	};
+}
+
+/** A promise with a ceiling: a read must not outlive the card that asked. */
+function withDeadline(promise, ms) {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => reject(Object.assign(new Error("timeout"), { kind: "timeout" })), ms);
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			}
+		);
+	});
+}
+
+/**
+ * Read the signed-in wallet through the Host's account service.
+ *
+ * @param ctx - the Cordis context; the service is looked up per call, because
+ *   signing in and out happens while the plugin is running.
+ * @param options - `{ signal?, timeoutMs?, client? }`.
+ * @returns `{ ok: true, ...money }` when this source can answer, otherwise
+ *   `{ ok: false, reason }` naming why: `no-account-service`, `signed-out`,
+ *   `failed`, `no-wallets`, `timeout`, `aborted`.
+ */
+export async function readDeepSeekAccountBalance(ctx, options = {}) {
+	const service = typeof ctx?.get === "function" ? ctx.get(DEEPSEEK_ACCOUNT_SERVICE) : undefined;
+	if (typeof service?.getBalance !== "function") return { ok: false, reason: "no-account-service" };
+	let result;
+	try {
+		// A timed-out call is left to settle under the Host's own ceiling;
+		// there is no way to cancel it from out here, and waiting for it is
+		// exactly what the deadline exists to stop.
+		result = await withDeadline(
+			Promise.resolve().then(() => service.getBalance(options.client ?? deepSeekAccountClient())),
+			options.timeoutMs ?? ACCOUNT_TIMEOUT_MS
+		);
+	} catch (error) {
+		return { ok: false, reason: error?.kind === "timeout" ? "timeout" : "failed" };
+	}
+	if (options.signal?.aborted === true) return { ok: false, reason: "aborted" };
+	// `null` is the Host saying there is no grant — signed out, or a rejected
+	// one was cleared. That is a fact about the account, not a failed read.
+	if (result === null || result === undefined) return { ok: false, reason: "signed-out" };
+	if (result.status !== "ready") return { ok: false, reason: "failed" };
+	const wallet = mapDeepSeekAccountWallets(result);
+	return wallet === undefined ? { ok: false, reason: "no-wallets" } : { ok: true, ...wallet };
+}
+
 /** Walk a settings path; shared shape with `discovery.readAtPath`. */
 function readAt(section, path) {
 	let cursor = section;
@@ -970,6 +1112,34 @@ export function createBalanceReader(ctx, options = {}) {
 		const account = id === undefined ? accounts[0] : accounts.find((a) => a.id === id);
 		if (account === undefined) return { ok: true, supported: false, reason: "unknown-account" };
 
+		// The signed-in wallet first, and only for DeepSeek itself. It is the
+		// wallet the sign-in route spends, it survives an API key being deleted
+		// or revoked, and the Host is the only party that can read it — so when
+		// it answers, no request and no key lookup happens at all.
+		let accountRead;
+		if (account.origin === DEEPSEEK_ORIGIN) {
+			accountRead = await readDeepSeekAccountBalance(ctx, {
+				signal,
+				timeoutMs: options.accountTimeoutMs,
+				client: options.accountClient
+			});
+			if (signal?.aborted === true) return { ok: true, account: account.id, supported: true, fetched: false, reason: "aborted" };
+			if (accountRead.ok === true) {
+				// Named for the source that answered: an API key's wallet and
+				// the signed-in account's are not necessarily one account, and
+				// a card called "DeepSeek" is all the difference the user sees.
+				return {
+					...accountRead,
+					ok: true,
+					supported: true,
+					fetched: true,
+					account: account.id,
+					displayName: account.displayName,
+					scheme: "deepseek-account"
+				};
+			}
+		}
+
 		// Fingerprint on demand. Probing every relay at startup was six
 		// unauthenticated requests for a column nothing read; probing the one a
 		// user just asked about is the same work with a reason behind it.
@@ -1021,11 +1191,17 @@ export function createBalanceReader(ctx, options = {}) {
 		}
 		if (signal?.aborted === true) return { ok: true, account: account.id, supported: true, fetched: false, reason: "aborted" };
 
+		const read = await readBalance({ scheme, spec: declared, origin: account.origin, apiKey, fetch: options.fetch, signal });
+		// A refused key and a signed-out Host are one problem with one fix, and
+		// a bare `http-401` names only the first. When the sign-in source above
+		// said there is no grant, say so beside the key's own verdict — the
+		// card is where someone looks when the balance stops showing up.
+		if (read.fetched !== true && read.hint === undefined && accountRead?.reason === "signed-out") read.hint = "deepseek-signin";
 		return {
 			ok: true,
 			account: account.id,
 			displayName: account.displayName,
-			...(await readBalance({ scheme, spec: declared, origin: account.origin, apiKey, fetch: options.fetch, signal })),
+			...read,
 			// So the card can say the numbers came out of paths the user wrote.
 			// A wrong path is a configuration mistake, and that has to be
 			// distinguishable from the plugin getting a known vendor wrong.
