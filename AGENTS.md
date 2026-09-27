@@ -94,6 +94,31 @@ pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revi
   `test/client.test.js`「a MiMo card without a live console session…」「the panel opens the cookie dialog…」、
   `test/discovery.test.js`「a type the balance card learned by origin reaches the site row」（均变异验证）。
 
+- **DeepSeek 余额先读「登录账户」钱包，路由的 key 只是兜底**（2026-09-27，用户报「把 api 删了，
+  另一个显示不了余额了」）：DeepSeek 的钱在两个平面上 —— `/user/balance` 回答的是 **API key**
+  背后的钱包，0.1.7 免 key 的 `deepseek-account`（登录账户）永远答不了它；key 被删/被吊销时更是什么
+  都读不到（401），而登录账户自己的钱就在隔壁主机名上没人读。Platform 为登录会话在
+  `https://platform.deepseek.com/api/v0/users/get_user_summary` 提供它（`x-dsh-auth-token` 鉴权），
+  0.1.7 宿主已把它包成 `deepseekAccount` 服务（`getBalance(client)` → `{ status: "ready", value,
+  bonusWallets }`，无授权时 `null`）。
+  - `src/balance.js` `readDeepSeekAccountBalance()`：走宿主服务（**token 不出宿主**），先于 key 读；
+    key 仍是兜底（只配 key 的安装、登录失效的宿主不受影响）。15 秒封顶（`options.accountTimeoutMs`），
+    服务缺席 / 抛错 / 挂起只损失这一路，不影响 key 那一路。返回 `scheme: "deepseek-account"`，
+    卡片据此标「登录账户余额」（key 读到的仍标「API 余额」）—— 一张 DeepSeek 卡同时挂两条路由，
+    而两个钱包未必是同一个账户。钱包字符串按 Platform 自家 Web 客户端喂 big.js 的十进制文法读
+    （`0E-16` 是真 0；NaN / 散文不是钱），`value`→`toppedUp`、`bonusWallets`→`granted`、
+    `total` 为两者之和；**一个钱包都没报 ≠ 余额为 0**，返回 undefined 让调用方走兜底。
+  - 登录缺席且 key 也被拒时给 hint `deepseek-signin`（中英双语），不许只留一个裸 `http-401`。
+  - 调用自带客户端身份 `deepSeekAccountClient()`（宿主据此生成 Platform 的 `x-client-*` 头；
+    version 取本包版本），不借 UI 的身份。
+  守卫测试：`test/balance.test.js`「the sign-in wallet is the DeepSeek card's source…」
+  「a Host that is signed out still reads the route's key」「a failing account service never costs the balance…」
+  「the account wallet is a DeepSeek-only source」「a signed-out Host with a refused key says to sign in…」
+  「the account reader says why it cannot answer…」「wallet strings are read as money, not as text」
+  「the account call carries a client identity of its own」、`test/client.test.js`
+  「the sign-in wallet is labelled as the account's…」「a Host whose account is signed out is told to sign in…」
+  （均变异验证）。**合上游时这一处要保留**（上游没有登录账户这条线；上游若自己加了，取上游那份并确认守卫仍绿）。
+
 其余再出现重复实现，**取上游那份**。
 
 **架构约束的正本**是本文件末尾「附：上游 AGENTS.md 原文」那一段（renderer 无关性、
@@ -108,7 +133,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 543/543（2026-09-25）
+npm test                           # 全量，当前基线 553/553（2026-09-27）
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -160,7 +185,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **543/543**（2026-09-25）。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **553/553**（2026-09-27）。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
