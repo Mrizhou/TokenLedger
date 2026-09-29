@@ -133,11 +133,23 @@ pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revi
     （Go 10 / GOAT 70 / Pro 80 / individual-pro 30 是遗留档 / Max 150 / Max 20× 300 / Team Pro 40），
     按**最长前缀**匹配；匹配不到的 planId **不出月行**（宁可少一行，不编一个分母）。
     剩余**大于**表里的池子时也不出月行 —— 那是表错了或有额外赠送，画成 0% 等于说没用过。
+  - **归因靠 `BUILTIN_PROVIDER_ORIGINS`**（2026-09-29 当天发现）：用户改用第三方 provider 插件
+    `@mars-sea/dsh-commandcode-provider@0.12.0`（行 id `llm-commandcode`、`apiKeyEnv: COMMANDCODE_API_KEY`）
+    接 Command Code，那条路由**没有存储 baseURL**（端点取插件自己的默认值）。宿主里没有这条表项时，
+    这条路由被读成「**用户声明但读不到 origin**」—— 既不敢当直连也不敢当中转，于是
+    `/tokenledger site` 报 **未知路由**、用量从所有站点行里掉出去，而余额卡又退回「无 baseURL = DeepSeek
+    默认」，把 Command Code 的卡变成 DeepSeek 自己的。补表项 `["commandcode", "https://api.commandcode.ai"]`
+    后：站点行自成 `api.commandcode.ai`，卡回到 `commandcode` scheme。**这条表 `discovery.js` 共用**，
+    所以修一处两面都对。历史不用手工重折叠 —— `refreshDirectory()` 发现 origin 集合变了就
+    `store.reset()` + 从会话日志整份重折叠（`plugin.js`，日志已删的会话仍找不回）。
+    模式与 09-23 的 xiaomi 完全同形：**provider 插件/preset 挂的路由不带 baseURL，就要进这张表**。
   - 守卫测试：`test/balance.test.js`「Command Code reads both rolling caps and the month's pool…」
     「an unknown plan id costs the month's row, never the rolling caps」「the longer plan id wins…」
     「a remainder larger than the plan's pool is not a spend of zero」「the subscription route failing
     leaves the caps standing」「a refused account API is the refusal…」「a pay-as-you-go account with
     no caps says so in words」「a Command Code route is a vendor card, not a relay to fingerprint」
+    「the route the Command Code provider plugin mounts with a default endpoint still gets its card」、
+    `test/discovery.test.js`「a provider plugin's route with a default endpoint stops being an unknown route」
     （均变异验证）。**合上游时这一处要保留**（上游没有这个 vendor）。
 
 其余再出现重复实现，**取上游那份**。
@@ -154,7 +166,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 561/561（2026-09-29）
+npm test                           # 全量，当前基线 563/563（2026-09-29）
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -206,7 +218,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **561/561**（2026-09-29）。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **563/563**（2026-09-29）。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
