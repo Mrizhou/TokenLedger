@@ -10,9 +10,14 @@
 
 DSH Desktop 的第三方 token 计量插件。**这是 fork，不是原创**：
 上游 `github.com/zh667/TokenLedger` → 我的 `github.com/Mrizhou/TokenLedger`（origin）。
-**上游其实很勤快**（2026-09-15 查证：外部 PR 常在当天合，我们的 #63 从提到合 2 小时）——
-早先「上游不活跃」的说法已推翻。留着 fork 的理由：我们有几样**不打算上游**的东西，
-而 DSH 装的就是这个 fork（见红线 1）。
+**上游的状态：收 PR 快，自己不推功能**（2026-09-15 查证：外部 PR 常在当天合，我们的 #63 从提到合 2 小时；
+2026-09-29 复核：最后 push 09-15、npm 停在 08-15 的 `0.1.0`、issue #61 靠外部 PR 才修，而作者本人在推别的仓库）——
+「上游不活跃」这句**对功能与发版成立、对 PR 不成立**，别把两者混成「弃坑」。
+留着 fork 的理由：我们有几样**不打算上游**的东西。
+🔴 **2026-09-29 起 DSH 装的不再是本 fork**（换成 `dsh-cost-meter`）。用户给的理由是**省 token**：
+原话「之前的那个人家都不维护了，要我自己更新 很麻烦」—— 停更插件的维护活落到 AI 会话上。
+本仓库因此转为**备用 / 回退**：红线 1 的重装流程保留，回退时照它做；
+**装机事实以知识库 `40-领域/技术/DSH配置与排障.md` 的插件表为准**，别拿本文件推断「现在装的是谁」。
 **2026-09-23 用户定：本插件改为「自用专用」**（原话「以后这个插件我自己专用」）——同步纪律降级为「上游有修复就择优合并」，不为通用性克制功能；文档以本机实际为准。同日对三路对抗审计的全部发现（4 Critical、8 必修、5 次级）做了整体加固：CSRF 写闸、传输围栏与响应体上限、fold 类型混淆/\0/去重键、schema 降级拒毁、CSV 公式闸、成本只计官方路由、`dayOffsetMinutes` 切日、空串/垃圾 baseURL 族。
 
 **同步纪律：尽量跟随上游。** 我们只在上游没有的地方保留：本文件的中文规则部分（2026-09-22 起 `AGENTS.md` 合并了原 `CLAUDE.md` 全文，
@@ -174,7 +179,8 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 ## 红线
 
 1. **🔴 改这个仓库不会修好运行中的 DSH —— 要 push 之后按新 SHA 重装。**
-   2026-09-24 起宿主是**桌面版 0.1.7-rc.2**，装机版**直接从本 fork 装**进 `~/.dsh/profiles/desktop`：
+   ⚠️ **本插件自 2026-09-29 起未装机**（已换成 `dsh-cost-meter`，见开头那段）。本节保留为**回退 / 重装**流程。
+   ~~2026-09-24 起宿主是**桌面版 0.1.7-rc.2**，装机版**直接从本 fork 装**进 `~/.dsh/profiles/desktop`：~~
    用桌面版自带的 node + pnpm 执行 `add "github:Mrizhou/TokenLedger#<40 位完整 SHA>"`
    （短 SHA 解析不了；完整命令与 `DSH_DESKTOP_NODE_EXECUTABLE` 的坑见知识库「DSH配置与排障」），
    装完**完全退出桌面版（含托盘）再开** —— 服务端代码不热加载。**不再手工打补丁。**
@@ -237,10 +243,12 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 
 ## 已知的坑
 
-- 装机版是 fork 的**某个 SHA**，不一定是仓库 HEAD。排障时先看 `~/.dsh/profiles/desktop/package.json`
-  里 `dsh-tokenledger` 钉的是哪个 SHA，再对仓库。
-- `~/.dsh/tokenledger.sqlite` 是唯一的历史来源，**换插件会丢历史**
-  （知识库决策记录 2026-08-31 已为此否掉过换 `dsh-usage-stats`）。
+- ~~装机版是 fork 的**某个 SHA**，不一定是仓库 HEAD。~~ **2026-09-29 起本插件未装机**。
+  真要**回退重装**：钉哪个 SHA 看 `~/.dsh/profiles/desktop/package.json` 的 `dsh-tokenledger` 行，
+  再对仓库 HEAD；注意 `pnpm add` / `remove` **都不管** `dsh.profile.bundles`，两端都要手工改（知识库「怎么装 / 换插件」）。
+- `~/.dsh/tokenledger.sqlite` 是**唯一全量、不截断**的历史 —— 现在**已停写**（插件卸了），但**别删**：
+  接替它的 `dsh-cost-meter` 账本 `~/.dsh/storages/cost-meter/ledger.json` 按 `historyDays` 截断
+  （180 天 / 每天 ≤200 会话）。查 09-29 之前的完整历史只能靠它。
 - git 作者身份：全局配置是 gitee 的 `zhou-synn`，**本仓库用 local override 换成 GitHub noreply**
   （`57312813+Mrizhou@users.noreply.github.com`），提交才归到 `Mrizhou` 名下。这个 override 只存在
   本目录的 `.git/config` 里，**重新 clone 不会带过去**。
