@@ -119,6 +119,27 @@ pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revi
   「the sign-in wallet is labelled as the account's…」「a Host whose account is signed out is told to sign in…」
   （均变异验证）。**合上游时这一处要保留**（上游没有登录账户这条线；上游若自己加了，取上游那份并确认守卫仍绿）。
 
+- **Command Code 的 5h / 周 / 月 额度读它的账户 API**（2026-09-29，用户「我加了 command code 的 api，把使用限制抓出来」）：
+  `api.commandcode.ai` 上除了 `/provider/v1`（推理）还有一套 `/alpha/*` 账户路由，正是它家 CLI 的 `/usage`
+  浮层读的 —— `/alpha/billing/credits` 给 `credits.monthlyCredits`（月度池**剩余**）与
+  `windowLimits.fiveHour|weekly`（`{used, cap, exceeded, resetAt}` 毫秒 epoch），
+  `/alpha/billing/subscriptions` 给 `planId` 与 `currentPeriodEnd`，`/alpha/whoami`、
+  `/alpha/usage/summary` 是用户与本周期用量。**鉴权就是 Provider API 那把 key**（Bearer），不需要
+  像 MiMo 那样搞控制台 cookie。官方文档没写这套路由（`plans.md` 甚至写「plan 无法 headless 读取」），
+  所以 `src/subscriptions.js` 的 `COMMAND_CODE` 每个字段都可缺省：形状变了只丢一行，不丢整张卡。
+  - 窗口语义（官方 usage-limits 文档 + CLI 源码一致）：两个滚动窗口都从**本窗口第一次请求**起算（5h / 7d），
+    与自然日无关；只有套餐内月度积分计入，另购的 pay-as-you-go 不计也不被拦。
+  - 月度池的**分母**接口不给，只有剩余。`COMMAND_CODE_PLANS` 照抄 CLI 1.68.0 的表
+    （Go 10 / GOAT 70 / Pro 80 / individual-pro 30 是遗留档 / Max 150 / Max 20× 300 / Team Pro 40），
+    按**最长前缀**匹配；匹配不到的 planId **不出月行**（宁可少一行，不编一个分母）。
+    剩余**大于**表里的池子时也不出月行 —— 那是表错了或有额外赠送，画成 0% 等于说没用过。
+  - 守卫测试：`test/balance.test.js`「Command Code reads both rolling caps and the month's pool…」
+    「an unknown plan id costs the month's row, never the rolling caps」「the longer plan id wins…」
+    「a remainder larger than the plan's pool is not a spend of zero」「the subscription route failing
+    leaves the caps standing」「a refused account API is the refusal…」「a pay-as-you-go account with
+    no caps says so in words」「a Command Code route is a vendor card, not a relay to fingerprint」
+    （均变异验证）。**合上游时这一处要保留**（上游没有这个 vendor）。
+
 其余再出现重复实现，**取上游那份**。
 
 **架构约束的正本**是本文件末尾「附：上游 AGENTS.md 原文」那一段（renderer 无关性、
@@ -133,7 +154,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 553/553（2026-09-27）
+npm test                           # 全量，当前基线 561/561（2026-09-29）
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -185,7 +206,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **553/553**（2026-09-27）。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **561/561**（2026-09-29）。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
