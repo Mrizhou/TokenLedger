@@ -159,6 +159,32 @@ test("a catalog route nobody configured still attributes to its own endpoint", (
 	assert.deepEqual(directProviders, [], "its endpoint is known, so it is not undifferentiated direct traffic");
 });
 
+test("a provider plugin's route with a default endpoint stops being an unknown route", () => {
+	// `@mars-sea/dsh-commandcode-provider` mounts `commandcode` from its own
+	// patch layer with an `apiKeyEnv` and no baseURL: the endpoint is the
+	// plugin's default, so nothing stored on the route says where a call went.
+	// Without the table entry this was a DECLARED route with no readable origin
+	// — neither direct nor relay — so attribution left it unresolved: the route
+	// report named it 未知路由 and its traffic fell out of every site row.
+	const route = {
+		provider: "commandcode",
+		displayName: "Command Code",
+		settingsNs: "llm-commandcode",
+		settingsPath: [],
+		declared: true
+	};
+	const { sites, providerBaseUrls, directProviders, skipped } = discoverSites({
+		providers: [route],
+		readSection: (ns) => (ns === "llm-commandcode" ? { apiKeyEnv: "COMMANDCODE_API_KEY" } : {})
+	});
+	assert.deepEqual(providerBaseUrls, { commandcode: "https://api.commandcode.ai" });
+	assert.equal(sites.length, 1);
+	assert.equal(sites[0].id, "api.commandcode.ai");
+	assert.deepEqual(sites[0].routes, ["commandcode"]);
+	assert.deepEqual(directProviders, [], "its endpoint is known, so it is not undifferentiated direct traffic");
+	assert.equal(skipped, 0, "a known endpoint is not an omission to report");
+});
+
 test("an unparseable base URL is skipped, not turned into a site named after garbage", () => {
 	const { sites, skipped } = discoverSites({
 		providers: [piAi("a", true), piAi("b", true)],

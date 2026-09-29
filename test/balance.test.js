@@ -910,6 +910,22 @@ test("a Command Code route is a vendor card, not a relay to fingerprint", () => 
 	assert.equal(accounts[0].hasCredential, true);
 });
 
+test("the route the Command Code provider plugin mounts with a default endpoint still gets its card", () => {
+	// The live shape after 2026-09-29: the provider plugin's patch layer declares
+	// the route with an `apiKeyEnv` and no baseURL, so the vendor endpoint is a
+	// default of the plugin's. Read as "no baseURL", the route fell back to the
+	// shipped DeepSeek origin and its card became DeepSeek's own.
+	const accounts = listAccounts(
+		ctxWith([{ provider: "commandcode", settingsNs: "llm-commandcode", settingsPath: [] }], { apiKeyEnv: "COMMANDCODE_API_KEY" }),
+		{ softwareOf: new Map() }
+	);
+	assert.equal(accounts.length, 1);
+	assert.equal(accounts[0].origin, "https://api.commandcode.ai");
+	assert.equal(accounts[0].scheme, "commandcode");
+	assert.equal(accounts[0].displayName, "Command Code");
+	assert.equal(accounts[0].hasCredential, true);
+});
+
 test("openrouter reports remaining credit, not the top-up total", async () => {
 	const result = await readBalance({
 		scheme: "openrouter",

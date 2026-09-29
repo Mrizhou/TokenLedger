@@ -195,7 +195,18 @@ export function vendorOf(baseUrl) {
 export const BUILTIN_PROVIDER_ORIGINS = new Map([
 	["zai", "https://api.z.ai"],
 	["zai-coding-cn", "https://open.bigmodel.cn"],
-	["xiaomi", "https://api.xiaomimimo.com"]
+	["xiaomi", "https://api.xiaomimimo.com"],
+	// Command Code, whose route is mounted by the third-party provider plugin
+	// `@mars-sea/dsh-commandcode-provider` (installed 2026-09-29) rather than by
+	// pi-ai. The plugin's patch layer declares the route with an `apiKeyEnv` and
+	// no baseURL — the vendor's endpoint is the plugin's own default — so the
+	// stored profile proves nothing about where a call went. Without this entry
+	// the route read as a DECLARED route with no readable origin: neither direct
+	// nor relay, so `/tokenledger site` called it 未知路由 and its traffic fell
+	// out of every site row, while the balance card fell back to the shipped
+	// DeepSeek default and became DeepSeek's. Its account API shares the host
+	// with its inference API, so one entry serves the site row and the plan card.
+	["commandcode", "https://api.commandcode.ai"]
 ]);
 
 /** A trimmed non-empty string, or undefined. */
