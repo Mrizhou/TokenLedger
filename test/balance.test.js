@@ -39,6 +39,7 @@ test("official is decided by origin, not by what the route is called", () => {
 
 test("every scheme answers the same shape, so one card renders all of them", () => {
 	assert.deepEqual(Object.keys(SCHEMES).sort(), [
+		"commandcode",
 		"deepseek",
 		"kimi",
 		"mimo",
@@ -890,6 +891,25 @@ test("two routes at one vendor collapse, because they draw on one wallet", () =>
 	assert.equal(accounts[0].displayName, "Moonshot");
 });
 
+test("a Command Code route is a vendor card, not a relay to fingerprint", () => {
+	// The route's own origin is where the plan numbers live, so the card needs
+	// no probe to know what it is: `individual-*` plans are read off
+	// api.commandcode.ai, the same host its Provider API answers on.
+	const accounts = listAccounts(
+		ctxWith([piAi("commandcode")], {
+			providers: {
+				commandcode: { baseURL: "https://api.commandcode.ai/provider/v1", apiKeyEnv: "COMMANDCODE_API_KEY" }
+			}
+		}),
+		{ softwareOf: new Map() }
+	);
+	assert.equal(accounts.length, 1);
+	assert.equal(accounts[0].displayName, "Command Code");
+	assert.equal(accounts[0].scheme, "commandcode");
+	assert.equal(accounts[0].origin, "https://api.commandcode.ai", "the /provider/v1 path is not part of the origin asked");
+	assert.equal(accounts[0].hasCredential, true);
+});
+
 test("openrouter reports remaining credit, not the top-up total", async () => {
 	const result = await readBalance({
 		scheme: "openrouter",
@@ -1315,6 +1335,151 @@ test("a pasted console cookie is cleaned, and anything that cannot sign in is re
 	assert.equal(normalizeConsoleCookie('api-platform_serviceToken="st"'), undefined);
 	assert.equal(normalizeConsoleCookie("tp-abcdef123456"), undefined);
 	assert.equal(normalizeConsoleCookie(undefined), undefined);
+});
+
+// --- Command Code: two rolling caps and the month's pool -----------------------
+
+/**
+ * The account API's shapes, as a live GOAT account answered them (2026-09-29).
+ *
+ * `Credits` carries both caps and what is left of the pool; the subscription
+ * route carries the plan and the period it resets in. `resetAt` is epoch
+ * MILLISECONDS, which is what the magnitude has to survive on the way to the
+ * card — a seconds reading of that number lands in 1970.
+ */
+const COMMAND_CODE_CREDITS = {
+	credits: { belowThreshold: false, creditThreshold: 0, monthlyCredits: 69.586298012, purchasedCredits: 0, freeCredits: 0 },
+	windowLimits: {
+		limited: true,
+		exceeded: null,
+		fiveHour: { used: 0.413701988, cap: 14, exceeded: false, resetAt: 1_800_000_000_000 },
+		weekly: { used: 0.413701988, cap: 35, exceeded: false, resetAt: 1_801_000_000_000 }
+	}
+};
+
+const COMMAND_CODE_SUBSCRIPTION = {
+	success: true,
+	data: {
+		status: "active",
+		planId: "individual-goat",
+		currentPeriodStart: "2026-09-29T01:02:57.000Z",
+		currentPeriodEnd: "2026-10-29T01:02:57.000Z"
+	}
+};
+
+/** The account API's own paths, as a stub keyed by path (a number is a status). */
+function commandCodeApi(bodies) {
+	const seen = [];
+	return {
+		seen,
+		fetch: async (url, init) => {
+			seen.push({ url, headers: init.headers });
+			const body = bodies[new URL(url).pathname];
+			if (body === undefined) return { ok: false, status: 404, json: async () => ({}) };
+			if (typeof body === "number") return { ok: false, status: body, json: async () => ({}) };
+			return { ok: true, status: 200, json: async () => body };
+		}
+	};
+}
+
+const commandCode = (bodies, extra = {}) =>
+	readBalance({
+		scheme: "commandcode",
+		origin: "https://api.commandcode.ai",
+		apiKey: "ck-live",
+		fetch: commandCodeApi(bodies).fetch,
+		...extra
+	});
+
+test("Command Code reads both rolling caps and the month's pool off its own account API", async () => {
+	const stub = commandCodeApi({ "/alpha/billing/credits": COMMAND_CODE_CREDITS, "/alpha/billing/subscriptions": COMMAND_CODE_SUBSCRIPTION });
+	const result = await readBalance({
+		scheme: "commandcode",
+		origin: "https://api.commandcode.ai",
+		apiKey: "ck-live",
+		fetch: stub.fetch
+	});
+
+	assert.equal(result.fetched, true);
+	assert.equal(result.plan, "GOAT");
+	assert.deepEqual(result.windows, [
+		{ kind: "session", minutes: 300, resetsAt: "2027-01-15T08:00:00.000Z", usedPercent: 3 },
+		{ kind: "weekly", resetsAt: "2027-01-26T21:46:40.000Z", usedPercent: 1.2 },
+		// 70 credits is what GOAT's pool is worth, which the response never says:
+		// it reports the 69.586 left, and the spend against the cap is the
+		// difference. The reset is the billing period's own end.
+		{ kind: "monthly", resetsAt: "2026-10-29T01:02:57.000Z", usedPercent: 0.6 }
+	]);
+
+	// The key the route already holds is the whole credential — no session
+	// cookie, and it never leaves the vendor's own origin.
+	for (const { url, headers } of stub.seen) {
+		assert.equal(new URL(url).origin, "https://api.commandcode.ai");
+		assert.equal(headers.authorization, "Bearer ck-live");
+	}
+	assert.equal(stub.seen[0].headers.cookie, undefined, "a bearer key, not a console session");
+});
+
+test("an unknown plan id costs the month's row, never the rolling caps", async () => {
+	// The pool has no denominator without the table, and a denominator invented
+	// here would be a percentage about a plan this module has never heard of.
+	const result = await commandCode({
+		"/alpha/billing/credits": COMMAND_CODE_CREDITS,
+		"/alpha/billing/subscriptions": { success: true, data: { planId: "individual-something-new", currentPeriodEnd: "2026-10-29T01:02:57.000Z" } }
+	});
+	assert.equal(result.plan, undefined);
+	assert.deepEqual(result.windows.map((w) => w.kind), ["session", "weekly"]);
+});
+
+test("the longer plan id wins, so a legacy Pro is not read as the current one", async () => {
+	// `individual-pro` and `individual-pro-v1` are both real, both called Pro,
+	// and worth different pools. A shortest-first match would give every v1
+	// account the legacy denominator.
+	const result = await commandCode({
+		"/alpha/billing/credits": { ...COMMAND_CODE_CREDITS, credits: { monthlyCredits: 79.5 } },
+		"/alpha/billing/subscriptions": { success: true, data: { planId: "individual-pro-v1" } }
+	});
+	assert.equal(result.plan, "Pro");
+	// 0.5 of 80, not 0.5 of 30 and not "unknown".
+	assert.deepEqual(result.windows.filter((w) => w.kind === "monthly"), [{ kind: "monthly", usedPercent: 0.6 }]);
+});
+
+test("a remainder larger than the plan's pool is not a spend of zero", async () => {	// Credits granted on top of the pool, or a table that has fallen behind a
+	// new plan: either way the subtraction is meaningless, and a bar at 0% would
+	// claim nothing had been used.
+	const result = await commandCode({
+		"/alpha/billing/credits": { ...COMMAND_CODE_CREDITS, credits: { monthlyCredits: 99 } },
+		"/alpha/billing/subscriptions": COMMAND_CODE_SUBSCRIPTION
+	});
+	assert.deepEqual(result.windows.map((w) => w.kind), ["session", "weekly"]);
+});
+
+test("the subscription route failing leaves the caps standing", async () => {
+	// The plan's name and the period end are labels; the caps are the reading.
+	const result = await commandCode({ "/alpha/billing/credits": COMMAND_CODE_CREDITS, "/alpha/billing/subscriptions": 500 });
+	assert.equal(result.fetched, true);
+	assert.deepEqual(result.windows.map((w) => w.kind), ["session", "weekly"]);
+});
+
+test("a refused account API is the refusal, and the caps are not reported as empty", async () => {
+	for (const status of [401, 403]) {
+		const result = await commandCode({ "/alpha/billing/credits": status, "/alpha/billing/subscriptions": status });
+		assert.equal(result.fetched, false, String(status));
+		assert.equal(result.reason, `http-${status}`);
+		assert.equal("windows" in result, false);
+	}
+});
+
+test("a pay-as-you-go account with no caps says so in words", async () => {
+	// `windowLimits.limited: false` is what the vendor answers for a plan-less
+	// account. No caps and no pool is a stated absence, not a card at zero.
+	const result = await commandCode({
+		"/alpha/billing/credits": { credits: { monthlyCredits: 0, purchasedCredits: 5 }, windowLimits: { limited: false } },
+		"/alpha/billing/subscriptions": { success: true, data: {} }
+	});
+	assert.equal(result.fetched, true);
+	assert.equal("windows" in result, false);
+	assert.equal(result.reason, "no rolling or monthly allowance in the response");
 });
 
 // --- the signed-in DeepSeek wallet -------------------------------------------

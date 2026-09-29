@@ -49,7 +49,7 @@ import { unitFromStatus } from "./newapi-user.js";
 import { normalizeWindows } from "./quota.js";
 import { firstString, normalizeOrigin } from "./relay-sites.js";
 import { DEFAULT_MAX_BYTES, fetchNoCrossOriginRedirect, readCapped } from "./transport.js";
-import { KIMI, MINIMAX, OPENCODE_GO, readZaiCodingPlan } from "./subscriptions.js";
+import { COMMAND_CODE, KIMI, MINIMAX, OPENCODE_GO, readZaiCodingPlan } from "./subscriptions.js";
 
 /** The vendor's own endpoint, and the only origin the `deepseek` scheme calls. */
 export const DEEPSEEK_ORIGIN = "https://api.deepseek.com";
@@ -90,7 +90,10 @@ const VENDORS = new Map([
 	["api.moonshot.ai", { scheme: "moonshot", displayName: "Moonshot" }],
 	["api.z.ai", { scheme: "zai", displayName: "Z.ai" }],
 	["open.bigmodel.cn", { scheme: "zai", displayName: "智谱 GLM", currency: "CNY" }],
-	// Plan vendors. No wallet to read — see `subscriptions.js`.
+	// Plan vendors. No wallet to read — see `subscriptions.js`. Command Code
+	// keeps its plan numbers on the same host as its Provider API, so the
+	// route's own origin already names where to ask.
+	["api.commandcode.ai", { scheme: "commandcode", displayName: "Command Code" }],
 	["opencode.ai", { scheme: "opencode-go", displayName: "OpenCode Go" }],
 	["api.kimi.com", { scheme: "kimi", displayName: "Kimi For Coding" }],
 	["api.minimax.io", { scheme: "minimax", displayName: "MiniMax" }],
@@ -457,6 +460,7 @@ export const SCHEMES = {
 	},
 
 	"opencode-go": OPENCODE_GO,
+	commandcode: COMMAND_CODE,
 	kimi: KIMI,
 	minimax: MINIMAX,
 

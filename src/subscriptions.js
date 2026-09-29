@@ -382,3 +382,129 @@ export async function readZaiCodingPlan({ origin, get }) {
 
 	return { windows, plan };
 }
+
+// --- Command Code --------------------------------------------------------------
+
+/**
+ * What each plan's monthly credits are worth, and what to call it.
+ *
+ * The account API reports how many credits are LEFT, never how big the pool is,
+ * so the month's row has no denominator without this table. Taken from the
+ * vendor's own CLI (`command-code@1.68.0`, `dist/cli.mjs`, read 2026-09-29) and
+ * cross-checked against the published limits table
+ * (https://commandcode.ai/docs/resources/usage-limits): Go 10, GOAT 70, Pro 80,
+ * Max 10x 150, Max 20x 300, Team Pro 40 — with `individual-pro` at 30 being the
+ * legacy Pro the CLI still carries beside `individual-pro-v1`.
+ *
+ * Ids are matched by PREFIX, longest first, because the API spells them
+ * `individual-goat` and may suffix them. An id matching nothing yields no
+ * monthly row rather than a denominator invented here; the two rolling caps
+ * come from the response itself and need no table.
+ */
+const COMMAND_CODE_PLANS = new Map([
+	["individual-provider", { name: "Provider", monthlyCredits: 15 }],
+	["individual-pro-v1", { name: "Pro", monthlyCredits: 80 }],
+	["individual-goat", { name: "GOAT", monthlyCredits: 70 }],
+	["individual-ultra", { name: "Ultra", monthlyCredits: 300 }],
+	["individual-max", { name: "Max", monthlyCredits: 150 }],
+	["individual-pro", { name: "Pro", monthlyCredits: 30 }],
+	["individual-go", { name: "Go", monthlyCredits: 10 }],
+	["teams-pro", { name: "Teams Pro", monthlyCredits: 40 }]
+]);
+
+/** The table's prefixes, longest first, so `pro-v1` is not read as `pro`. */
+const COMMAND_CODE_PLAN_IDS = [...COMMAND_CODE_PLANS.keys()].sort((a, b) => b.length - a.length);
+
+/** The plan a `planId` names, or undefined when no known prefix fits it. */
+function commandCodePlan(planId) {
+	const id = typeof planId === "string" ? planId.trim().toLowerCase() : "";
+	if (id === "") return undefined;
+	const prefix = COMMAND_CODE_PLAN_IDS.find((candidate) => id.startsWith(candidate));
+	return prefix === undefined ? undefined : { planId: id, ...COMMAND_CODE_PLANS.get(prefix) };
+}
+
+/**
+ * One of the two rolling caps, off `windowLimits`.
+ *
+ * The vendor sends `{ used, cap, exceeded, resetAt }`, with `resetAt` as epoch
+ * milliseconds. `used` is in credits rather than dollars — on GOAT and Pro a
+ * lower-allowance model draws more credits than the dollars it costs — and the
+ * cap is measured in that same credit unit, so both numbers are taken as sent.
+ *
+ * `minutes: 300` is the documented 5-hour cap, not an inference: the CLI's own
+ * overlay names it "5-hour", and a `session` row that cannot say how long it is
+ * would read as the panel guessing.
+ */
+function commandCodeWindow(source, kind, extra = {}) {
+	if (source === null || typeof source !== "object") return undefined;
+	const used = toNumber(source.used);
+	const limit = toNumber(source.cap);
+	if (used === undefined || limit === undefined || limit <= 0) return undefined;
+	return { kind, used, limit, ...whenOf(source), ...extra };
+}
+
+/**
+ * The month's row: the plan's own pool, spent against its size.
+ *
+ * The response reports what is LEFT of the pool, so the spend is the table's
+ * total minus that. `currentPeriodEnd` is the reset the vendor's own billing
+ * page shows, and it arrives on the subscription route.
+ *
+ * A remainder ABOVE the table's total is not a spend of zero — it is this table
+ * being wrong about the plan, or credits granted on top of it — so no row is
+ * emitted. A bar pinned at 0% would say nothing had been used, which is the
+ * opposite of what an oversized remainder implies.
+ */
+function commandCodeMonthly(credits, plan, subscription) {
+	const remaining = toNumber(credits?.monthlyCredits);
+	if (plan === undefined || remaining === undefined || remaining > plan.monthlyCredits) return undefined;
+	const at = subscription?.currentPeriodEnd;
+	return {
+		kind: "monthly",
+		used: plan.monthlyCredits - remaining,
+		limit: plan.monthlyCredits,
+		...(typeof at === "string" && at !== "" ? { resetsAt: at } : {})
+	};
+}
+
+export const COMMAND_CODE = {
+	label: "Command Code",
+	/**
+	 * Command Code's plan numbers live on its own account API under `/alpha/*` —
+	 * the routes its CLI's `/usage` overlay reads. That API takes the same key
+	 * the Provider API takes, so unlike 小米 MiMo nothing else is needed to sign
+	 * in. The routes are undocumented and unversioned (the vendor's own docs say
+	 * the plan "is not readable headlessly"), which is why every field is
+	 * optional here and a shape that moved costs the card a row rather than the
+	 * whole reading.
+	 */
+	async read({ origin, get }) {
+		// Two routes, and either can fail alone: the caps and the pool are on
+		// the credits route, the plan's name and the period end on the other.
+		const [report, subscription] = await Promise.allSettled([
+			get(new URL("/alpha/billing/credits", origin).href),
+			get(new URL("/alpha/billing/subscriptions", origin).href)
+		]);
+		// The credits route carries both rolling caps and the pool. Without it
+		// there is no second source for any of them: this is the refusal.
+		if (report.status === "rejected") throw report.reason;
+
+		const credits = report.value?.credits ?? {};
+		const limits = report.value?.windowLimits ?? {};
+		const data = subscription.status === "fulfilled" ? subscription.value?.data : undefined;
+		const plan = commandCodePlan(data?.planId);
+
+		const windows = [
+			commandCodeWindow(limits.fiveHour, "session", { minutes: 300 }),
+			commandCodeWindow(limits.weekly, "weekly"),
+			commandCodeMonthly(credits, plan, data)
+		].filter(Boolean);
+
+		return {
+			...(plan === undefined ? {} : { plan: plan.name }),
+			isAvailable: windows.length === 0 ? undefined : windows.some((window) => window.used < window.limit),
+			windows,
+			...(windows.length === 0 ? { reason: "no rolling or monthly allowance in the response" } : {})
+		};
+	}
+};
