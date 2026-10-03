@@ -1,4 +1,4 @@
-> **开工前先读知识库** `D:\Workspace\KnowledgeBase\`：
+> **开工前先读知识库** `D:\Workspace\KnowledgeBase\` —— 在**本项目里改代码 / 写文档**时读；一句话问答、闲聊、纯跑命令不必读：
 > - `AGENTS.md` §0 路由表 —— 什么话题读哪个文件
 > - `40-领域/技术/工作习惯.md` —— 怎么跟我配合
 > - `40-领域/技术/决策记录.md` —— **提方案前必查**，别重复提已否掉的
@@ -14,10 +14,9 @@ DSH Desktop 的第三方 token 计量插件。**这是 fork，不是原创**：
 2026-09-29 复核：最后 push 09-15、npm 停在 08-15 的 `0.1.0`、issue #61 靠外部 PR 才修，而作者本人在推别的仓库）——
 「上游不活跃」这句**对功能与发版成立、对 PR 不成立**，别把两者混成「弃坑」。
 留着 fork 的理由：我们有几样**不打算上游**的东西。
-🔴 **2026-09-29 起 DSH 装的不再是本 fork**（换成 `dsh-cost-meter`）。用户给的理由是**省 token**：
-原话「之前的那个人家都不维护了，要我自己更新 很麻烦」—— 停更插件的维护活落到 AI 会话上。
-本仓库因此转为**备用 / 回退**：红线 1 的重装流程保留，回退时照它做；
-**装机事实以知识库 `40-领域/技术/DSH配置与排障.md` 的插件表为准**，别拿本文件推断「现在装的是谁」。
+🔴 **2026-10-03 起 DSH 装的就是本 fork**（钉 `b1cc089`）。09-29 ~ 10-03 一度改用 `dsh-cost-meter`（当时的理由是省 token：
+「之前的那个人家都不维护了，要我自己更新 很麻烦」），10-03 用户定「把现在的换成之前那个」换回（嫌 cost-meter 显示花哨）。
+**两条都是用户定的，别拿其中一条去否定另一条**；装机事实以知识库 `40-领域/技术/DSH配置与排障.md` 的插件表为准，别拿本文件推断「现在装的是谁」。
 **2026-09-23 用户定：本插件改为「自用专用」**（原话「以后这个插件我自己专用」）——同步纪律降级为「上游有修复就择优合并」，不为通用性克制功能；文档以本机实际为准。同日对三路对抗审计的全部发现（4 Critical、8 必修、5 次级）做了整体加固：CSRF 写闸、传输围栏与响应体上限、fold 类型混淆/\0/去重键、schema 降级拒毁、CSV 公式闸、成本只计官方路由、`dayOffsetMinutes` 切日、空串/垃圾 baseURL 族。
 
 **同步纪律：尽量跟随上游。** 我们只在上游没有的地方保留：本文件的中文规则部分（2026-09-22 起 `AGENTS.md` 合并了原 `CLAUDE.md` 全文，
@@ -27,135 +26,15 @@ DSH Desktop 的第三方 token 计量插件。**这是 fork，不是原创**：
 以及 **`src/` 里与上游不同的四处**（前两处同一族问题：宿主目录里「内置 provider 路由」的 origin 存在
 pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revision 语义适配；第四处是 0.1.7 的席位语义适配）：
 
-- `src/balance.js` `listAccounts()` 跳过「`declared: false` 且无存储配置」的目录项
-  （2026-09-17，**用户明确不提 PR**）。宿主目录列出 pi-ai 全部内置 provider，
-  不跳过的话 Z.ai / 智谱 GLM 会出现在没配过它们的账户列表里，
-  排在前面的空路由还会顶掉 `deepseek-official` 占走 DeepSeek 那一项。
-  守卫测试：`test/balance.test.js`「a shipped catalog route nobody configured is not an account」。
-  **合上游时这一处要保留**；上游若自己修了，取上游那份并确认守卫测试仍绿。
-- `src/balance.js` 的 `BUILTIN_PROVIDER_ORIGINS`（上游 PR #55 建的表）加 `xiaomi` 一项并 `export`，
-  `src/discovery.js` 共用它：路由的 profile 没写 `baseURL` 就按表里的 catalog origin 归因、
-  自成站点行（2026-09-23）。不做这件事的话，加了 MiMo 那天面板上什么都没有：无 `baseURL` 一律
-  按「DeepSeek 默认」合并 —— 账户卡被 vendor 压缩吞进 DeepSeek，用量整包落进「直连/官方」。
-  归因是**两面各有各的线**（同日用户定「是哪个就进哪个」后改）：用量归因看**去向**，表对所有路由
-  生效 —— 没配过的 `zai` 也按 api.z.ai 归行，glm 的量不许混进 DeepSeek 的桶；账户列表（余额卡）
-  仍按 09-17 只列**配过的**，没配过的没有余额可读、不冒卡。
-  守卫测试：`test/balance.test.js`「a catalog route the harness resolves by itself still gets its own card」
-  与「a shipped catalog route nobody configured is not an account」、
-  `test/discovery.test.js`「a catalog route's own endpoint is its origin…」
-  与「…nobody configured still attributes to its own endpoint」。
-  **合上游时这一处要保留**（可上游的形态：表项按需补 + discovery 共用表；上游若合了就取上游那份）。
-- `src/plugin.js` 的 `revisionUnchanged()`（2026-09-24，**0.1.7 revision 语义适配**）：0.1.7 起 JSONL 后端对
-   「从旧会话格式迁移的」日志把 revision 报成 `fileRevision`（`dev:ino:size:mtimeNs:ctimeNs`）**再拼一段**
-   `historicalCorpusRevision()`，而这段语料哈希**每次观测都会变**（0.1.7-rc.2 实测：相邻两个 sweep 波次给出
-   `4ed11c4f…` / `e9b84ccd…`）。于是「日志没变」的严格相等判据永不成立 → 每 60 秒把全部会话 `read(0)` 全量
-   重折叠（Windows + SQLite 实测：118 个会话每分钟整表重写、WAL 不停涨，且因红线 5 全程静音）。修复：revision
-   形如「5 段 stat 身份 + 至多 1 段语料哈希」时只比 stat 五元组；**任何不认识的形态退回严格相等**（宁可多读、
-   不可少算）。语料目录升级改变老日志折叠结果时用 `/tokenledger reindex` 重建。守卫测试：「a moving corpus
-   suffix on an unchanged log is skipped without reading it」「a changed file identity under a corpus suffix
-   still refolds the tail」「an unknown revision shape falls back to exact comparison」（钉死「不认识就退回」）。
-   **合上游时这一处要保留**（上游在 0.1.7 线同样会撞上；上游若修了取上游那份，确认三个守卫测试仍绿）。
-- `src/client.js` 的**侧边栏席位适配**（2026-09-25，**0.1.7 席位语义**）：0.1.7 把 `sidebar.footer.action` 的锚点
-   渲染成 `display:contents`、放进**高度受限的 nowrap 行** —— launcher 不再是盒子，占整行的 launcher 会被排到
-   席位之外（**渲染了、`opacity:1`、看不见**，与旧版那个 `:has()` 换行坑同形，同样静音）。实测定位链：宿主半边
-   运行中 → 插件列表无同步失败 → console 五段面包屑全走到「`sidebar.footer.action is available; registering`」
-   → `document.querySelectorAll` 命中槽 div，但界面上仍然没有。修复：给自己的样式表补
-   `body [data-slot='sidebar.footer.action']` 三条规则（**恢复盒子** + **纵向堆叠** + 席位保持高度受限可滚动），
-   做法对齐社区桌面插件 `anywhere-labs/dsh-desktop` 的
-   `dsh-plugin-desktop/src/client/sidebar-footer-styles.ts`（它开篇就写明上游是 `display: contents` 锚点）。
-   守卫测试：`test/client.test.js`「the 0.1.7 seat is given a box back, or the badge is laid out of it」
-   （变异验证：换成 `display:contents` 即 `not ok`）。
-   **合上游时这一处要保留**（上游若改回盒子或提供席位容器 API，取上游那份并确认守卫仍绿）。
-- **0.1.7 首开慢 / 宿主周期性卡顿的一组修复**（2026-09-25）：
-  - `src/balance.js` `sectionReader()`：0.1.7 的 `settings.describe()` 会**同步**重校验、重序列化 profile 里
-    **全部**插件条目，旧写法每个路由调一次 → 一次账户列举在宿主主线程上卡 ~4.5 s；60 秒定时 sweep
-    关着面板也卡，打开面板（usage + balance 各列举几次）9–18 s。改为一个 reader 只调一次、2 秒内跨 reader 共享快照。
-    实测定位法：面板请求进行中同时轮询 `/api/tokenledger/userauth`（平时 2 ms），它被整段卡住 = 同步阻塞。
-  - `createBalanceReader()`：识别不出的站点（阿里 MaaS、小米、本地反代）以前每次读余额都重探 6 个路由，
-    现在记 10 分钟，刷新按钮（`force`）可绕过。
-  - `listAccounts()`：同一厂商多条路由合并时，卡片归**有 key 的那条**（0.1.7 新增无 key 的 `deepseek-account`）；
-    厂商账户排在最前（catalog 把 xiaomi 排第一，面板默认开在读不了余额的卡上）。
-  - `src/discovery.js`：`deepseek-account`（`llm-deepseek-account` 条目、无 baseURL）归「直连/官方」，不再进 unrouted。
-  - `src/client.js`：徽章关着面板也读一次并每 5 分钟刷新（以前要点开一次才有数字）。
-  守卫测试：`test/balance.test.js`「one account listing costs one describe()…」「a describe() snapshot is shared…」
-  「an unrecognisable relay is not re-probed…」「0.1.7 live shape: the keyed DeepSeek route owns the card…」、
-  `test/discovery.test.js`「0.1.7's sign-in route to DeepSeek is direct traffic too…」、
-  `test/client.test.js`「the badge reads today's figure with the panel shut…」（每条都做过变异验证）。
-
-- **小米 MiMo 余额走控制台 cookie + 凭据本地文件**（2026-09-25，**推翻 09-23「cookie 方案不做」**，用户原话「mimo 推翻，改成读cookie」）：
-  - MiMo 的 API key（按量 key 与 Token Plan `tp-*` key）**没有任何余额接口**；只有控制台
-    `https://platform.xiaomimimo.com/api/v1/{balance,tokenPlan/usage,tokenPlan/detail}` 能读，鉴权是登录 cookie
-    （需含 `serviceToken` 与 `userId`，约 24 小时过期）。接口形状参照 MIT 的 `Han-1413141/dsh-cost-meter` PR #166。
-  - `src/balance.js`：`api.xiaomimimo.com` 与三个 `token-plan-*` 主机登记为厂商 `mimo`；scheme 声明
-    `credential: { kind: "console-cookie", origin }`，`readBalance` 对它发 `Cookie` 头（不发 Authorization）且只发往该控制台 origin；
-    缺 cookie / 过期各有 hint，卡片据此给「设置 Cookie」按钮。
-  - **凭据存储**：0.1.7 的 settings 服务**没有 `register()`**，插件命名空间注册失败 → 原「设置查询API」对话框
-    **自升级起就存不进去**（接口回 500 `internal`）。新增 `src/credentials-file.js`：宿主没有可写命名空间时，
-    New API 钱包凭据与控制台 cookie 写进账本旁的 `tokenledger-credentials.json`（整份写临时文件再 rename），启动时读回。
-    `saveUserAuth` 的拒绝原因带 `kind`，`invalid-*` 回 400。
-  - 顺带：`withKnownSoftware` 也按 origin 认余额卡懒探测记下的程序类型（以前只按站点 id，站点行永远无类型），
-    站点行悬停提示显示程序类型。
-  守卫测试：`test/balance.test.js` MiMo 五条、`test/apply.test.js`「on a host with no settings namespace…」、
-  `test/client.test.js`「a MiMo card without a live console session…」「the panel opens the cookie dialog…」、
-  `test/discovery.test.js`「a type the balance card learned by origin reaches the site row」（均变异验证）。
-
-- **DeepSeek 余额先读「登录账户」钱包，路由的 key 只是兜底**（2026-09-27，用户报「把 api 删了，
-  另一个显示不了余额了」）：DeepSeek 的钱在两个平面上 —— `/user/balance` 回答的是 **API key**
-  背后的钱包，0.1.7 免 key 的 `deepseek-account`（登录账户）永远答不了它；key 被删/被吊销时更是什么
-  都读不到（401），而登录账户自己的钱就在隔壁主机名上没人读。Platform 为登录会话在
-  `https://platform.deepseek.com/api/v0/users/get_user_summary` 提供它（`x-dsh-auth-token` 鉴权），
-  0.1.7 宿主已把它包成 `deepseekAccount` 服务（`getBalance(client)` → `{ status: "ready", value,
-  bonusWallets }`，无授权时 `null`）。
-  - `src/balance.js` `readDeepSeekAccountBalance()`：走宿主服务（**token 不出宿主**），先于 key 读；
-    key 仍是兜底（只配 key 的安装、登录失效的宿主不受影响）。15 秒封顶（`options.accountTimeoutMs`），
-    服务缺席 / 抛错 / 挂起只损失这一路，不影响 key 那一路。返回 `scheme: "deepseek-account"`，
-    卡片据此标「登录账户余额」（key 读到的仍标「API 余额」）—— 一张 DeepSeek 卡同时挂两条路由，
-    而两个钱包未必是同一个账户。钱包字符串按 Platform 自家 Web 客户端喂 big.js 的十进制文法读
-    （`0E-16` 是真 0；NaN / 散文不是钱），`value`→`toppedUp`、`bonusWallets`→`granted`、
-    `total` 为两者之和；**一个钱包都没报 ≠ 余额为 0**，返回 undefined 让调用方走兜底。
-  - 登录缺席且 key 也被拒时给 hint `deepseek-signin`（中英双语），不许只留一个裸 `http-401`。
-  - 调用自带客户端身份 `deepSeekAccountClient()`（宿主据此生成 Platform 的 `x-client-*` 头；
-    version 取本包版本），不借 UI 的身份。
-  守卫测试：`test/balance.test.js`「the sign-in wallet is the DeepSeek card's source…」
-  「a Host that is signed out still reads the route's key」「a failing account service never costs the balance…」
-  「the account wallet is a DeepSeek-only source」「a signed-out Host with a refused key says to sign in…」
-  「the account reader says why it cannot answer…」「wallet strings are read as money, not as text」
-  「the account call carries a client identity of its own」、`test/client.test.js`
-  「the sign-in wallet is labelled as the account's…」「a Host whose account is signed out is told to sign in…」
-  （均变异验证）。**合上游时这一处要保留**（上游没有登录账户这条线；上游若自己加了，取上游那份并确认守卫仍绿）。
-
-- **Command Code 的 5h / 周 / 月 额度读它的账户 API**（2026-09-29，用户「我加了 command code 的 api，把使用限制抓出来」）：
-  `api.commandcode.ai` 上除了 `/provider/v1`（推理）还有一套 `/alpha/*` 账户路由，正是它家 CLI 的 `/usage`
-  浮层读的 —— `/alpha/billing/credits` 给 `credits.monthlyCredits`（月度池**剩余**）与
-  `windowLimits.fiveHour|weekly`（`{used, cap, exceeded, resetAt}` 毫秒 epoch），
-  `/alpha/billing/subscriptions` 给 `planId` 与 `currentPeriodEnd`，`/alpha/whoami`、
-  `/alpha/usage/summary` 是用户与本周期用量。**鉴权就是 Provider API 那把 key**（Bearer），不需要
-  像 MiMo 那样搞控制台 cookie。官方文档没写这套路由（`plans.md` 甚至写「plan 无法 headless 读取」），
-  所以 `src/subscriptions.js` 的 `COMMAND_CODE` 每个字段都可缺省：形状变了只丢一行，不丢整张卡。
-  - 窗口语义（官方 usage-limits 文档 + CLI 源码一致）：两个滚动窗口都从**本窗口第一次请求**起算（5h / 7d），
-    与自然日无关；只有套餐内月度积分计入，另购的 pay-as-you-go 不计也不被拦。
-  - 月度池的**分母**接口不给，只有剩余。`COMMAND_CODE_PLANS` 照抄 CLI 1.68.0 的表
-    （Go 10 / GOAT 70 / Pro 80 / individual-pro 30 是遗留档 / Max 150 / Max 20× 300 / Team Pro 40），
-    按**最长前缀**匹配；匹配不到的 planId **不出月行**（宁可少一行，不编一个分母）。
-    剩余**大于**表里的池子时也不出月行 —— 那是表错了或有额外赠送，画成 0% 等于说没用过。
-  - **归因靠 `BUILTIN_PROVIDER_ORIGINS`**（2026-09-29 当天发现）：用户改用第三方 provider 插件
-    `@mars-sea/dsh-commandcode-provider@0.12.0`（行 id `llm-commandcode`、`apiKeyEnv: COMMANDCODE_API_KEY`）
-    接 Command Code，那条路由**没有存储 baseURL**（端点取插件自己的默认值）。宿主里没有这条表项时，
-    这条路由被读成「**用户声明但读不到 origin**」—— 既不敢当直连也不敢当中转，于是
-    `/tokenledger site` 报 **未知路由**、用量从所有站点行里掉出去，而余额卡又退回「无 baseURL = DeepSeek
-    默认」，把 Command Code 的卡变成 DeepSeek 自己的。补表项 `["commandcode", "https://api.commandcode.ai"]`
-    后：站点行自成 `api.commandcode.ai`，卡回到 `commandcode` scheme。**这条表 `discovery.js` 共用**，
-    所以修一处两面都对。历史不用手工重折叠 —— `refreshDirectory()` 发现 origin 集合变了就
-    `store.reset()` + 从会话日志整份重折叠（`plugin.js`，日志已删的会话仍找不回）。
-    模式与 09-23 的 xiaomi 完全同形：**provider 插件/preset 挂的路由不带 baseURL，就要进这张表**。
-  - 守卫测试：`test/balance.test.js`「Command Code reads both rolling caps and the month's pool…」
-    「an unknown plan id costs the month's row, never the rolling caps」「the longer plan id wins…」
-    「a remainder larger than the plan's pool is not a spend of zero」「the subscription route failing
-    leaves the caps standing」「a refused account API is the refusal…」「a pay-as-you-go account with
-    no caps says so in words」「a Command Code route is a vendor card, not a relay to fingerprint」
-    「the route the Command Code provider plugin mounts with a default endpoint still gets its card」、
-    `test/discovery.test.js`「a provider plugin's route with a default endpoint stops being an unknown route」
-    （均变异验证）。**合上游时这一处要保留**（上游没有这个 vendor）。
+> 本 fork 相对上游的**逐条差异清单**（来由、实测现象、守卫测试名、逐条「合上游时是否保留」）已原样移出到
+> `docs/FORK-VS-UPSTREAM.md` —— 2026-09-30 移出（为压到 Antigravity 读规则文件的 24000 字节上限以内），内容一字未改。
+> 上面那段只是目录，逐条结论在那份文件里：① `balance.js` 跳过没配置的 catalog 路由；② `BUILTIN_PROVIDER_ORIGINS` 加 `xiaomi`；
+> ③ `plugin.js` `revisionUnchanged()` 的 0.1.7 revision 形态；④ `client.js` 的 0.1.7 侧边栏席位样式；⑤ 0.1.7 首开慢那组修复；
+> ⑥ MiMo 走控制台 cookie + `credentials-file.js`；⑦ DeepSeek 先读登录账户钱包；⑧ Command Code 的 `/alpha/*` 额度与表项。
+>
+> **什么时候必须去读它**：同步 / 合并上游之前；要动上面 ①–⑧ 涉及的 `src/` 文件之前；想删某条守卫测试之前。
+> **合上游的铁律**：标了「合上游时这一处要保留」的一律保留本 fork 写法；上游自己修了同一处就取上游那份，
+> 但必须确认对应守卫测试仍全绿。**任何一处都不许在合并里被静默丢掉。**
 
 其余再出现重复实现，**取上游那份**。
 
@@ -179,7 +58,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 ## 红线
 
 1. **🔴 改这个仓库不会修好运行中的 DSH —— 要 push 之后按新 SHA 重装。**
-   ⚠️ **本插件自 2026-09-29 起未装机**（已换成 `dsh-cost-meter`，见开头那段）。本节保留为**回退 / 重装**流程。
+   ⚠️ **本插件 2026-10-03 起已装回**（钉 `b1cc089`，装机事实以知识库插件表为准）。本节是**装机 / 重装**流程，照它做。
    ~~2026-09-24 起宿主是**桌面版 0.1.7-rc.2**，装机版**直接从本 fork 装**进 `~/.dsh/profiles/desktop`：~~
    用桌面版自带的 node + pnpm 执行 `add "github:Mrizhou/TokenLedger#<40 位完整 SHA>"`
    （短 SHA 解析不了；完整命令与 `DSH_DESKTOP_NODE_EXECUTABLE` 的坑见知识库「DSH配置与排障」），
@@ -241,14 +120,42 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `{ header, revision }` 而**不是** `{ id }`，早期替身照 bug 写，结果整类 bug 测不出来。
    加兼容分支时，新替身要做**变异验证** —— 把源码换回修复前，新测试必须失败。
 
+## 目录：什么进什么（2026-09-30 起）
+
+> 规矩正本：知识库 `40-领域/技术/项目目录规范.md`（工程版 ＋ 出处）；归位与清理用 skill `project-tidy`。
+> **四条硬规矩**：① 根上只许**四类文件**（入口 / 配置 / 发布必备 / 插件框架入口），**除这四类以外根上只许有目录，一个多余文件都不许有**；② `00-收件箱/YYYY-MM-DD/` 是**当天做的、还没想好放哪**的东西的暂存区，由 skill `project-tidy` 定期归位、归位后空的日期夹删掉 —— **它不是产出目录**；③ **一次性产物直接清除、不进 `archive/`**，只有有参考价值的旧版本才收档到 `archive/YYYY-MM-DD-<主题>/`；④ 一级目录按语义分，**日期只允许出现在两处**：`00-收件箱/YYYY-MM-DD/` 与跑批产出 `results/YYYY-MM-DD-<主题>/`。
+
+**根目录只允许（四类）**：入口 `README.md` · `AGENTS.md` · `CLAUDE.md`；配置 `.gitignore` · `package.json` · `package-lock.json`；发布必备 `LICENSE` · `NOTICE`；**插件框架入口 `blue.plugin.json` · `cordis.patch.yml`** —— ⚠️ **这是 DSH 插件的框架约定（包根 ＝ 仓库根），它们本来就该在根上，不是乱**。
+
+| 现有/应有目录 | 什么进这里 | 不许进 |
+|---|---|---|
+| `00-收件箱/YYYY-MM-DD/`（**待建**） | **当天做的、还没想好放哪**的东西先扔这儿，等 skill `project-tidy` 归位 | 当成长期仓库；归位后不删空的日期夹 |
+| `src/` | 插件代码（宿主半边 / 浏览器半边；Blue 专属代码只在 `src/blue/`）。**与上游不同的四处差异逐条记在 `docs/FORK-VS-UPSTREAM.md`** | 手工补丁备份（`src/plugin.js.bak-pre-*` 属**一次性产物 → 直接清除**）；日志 |
+| `test/` | 测试（`node --test`，全量基线 563/563） | 手跑脚本冒充测试 |
+| `docs/` | 文档 ＋ `docs/决策记录.md` ＋ `docs/FORK-VS-UPSTREAM.md`，**按主题分** | 根目录上的一次性报告 |
+| `node_modules/` | 依赖；**已 gitignore**（没跑 `npm install` 别下「测试挂了」的结论，见红线 2）；按新口径属**清除 / 忽略**项，不该常驻可见 | 提交进 git；当源码读 |
+| `logs/`、`state/`（**待建**） | 运行期产物：`.log` · `.pid` · 状态 json —— **一律进 `.gitignore`**（账本 `~/.dsh/tokenledger.sqlite` 在用户目录，**不在本项目**、别删） | 放在根目录；提交进 git |
+| `archive/YYYY-MM-DD-<主题>/`（**待建**） | **只收有参考价值的旧版本**：旧版本文档、确需回看的旧配置 | 🗑️ 一次性产物（`.bak*` 补丁备份、缓存 → **直接清除**）；无界堆积 |
+| 根上其余 | **待整理**：`node_modules/` 常驻根上（🗑️ 清除 / 忽略）；`src/` 下现有三份 `*.bak-pre-*` 手工补丁备份（🗑️ 属一次性产物）。逐条按 skill `project-tidy` 念过再动 | — |
+
+**禁物**（根上除上述四类文件外，一个文件都不许有）：`_tmp_*` · `*.bak*` · `*.log` · `*.pid` · 状态 json · `__pycache__/` · 序号后缀（`ablation2.py`、`result1.csv`）· 同名 `.py` 与目录并存 · 根上的 `.bat` / `.sh` / `.ps1`（进 `bin/`）· 一次性报告。
+**两类处理方式不同**：🗑️ 一次性产物 → **直接清除**；📦 有参考价值的旧版本 → 收档 `archive/YYYY-MM-DD-<主题>/`（`archive/` 是收档，**不是垃圾桶**）。
+
 ## 已知的坑
 
-- ~~装机版是 fork 的**某个 SHA**，不一定是仓库 HEAD。~~ **2026-09-29 起本插件未装机**。
-  真要**回退重装**：钉哪个 SHA 看 `~/.dsh/profiles/desktop/package.json` 的 `dsh-tokenledger` 行，
-  再对仓库 HEAD；注意 `pnpm add` / `remove` **都不管** `dsh.profile.bundles`，两端都要手工改（知识库「怎么装 / 换插件」）。
-- `~/.dsh/tokenledger.sqlite` 是**唯一全量、不截断**的历史 —— 现在**已停写**（插件卸了），但**别删**：
-  接替它的 `dsh-cost-meter` 账本 `~/.dsh/storages/cost-meter/ledger.json` 按 `historyDays` 截断
-  （180 天 / 每天 ≤200 会话）。查 09-29 之前的完整历史只能靠它。
+- **装机版是 fork 的某个 SHA**，不一定是仓库 HEAD。现在钉 `b1cc089`（2026-10-03）。
+  重装 / 换 SHA：看 `~/.dsh/profiles/desktop/package.json` 的 `dsh-tokenledger` 行，再对仓库 HEAD；
+  注意 `pnpm add` / `remove` **都不管** `dsh.profile.bundles`，两端都要手工改（知识库「怎么装 / 换插件」）。
+- `~/.dsh/tokenledger.sqlite` 是**唯一全量、不截断**的历史，2026-10-03 起重新在写。
+  09-29 ~ 10-03 那段的账在 `~/.dsh/storages/cost-meter/ledger.json` 里（按 provider+model、按 `historyDays` 截断）——**留着可抄、别删**。
+- **2026-10-03 给面板定的两条约定**（改这块代码前先读）：
+  ① 模型行按 **`<路由>/<模型名>`** 命名 —— **一行只许一个斜杠**：Command Code 的目录 id 自带厂商前缀（`deepseek/deepseek-v4.1-flash`），
+  所以**路由段取代厂商段**显示成 `commandcode/deepseek-v4.1-flash`，完整 id 留在悬停 `title`，同一路由下撞名时不折叠；文字报表 `/tokenledger` 仍印裸 id。
+  ② **粒度改细要同时改三处**：数据分组（`store.byProviderModel`）、行上的派生值（计价走 `priceWithConfiguredRates(..., byRoute=true)`，报表仍按模型）、
+  **列表 key**（`rowKey(m)` = 路由+模型）。漏掉第三处的症状不报错 —— 表格里某一行要等下次重渲染才出现/数字不对。
+- **账本被手工归并过**（2026-10-03，用户指定）：`bd` → `google-antigravity`、`modlens-ali` → 官方、`deepseek-official` → `deepseek-account`（官方合一）、
+  反代时代的 `gemini-3.8-flash-high` → `antigravity-gemini-3.8-flash`。**这不是永久的**：全量重折叠（改 `relays`/`officialOrigins`、`/tokenledger reindex`、换 schema）
+  会按老日志把它们长回来，届时重跑 `D:\Workspace\plugin-compare\{merge-ledger,rename-model}.py`（都默认 dry-run、`--apply` 写库并先备份）。
 - git 作者身份：全局配置是 gitee 的 `zhou-synn`，**本仓库用 local override 换成 GitHub noreply**
   （`57312813+Mrizhou@users.noreply.github.com`），提交才归到 `Mrizhou` 名下。这个 override 只存在
   本目录的 `.git/config` 里，**重新 clone 不会带过去**。

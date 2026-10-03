@@ -2,3 +2,8 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# 2026-09-30 挂载自写 skill「项目整理」（Junction -> D:\Workspace\KnowledgeBase\60-资源\skills\项目整理）：
+# 本体只存知识库一处，项目下是挂载点，不入库。
+.agents/skills/
+.claude/skills/
