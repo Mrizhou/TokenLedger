@@ -66,10 +66,16 @@ function dayKeyDaysAgo(daysBack) {
  * broken. The official list prices the deepseek models only; anything else
  * stays unpriced (`null`, never zero). A user-supplied `rates` always wins.
  */
-export function priceWithConfiguredRates(store, range, site, rates, provider = undefined) {
+export function priceWithConfiguredRates(store, range, site, rates, provider = undefined, byRoute = false) {
 	try {
 		const table = new RateTable(rates === undefined ? DEEPSEEK_OFFICIAL_RATES : rates);
 		const day = range.to ?? range.from ?? dayKey(Date.now());
+		// Two groupings of the same traffic. The report prints a model once, so it
+		// reads model-wide rows; the panel names a row `<provider>/<model>` and a
+		// model reached through two routes is two rows there — one model-wide
+		// figure would print identically on both of them, and the cost column would
+		// then sum to double what was spent.
+		const source = byRoute ? store.byProviderModel.bind(store) : store.byModel.bind(store);
 		// The shipped list is DeepSeek OFFICIAL prices, so it prices the
 		// official ROUTE's rows and nothing else: `deepseek-v4-flash` served
 		// through Ali or a relay is billed at that site's prices, and printing
@@ -80,9 +86,9 @@ export function priceWithConfiguredRates(store, range, site, rates, provider = u
 			if (provider !== undefined && provider !== "deepseek-official") {
 				return { rows: [], totals: {}, unpricedModels: [] };
 			}
-			return priceRows(store.byModel(range, site, "deepseek-official"), table, day);
+			return priceRows(source(range, site, "deepseek-official"), table, day);
 		}
-		return priceRows(store.byModel(range, site, provider), table, day);
+		return priceRows(source(range, site, provider), table, day);
 	} catch {
 		// A malformed rate table costs the cost column, not the report.
 		return null;
@@ -1274,6 +1280,9 @@ export function apply(ctx, userConfig = {}) {
 			// the shipped DeepSeek official list otherwise (deepseek models
 			// only — anything else stays unpriced).
 			priced: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider),
+			// The same rates, priced per ROUTE — what the panel's model table
+			// needs, since one model can be served by two routes there.
+			pricedRoutes: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider, true),
 			// The badge's "today" figure, same rate default as `priced`.
 			todayPriced: (site) => priceToday(store, site, config.rates, config.dayOffsetMinutes),
 			accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
@@ -1299,6 +1308,7 @@ export function apply(ctx, userConfig = {}) {
 		store,
 		sites: () => directory.sites,
 		priced: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider),
+		pricedRoutes: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider, true),
 		todayPriced: (site) => priceToday(store, site, config.rates, config.dayOffsetMinutes),
 		accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 		projectTitles: () => projectTitles,

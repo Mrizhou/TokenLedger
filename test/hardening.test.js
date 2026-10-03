@@ -339,3 +339,33 @@ test("the shipped DeepSeek prices never price another route's rows", () => {
 		assert.equal(priceWithConfiguredRates(store, {}, undefined, DEEPSEEK_OFFICIAL_RATES, "ali").rows.length, 1);
 	});
 });
+
+test("pricing by route prices each route's own tokens, never the model's total", () => {
+	// The panel names a row `<provider>/<model>`, so a model reached through two
+	// routes is two rows there. One model-wide figure would print identically on
+	// both of them and the cost column would sum to double what was spent.
+	withStore((store) => {
+		const state = createUsageState();
+		applyUsageDelta(state, [
+			message(1, 1, "ali", "deepseek-v4-flash", { inputTokens: 1_000_000, outputTokens: 0 }),
+			message(2, 1, "deepseek-official", "deepseek-v4-flash", { inputTokens: 3_000_000, outputTokens: 0 })
+		]);
+		store.commitSession("s1", state);
+		const rates = [
+			{ model: "deepseek-v4-flash", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 1 } }
+		];
+
+		const byModel = priceWithConfiguredRates(store, {}, undefined, rates);
+		assert.equal(byModel.rows.length, 1, "the report prints a model once, so it reads model-wide rows");
+		assert.equal(byModel.rows[0].cost, 4, "priced over every route's tokens");
+
+		const byRoute = priceWithConfiguredRates(store, {}, undefined, rates, undefined, true);
+		assert.equal(byRoute.rows.length, 2, "the panel reads one row per route");
+		assert.deepEqual(
+			Object.fromEntries(byRoute.rows.map((row) => [row.provider, row.cost])),
+			{ ali: 1, "deepseek-official": 3 },
+			"each row priced on its own tokens"
+		);
+		assert.equal(byRoute.totals.CNY, 4, "split rows, same spend: the total must not change");
+	});
+});

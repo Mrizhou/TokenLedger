@@ -692,6 +692,32 @@ test("a model row is named by its route, never by two slashes", async () => {
 	assert.equal(modelOnly.includes("/deepseek-v4-pro"), false);
 });
 
+test("a route row keeps its own figures, even when the host also sends model-wide priced rows", async () => {
+	const { exports, render } = await loadBundle();
+	// The regression this guards: spreading a priced row over a route row replaced
+	// the row's buckets with the total of EVERY route serving that model, so two
+	// rows printed the same summed figures and the cost column counted the spend
+	// twice. Distinct magnitudes below make the substitution visible.
+	const text = textOf(
+		render(exports.ModelTable, {
+			data: payload({
+				modelRoutes: [
+					{ provider: "deepseek-account", model: "deepseek-v4-flash", requests: 7, inputTokens: 1_100_000, cost: 1 },
+					{ provider: "ali", model: "deepseek-v4-flash", requests: 3, inputTokens: 2_200_000, cost: 2 }
+				],
+				priced: {
+					rows: [{ model: "deepseek-v4-flash", requests: 10, inputTokens: 3_300_000, cost: 3, currency: "CNY" }],
+					totals: { CNY: 3 }
+				}
+			}),
+			translate: T
+		})
+	);
+	assert.ok(text.includes("1.1M"), "the first route's own tokens");
+	assert.ok(text.includes("2.2M"), "the second route's own tokens");
+	assert.equal(text.includes("3.3M"), false, "the model-wide total is not printed on a route row");
+});
+
 test("two ids on one route that end in the same name keep their vendor segment", async () => {
 	const { exports, render } = await loadBundle();
 	// Shortening is a display decision, so it must not merge two rows into one

@@ -1259,7 +1259,17 @@ window.__ModuleLoader__.load({
 			const priced = new Map((data.priced?.rows ?? []).map((r) => [r.model, r]));
 			const routes = data.modelRoutes ?? [];
 			const source = routes.length > 0 ? routes : (data.models ?? []);
-			const rows = source.map((m) => ({ ...m, ...priced.get(m.model) }));
+			// A route row carries its own cost, and only its own fields: spreading a
+			// priced row over it would overwrite the row's buckets with the totals
+			// of EVERY route serving that model (the row would read as its own sum
+			// twice). The model-wide row is still used for a host that sends
+			// model-only rows, where the scopes match.
+			const rows = source.map((m) => {
+				if (m.cost !== undefined) return m;
+				const money = priced.get(m.model);
+				if (money === undefined) return m;
+				return { ...m, cost: money.cost, currency: money.currency, priced: money.priced, unpricedBuckets: money.unpricedBuckets };
+			});
 			if (rows.length === 0) return jsx("p", { className: S.note, children: translate("table.none") });
 			// Named as a set: a label may only drop a vendor segment while it stays
 			// unique among these rows.

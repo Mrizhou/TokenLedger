@@ -107,6 +107,40 @@ test("one request carries the whole panel, so its sections cannot disagree mid-l
 	}
 });
 
+test("a route row carries its own cost, never the model's total across routes", () => {
+	const store = seeded();
+	try {
+		const routeRows = [
+			{
+				provider: "api99",
+				model: "gpt",
+				requests: 1,
+				inputTokens: 1000,
+				outputTokens: 100,
+				cost: 0.25,
+				currency: "CNY",
+				priced: true,
+				unpricedBuckets: []
+			}
+		];
+		const p = usagePayload(
+			{ store, sites: () => [], pricedRoutes: () => ({ rows: routeRows, totals: { CNY: 0.25 }, unpricedModels: [] }) },
+			{ range: {} }
+		);
+		assert.equal(p.modelRoutes.length, 1);
+		assert.equal(p.modelRoutes[0].provider, "api99");
+		assert.equal(p.modelRoutes[0].cost, 0.25, "the row's own cost is attached");
+		assert.equal(p.modelRoutes[0].inputTokens, 1000, "and it keeps its own buckets");
+
+		// Nothing priced: the rows still ship, with no invented figure.
+		const bare = usagePayload({ store, sites: () => [] }, { range: {} });
+		assert.equal(bare.modelRoutes.length, 1);
+		assert.equal(bare.modelRoutes[0].cost, undefined);
+	} finally {
+		store.close();
+	}
+});
+
 test("the site breakdown ignores the current filter, because it is how you change it", () => {
 	const store = seeded();
 	try {

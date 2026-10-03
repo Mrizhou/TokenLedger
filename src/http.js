@@ -291,6 +291,13 @@ export function priceToday(store, site = undefined, rates = undefined, dayOffset
 export function usagePayload(deps, query) {
 	const { store, sites, priced } = deps;
 	const { range, site, provider } = query;
+	// The panel's model table is per route, so its cost column has to be too:
+	// priced route rows are attached by (provider, model), never copied from the
+	// model-wide row, which is every route's total at once.
+	const routeRows = store.byProviderModel(range, site, provider);
+	const routeCosts = new Map(
+		(deps.pricedRoutes?.(range, site, provider)?.rows ?? []).map((row) => [`${row.provider}\u0000${row.model}`, row])
+	);
 	return {
 		ok: true,
 		// So "is my install current?" is answerable in one request. Several rounds
@@ -332,11 +339,16 @@ export function usagePayload(deps, query) {
 		activityModels: dailyModels(store.byRoute({ from: fromDaysAgo(ACTIVITY_DAYS, deps.dayOffsetMinutes) }, site, provider)),
 		models: store.byModel(range, site, provider),
 		// The same totals split by the route that served them, so the panel can
-		// name a row `<provider>/<model>`. Kept beside `models` rather than
-		// replacing it: the text report and the Blue renderer still read the
-		// model-only rows, and a model served by two routes must stay one line
-		// there.
-		modelRoutes: store.byProviderModel(range, site, provider),
+		// name a row `<provider>/<model>`, each with its OWN cost. Kept beside
+		// `models` rather than replacing it: the text report and the Blue renderer
+		// still read the model-only rows, and a model served by two routes must
+		// stay one line there.
+		modelRoutes: routeRows.map((row) => {
+			const cost = routeCosts.get(`${row.provider}\u0000${row.model}`);
+			return cost === undefined
+				? row
+				: { ...row, cost: cost.cost, currency: cost.currency, priced: cost.priced, unpricedBuckets: cost.unpricedBuckets };
+		}),
 		// Site rows are never filtered by the current selection: the breakdown is
 		// how you CHANGE that selection, so hiding the others would strand you.
 		sites: store.bySite(range, provider),
