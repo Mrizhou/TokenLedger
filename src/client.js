@@ -1184,22 +1184,52 @@ window.__ModuleLoader__.load({
 			return `${date.getFullYear()}-${month}-${day}`;
 		}
 
+		/** The model NAME: the last segment of a catalog id that carries a vendor namespace. */
+		function modelName(model) {
+			const text = String(model ?? "");
+			const cut = text.lastIndexOf("/");
+			return cut === -1 ? text : text.slice(cut + 1);
+		}
+
 		/**
-		 * How a model row is named: `<provider>/<model>`.
+		 * How a model row is named: `<provider>/<model name>`.
 		 *
 		 * The prefix is the DSH route that served the call, never the model's
-		 * vendor. One gateway (Command Code) already namespaces its catalog ids by
-		 * MODEL vendor — `deepseek/deepseek-v4.1-flash` — so a bare id leaves the
-		 * reader unable to tell which route the number came from, and a model id
-		 * alone does not identify the caller: two routes can report the same one.
+		 * vendor. Command Code already namespaces its catalog ids by MODEL vendor
+		 * (`deepseek/deepseek-v4.1-flash`), and prefixing that with the route put
+		 * two slashes in one name — but the route answers the question the panel
+		 * asks (who served this), so it REPLACES the vendor segment. A row from a
+		 * host that sends model-only rows has no route to name, and keeps its id.
 		 */
 		function routeLabel(m) {
+			const provider = typeof m.provider === "string" ? m.provider : "";
+			return provider === "" ? String(m.model ?? "") : `${provider}/${modelName(m.model)}`;
+		}
+
+		/** The exact identity, for a cell's title: the route plus the id as recorded. */
+		function exactLabel(m) {
 			const provider = typeof m.provider === "string" ? m.provider : "";
 			return provider === "" ? String(m.model ?? "") : `${provider}/${m.model}`;
 		}
 
+		/**
+		 * Labels for one table, disambiguated against each other.
+		 *
+		 * Dropping the vendor segment is only safe while the short name is unique
+		 * among these rows: two ids on one route that end in the same name (a
+		 * `:batch` sibling reports its own id, a relay can re-list another
+		 * vendor's model) would otherwise print the same name twice. Those rows
+		 * keep the full id instead of being silently merged on screen.
+		 */
+		function routeLabels(rows) {
+			const short = rows.map((m) => routeLabel(m));
+			const counts = new Map();
+			for (const label of short) counts.set(label, (counts.get(label) ?? 0) + 1);
+			return rows.map((m, index) => (counts.get(short[index]) > 1 ? exactLabel(m) : short[index]));
+		}
+
 		const MODEL_COLUMNS = [
-			{ id: "model", label: "table.model", get: (m) => routeLabel(m), numeric: false },
+			{ id: "model", label: "table.model", get: (m) => m.label ?? routeLabel(m), numeric: false },
 			{ id: "requests", label: "table.requests", get: (m) => m.requests ?? 0 },
 			{
 				id: "tokens",
@@ -1218,11 +1248,11 @@ window.__ModuleLoader__.load({
 		 * The panel's model table.
 		 *
 		 * Columns match the text report's, but the name column is route-qualified
-		 * (`<provider>/<model>`) — the report keeps the bare id, because it prints
-		 * each model once and the site breakdown above it already says where the
-		 * traffic went. Rows come from `modelRoutes` when the host sends it (one
+		 * (`<provider>/<model name>`) — the report keeps the bare id, because it
+		 * prints each model once and the site breakdown above it already says where
+		 * the traffic went. Rows come from `modelRoutes` when the host sends it (one
 		 * row per route AND model); a host that only sends model-only rows still
-		 * renders, named by the bare id.
+		 * renders, named by the bare id. The exact id stays in each cell's title.
 		 */
 		function ModelTable({ data, translate }) {
 			const [sort, setSort] = react.useState({ by: "tokens", desc: true });
@@ -1231,9 +1261,13 @@ window.__ModuleLoader__.load({
 			const source = routes.length > 0 ? routes : (data.models ?? []);
 			const rows = source.map((m) => ({ ...m, ...priced.get(m.model) }));
 			if (rows.length === 0) return jsx("p", { className: S.note, children: translate("table.none") });
+			// Named as a set: a label may only drop a vendor segment while it stays
+			// unique among these rows.
+			const labels = routeLabels(rows);
+			const named = rows.map((m, index) => ({ ...m, label: labels[index] }));
 
 			const column = MODEL_COLUMNS.find((c) => c.id === sort.by) ?? MODEL_COLUMNS[2];
-			const sorted = rows.slice().sort((a, b) => {
+			const sorted = named.slice().sort((a, b) => {
 				const x = column.get(a);
 				const y = column.get(b);
 				const order = column.numeric === false ? String(x).localeCompare(String(y)) : x - y;
@@ -1269,7 +1303,7 @@ window.__ModuleLoader__.load({
 								"tr",
 								{
 									children: [
-										jsx("td", { title: routeLabel(m), children: routeLabel(m) }),
+										jsx("td", { title: exactLabel(m), children: m.label }),
 										jsx("td", { children: fmt(m.requests) }),
 										jsx("td", { children: fmtCompact(MODEL_COLUMNS[2].get(m)) }),
 										jsx("td", { children: fmtCompact(m.inputTokens) }),

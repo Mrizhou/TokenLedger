@@ -381,6 +381,18 @@ function textOf(node) {
 	return textOf(node.props?.children);
 }
 
+/** Collect every `title` prop in a recorded element tree. */
+function titlesOf(node, out = []) {
+	if (node === null || node === undefined || typeof node !== "object") return out;
+	if (Array.isArray(node)) {
+		for (const child of node) titlesOf(child, out);
+		return out;
+	}
+	if (typeof node.props?.title === "string") out.push(node.props.title);
+	if (typeof node.type === "function") return titlesOf(node.type(node.props), out);
+	return titlesOf(node.props?.children, out);
+}
+
 /** Collect every node whose className matches. */
 function findAll(node, className, out = []) {
 	if (node === null || node === undefined || typeof node !== "object") return out;
@@ -646,30 +658,58 @@ test("the model table carries request counts, so a hit rate can be read", async 
 	assert.ok(text.includes("table.total"));
 });
 
-test("a model row is named by the route that served it, not by the model's own vendor", async () => {
+test("a model row is named by its route, never by two slashes", async () => {
 	const { exports, render } = await loadBundle();
 	// Command Code already namespaces its catalog ids by MODEL vendor
-	// (`deepseek/deepseek-v4.1-flash`), so a bare id cannot say which route the
-	// number came from — the panel prefixes the ROUTE.
-	const perRoute = textOf(
-		render(exports.ModelTable, {
-			data: payload({
-				modelRoutes: [
-					{ provider: "commandcode", model: "deepseek/deepseek-v4.1-flash", requests: 4, inputTokens: 100 },
-					{ provider: "ali", model: "deepseek-v4.1-flash", requests: 2, inputTokens: 50 }
-				]
-			}),
-			translate: T
-		})
+	// (`deepseek/deepseek-v4.1-flash`). The route answers the question the panel
+	// asks — who served this — so it REPLACES that segment instead of stacking in
+	// front of it, which read as one name with two slashes.
+	const node = render(exports.ModelTable, {
+		data: payload({
+			modelRoutes: [
+				{ provider: "commandcode", model: "deepseek/deepseek-v4.1-flash", requests: 4, inputTokens: 100 },
+				{ provider: "commandcode", model: "google/gemini-3.7-flash", requests: 1, inputTokens: 20 },
+				{ provider: "ali", model: "deepseek-v4.1-flash", requests: 2, inputTokens: 50 }
+			]
+		}),
+		translate: T
+	});
+	const text = textOf(node);
+	assert.ok(text.includes("commandcode/deepseek-v4.1-flash"), "the route replaces the vendor segment");
+	assert.ok(text.includes("commandcode/gemini-3.7-flash"));
+	assert.ok(text.includes("ali/deepseek-v4.1-flash"), "an id with no vendor segment is unaffected");
+	assert.equal(text.includes("deepseek/deepseek-v4.1-flash"), false, "the stacked form is gone");
+	// The exact identity is still reachable, in the cell's title.
+	assert.ok(
+		titlesOf(node).includes("commandcode/deepseek/deepseek-v4.1-flash"),
+		"the full route-qualified id stays in the title"
 	);
-	assert.ok(perRoute.includes("commandcode/deepseek/deepseek-v4.1-flash"), "the route prefixes an id that carries its own vendor prefix");
-	assert.ok(perRoute.includes("ali/deepseek-v4.1-flash"));
 
 	// A host that sends only model-only rows still renders, and no prefix is
 	// invented for a row that has no route to name.
 	const modelOnly = textOf(render(exports.ModelTable, { data: payload(), translate: T }));
 	assert.match(modelOnly, /deepseek-v4-pro[\s\S]*gpt-5\.6-sol/);
 	assert.equal(modelOnly.includes("/deepseek-v4-pro"), false);
+});
+
+test("two ids on one route that end in the same name keep their vendor segment", async () => {
+	const { exports, render } = await loadBundle();
+	// Shortening is a display decision, so it must not merge two rows into one
+	// name: when the short form is not unique, both keep the full id.
+	const text = textOf(
+		render(exports.ModelTable, {
+			data: payload({
+				modelRoutes: [
+					{ provider: "openrouter", model: "alpha/glm-5.3", requests: 2, inputTokens: 30 },
+					{ provider: "openrouter", model: "beta/glm-5.3", requests: 1, inputTokens: 10 }
+				]
+			}),
+			translate: T
+		})
+	);
+	assert.ok(text.includes("openrouter/alpha/glm-5.3"));
+	assert.ok(text.includes("openrouter/beta/glm-5.3"));
+	assert.equal(text.includes("openrouter/glm-5.3"), false, "an ambiguous short name is not printed at all");
 });
 
 test("a relay whose software is unrecognised gets one honest line, not an empty card", async () => {
