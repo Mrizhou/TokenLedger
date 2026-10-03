@@ -387,6 +387,24 @@ export class LedgerStore {
 			.sort((a, b) => b.tokens - a.tokens);
 	}
 
+	/**
+	 * Per-route-and-model totals — `byModel`, split by the route that served it.
+	 *
+	 * The panel names a row `<provider>/<model>` because a model id alone does not
+	 * say who served it. Several routes can report the SAME id (a relay and the
+	 * vendor both serving `deepseek-v4-flash`), and one gateway namespaces ids by
+	 * MODEL vendor (`deepseek/deepseek-v4.1-flash` on Command Code) — which reads
+	 * like a provider prefix but is not one.
+	 */
+	byProviderModel(range = {}, site = undefined, provider = undefined) {
+		const { sql, params } = rangeClause(range, site, "", provider);
+		return this.#db
+			.prepare(`SELECT provider, model, ${SUMS} FROM session_rollups ${sql} GROUP BY provider, model`)
+			.all(...params)
+			.map(decorate)
+			.sort((a, b) => b.tokens - a.tokens);
+	}
+
 	/** Per-site totals — the panel's site breakdown and the report's. */
 	bySite(range = {}, provider = undefined) {
 		const { sql, params } = rangeClause(range, undefined, "", provider);

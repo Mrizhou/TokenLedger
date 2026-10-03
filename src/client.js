@@ -1184,8 +1184,22 @@ window.__ModuleLoader__.load({
 			return `${date.getFullYear()}-${month}-${day}`;
 		}
 
+		/**
+		 * How a model row is named: `<provider>/<model>`.
+		 *
+		 * The prefix is the DSH route that served the call, never the model's
+		 * vendor. One gateway (Command Code) already namespaces its catalog ids by
+		 * MODEL vendor — `deepseek/deepseek-v4.1-flash` — so a bare id leaves the
+		 * reader unable to tell which route the number came from, and a model id
+		 * alone does not identify the caller: two routes can report the same one.
+		 */
+		function routeLabel(m) {
+			const provider = typeof m.provider === "string" ? m.provider : "";
+			return provider === "" ? String(m.model ?? "") : `${provider}/${m.model}`;
+		}
+
 		const MODEL_COLUMNS = [
-			{ id: "model", label: "table.model", get: (m) => m.model, numeric: false },
+			{ id: "model", label: "table.model", get: (m) => routeLabel(m), numeric: false },
 			{ id: "requests", label: "table.requests", get: (m) => m.requests ?? 0 },
 			{
 				id: "tokens",
@@ -1200,11 +1214,22 @@ window.__ModuleLoader__.load({
 			{ id: "cost", label: "table.cost", get: (m) => m.cost ?? -1 }
 		];
 
-		/** Same columns as the text report, so the two cannot disagree. */
+		/**
+		 * The panel's model table.
+		 *
+		 * Columns match the text report's, but the name column is route-qualified
+		 * (`<provider>/<model>`) — the report keeps the bare id, because it prints
+		 * each model once and the site breakdown above it already says where the
+		 * traffic went. Rows come from `modelRoutes` when the host sends it (one
+		 * row per route AND model); a host that only sends model-only rows still
+		 * renders, named by the bare id.
+		 */
 		function ModelTable({ data, translate }) {
 			const [sort, setSort] = react.useState({ by: "tokens", desc: true });
 			const priced = new Map((data.priced?.rows ?? []).map((r) => [r.model, r]));
-			const rows = (data.models ?? []).map((m) => ({ ...m, ...priced.get(m.model) }));
+			const routes = data.modelRoutes ?? [];
+			const source = routes.length > 0 ? routes : (data.models ?? []);
+			const rows = source.map((m) => ({ ...m, ...priced.get(m.model) }));
 			if (rows.length === 0) return jsx("p", { className: S.note, children: translate("table.none") });
 
 			const column = MODEL_COLUMNS.find((c) => c.id === sort.by) ?? MODEL_COLUMNS[2];
@@ -1244,7 +1269,7 @@ window.__ModuleLoader__.load({
 								"tr",
 								{
 									children: [
-										jsx("td", { title: m.model, children: m.model }),
+										jsx("td", { title: routeLabel(m), children: routeLabel(m) }),
 										jsx("td", { children: fmt(m.requests) }),
 										jsx("td", { children: fmtCompact(MODEL_COLUMNS[2].get(m)) }),
 										jsx("td", { children: fmtCompact(m.inputTokens) }),

@@ -11,6 +11,7 @@ const VIEW_LIMITS = Object.freeze({
 	activity: 371,
 	activityModels: 2048,
 	models: 256,
+	modelRoutes: 256,
 	sites: 128,
 	projects: 256,
 	providers: 256,
@@ -21,6 +22,7 @@ const VIEW_LIMITS = Object.freeze({
 const COLLECTIONS = new Set(Object.keys(VIEW_LIMITS));
 const SORT_FIELDS = Object.freeze({
 	models: new Set(["model", "tokens", "requests", "inputTokens", "cacheReadTokens", "outputTokens", "cost"]),
+	modelRoutes: new Set(["provider", "model", "tokens", "requests", "inputTokens", "cacheReadTokens", "outputTokens"]),
 	sites: new Set(["site", "tokens", "requests"]),
 	projects: new Set(["project", "label", "tokens", "requests"]),
 	accounts: new Set(["id", "displayName", "origin", "provider"])
@@ -70,6 +72,7 @@ function createView(input) {
 		activity: rows(source.activity, VIEW_LIMITS.activity),
 		activityModels: rows(source.activityModels, VIEW_LIMITS.activityModels),
 		models: rows(source.models, VIEW_LIMITS.models),
+		modelRoutes: rows(source.modelRoutes, VIEW_LIMITS.modelRoutes),
 		sites: rows(source.sites, VIEW_LIMITS.sites),
 		projects: rows(source.projects, VIEW_LIMITS.projects),
 		providers: rows(source.providers, VIEW_LIMITS.providers),
@@ -101,6 +104,11 @@ function createSummary(input, revision) {
 		},
 		activity: view.activity.slice(-371),
 		models: view.models.slice(0, 64),
+		// The summary feeds the panel's FIRST paint, so it has to carry the
+		// route-qualified rows too: sending model-only rows here and the
+		// per-route ones on the query would rename every row a beat after it
+		// appeared.
+		modelRoutes: view.modelRoutes.slice(0, 64),
 		sites: view.sites.slice(0, 64),
 		projects: view.projects.slice(0, 64),
 		providers: view.providers.slice(0, 64),

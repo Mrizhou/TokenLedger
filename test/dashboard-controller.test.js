@@ -107,3 +107,24 @@ test("late asynchronous reads are rejected after abort or revision advance", asy
 	await assert.rejects(stale, (error) => error.code === "STALE");
 	await controller.dispose();
 });
+
+test("the view carries per-route model rows, so the panel can name a row by its route", async () => {
+	const routeRows = [
+		{ provider: "commandcode", model: "deepseek/deepseek-v4.1-flash", tokens: 90, requests: 2 },
+		{ provider: "ali", model: "deepseek-v4.1-flash", tokens: 10, requests: 1 }
+	];
+	const controller = new DashboardController({ readUsage: () => ({ ...usage(100, 2), modelRoutes: routeRows }) });
+	const view = controller.current();
+	assert.deepEqual(view.modelRoutes, routeRows);
+	assert.deepEqual(view.collectionBounds.modelRoutes, {
+		sourceCount: 2,
+		returnedCount: 2,
+		omittedCount: 0
+	});
+	// A host that predates the field sends none: the view says so with an empty
+	// list rather than dropping the key, so the panel's fallback is reachable.
+	const legacy = new DashboardController({ readUsage: () => usage(100, 1) });
+	assert.deepEqual(legacy.current().modelRoutes, []);
+	await controller.dispose();
+	await legacy.dispose();
+});

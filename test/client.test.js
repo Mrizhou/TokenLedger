@@ -646,6 +646,32 @@ test("the model table carries request counts, so a hit rate can be read", async 
 	assert.ok(text.includes("table.total"));
 });
 
+test("a model row is named by the route that served it, not by the model's own vendor", async () => {
+	const { exports, render } = await loadBundle();
+	// Command Code already namespaces its catalog ids by MODEL vendor
+	// (`deepseek/deepseek-v4.1-flash`), so a bare id cannot say which route the
+	// number came from — the panel prefixes the ROUTE.
+	const perRoute = textOf(
+		render(exports.ModelTable, {
+			data: payload({
+				modelRoutes: [
+					{ provider: "commandcode", model: "deepseek/deepseek-v4.1-flash", requests: 4, inputTokens: 100 },
+					{ provider: "ali", model: "deepseek-v4.1-flash", requests: 2, inputTokens: 50 }
+				]
+			}),
+			translate: T
+		})
+	);
+	assert.ok(perRoute.includes("commandcode/deepseek/deepseek-v4.1-flash"), "the route prefixes an id that carries its own vendor prefix");
+	assert.ok(perRoute.includes("ali/deepseek-v4.1-flash"));
+
+	// A host that sends only model-only rows still renders, and no prefix is
+	// invented for a row that has no route to name.
+	const modelOnly = textOf(render(exports.ModelTable, { data: payload(), translate: T }));
+	assert.match(modelOnly, /deepseek-v4-pro[\s\S]*gpt-5\.6-sol/);
+	assert.equal(modelOnly.includes("/deepseek-v4-pro"), false);
+});
+
 test("a relay whose software is unrecognised gets one honest line, not an empty card", async () => {
 	const { exports, render } = await loadBundle();
 	const text = textOf(

@@ -320,3 +320,29 @@ test("opening a v3 database rebuilds projections that may contain duplicated for
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("one model served by two routes is one row by model and two rows by route", () => {
+	withStore((store) => {
+		const state = applyUsageDelta(store.loadState("s1"), [
+			header("relayA", "flash"),
+			message(1, 1, "relayA", "flash", usage(100, 10)),
+			header("official", "flash"),
+			message(2, 1, "official", "flash", usage(300, 20))
+		]);
+		store.commitSession("s1", state);
+
+		// The model-only view stays one line: the text report and the Blue
+		// renderer read this one, and a model reached through two routes is still
+		// one model.
+		assert.deepEqual(store.byModel().map((m) => [m.model, m.inputTokens]), [["flash", 400]]);
+
+		// The per-route view splits it, carrying WHO served each half.
+		const rows = store.byProviderModel().map((m) => [m.provider, m.model, m.inputTokens]);
+		assert.deepEqual(rows, [["official", "flash", 300], ["relayA", "flash", 100]]);
+		assert.equal(
+			rows.reduce((sum, [, , tokens]) => sum + tokens, 0),
+			400,
+			"splitting by route must not lose or double-count a token"
+		);
+	});
+});

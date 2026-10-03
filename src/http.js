@@ -331,6 +331,12 @@ export function usagePayload(deps, query) {
 		// the pointer, and these are counts, not content.
 		activityModels: dailyModels(store.byRoute({ from: fromDaysAgo(ACTIVITY_DAYS, deps.dayOffsetMinutes) }, site, provider)),
 		models: store.byModel(range, site, provider),
+		// The same totals split by the route that served them, so the panel can
+		// name a row `<provider>/<model>`. Kept beside `models` rather than
+		// replacing it: the text report and the Blue renderer still read the
+		// model-only rows, and a model served by two routes must stay one line
+		// there.
+		modelRoutes: store.byProviderModel(range, site, provider),
 		// Site rows are never filtered by the current selection: the breakdown is
 		// how you CHANGE that selection, so hiding the others would strand you.
 		sites: store.bySite(range, provider),
