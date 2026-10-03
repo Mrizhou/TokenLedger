@@ -1228,6 +1228,12 @@ window.__ModuleLoader__.load({
 			return rows.map((m, index) => (counts.get(short[index]) > 1 ? exactLabel(m) : short[index]));
 		}
 
+		/** A row is identified by its route AND its model: one model can be two rows. */
+		function rowKey(m) {
+			const provider = typeof m.provider === "string" ? m.provider : "";
+			return provider === "" ? String(m.model ?? "") : `${provider}\u0000${m.model}`;
+		}
+
 		const MODEL_COLUMNS = [
 			{ id: "model", label: "table.model", get: (m) => m.label ?? routeLabel(m), numeric: false },
 			{ id: "requests", label: "table.requests", get: (m) => m.requests ?? 0 },
@@ -1333,7 +1339,7 @@ window.__ModuleLoader__.load({
 										jsx("td", { children: m.cost === null || m.cost === undefined ? "—" : fmtMoney(m.cost, m.currency) })
 									]
 								},
-								m.model
+								rowKey(m)
 							)
 						)
 					})

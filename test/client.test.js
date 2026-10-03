@@ -393,6 +393,21 @@ function titlesOf(node, out = []) {
 	return titlesOf(node.props?.children, out);
 }
 
+/** Collect the `<tr>` elements of a recorded tree, in order. */
+function rowsOf(node, out = []) {
+	if (node === null || node === undefined || typeof node !== "object") return out;
+	if (Array.isArray(node)) {
+		for (const child of node) rowsOf(child, out);
+		return out;
+	}
+	if (node.type === "tr") {
+		out.push(node);
+		return out;
+	}
+	if (typeof node.type === "function") return rowsOf(node.type(node.props), out);
+	return rowsOf(node.props?.children, out);
+}
+
 /** Collect every node whose className matches. */
 function findAll(node, className, out = []) {
 	if (node === null || node === undefined || typeof node !== "object") return out;
@@ -690,6 +705,27 @@ test("a model row is named by its route, never by two slashes", async () => {
 	const modelOnly = textOf(render(exports.ModelTable, { data: payload(), translate: T }));
 	assert.match(modelOnly, /deepseek-v4-pro[\s\S]*gpt-5\.6-sol/);
 	assert.equal(modelOnly.includes("/deepseek-v4-pro"), false);
+});
+
+test("two routes on one model are two rows with distinct keys", async () => {
+	const { exports, render } = await loadBundle();
+	// Keyed by model alone, two routes on one model are one key twice: React then
+	// reuses a row, and the table shows the wrong line until something forces a
+	// re-render — reported as "clicking a sort header makes the row appear".
+	const tree = render(exports.ModelTable, {
+		data: payload({
+			modelRoutes: [
+				{ provider: "deepseek-account", model: "deepseek-v4-flash", requests: 353, inputTokens: 617342 },
+				{ provider: "ali", model: "deepseek-v4-flash", requests: 30, inputTokens: 158064 }
+			]
+		}),
+		translate: T
+	});
+	const keys = rowsOf(tree)
+		.map((row) => row.key)
+		.filter((key) => key !== undefined);
+	assert.equal(keys.length, 2, "both rows render");
+	assert.equal(new Set(keys).size, 2, "and they are addressed as two rows, not one");
 });
 
 test("a route row keeps its own figures, even when the host also sends model-wide priced rows", async () => {
