@@ -199,3 +199,10 @@
   - 守卫测试：`test/client.test.js`「every account gets its own balance card, and there is nothing to select」
     「opening the panel reads every account's balance, once each」（均变异验证：换回改动前的 `client.js` 两条都失败）。
     **合上游时这一处要保留**（上游仍是下拉）。
+  - **同日再收成一账户一行**（用户「这样东西太多了 每个压缩成一行 有余额的显示余额 套餐的显示最长那个比如月周」）：
+    `Body` 改渲染 `BalanceRow`（`▸ 名字 …… 数字`），点一行才在下面展开原来的 `BalanceCard`（重置时刻、备注、「设置查询API / Cookie」按钮都还在卡里）。
+    行上的数字由 `balanceRowValue()` 定：有 `total` 显示余额；不限额 key 显示「已用 $x」；有 `quota` 显示额度；
+    否则取**最长窗口**（`longestWindows()`：月 > 周 > 日 > 5h，计费周期按月算；没有百分比的窗口不算；Antigravity 按模型组各取一个），
+    写成侧边栏同款的裸百分比 `30d 18.5%`。有钱包又有套餐（Z.ai）时只显示钱包。读失败只写两个字（读取失败 / 未配置密钥 / 限流中 / 不支持），标警示色，详情点开看。
+    守卫测试：「a balance line shows the money, or the plan's longest window」「a balance line opens its full card, button and all」
+    （变异验证：`Body` 换回 `BalanceCard`、或去掉取最长的比较，对应测试失败）。

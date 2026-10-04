@@ -50,7 +50,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 585/585（2026-10-04）
+npm test                           # 全量，当前基线 587/587（2026-10-04）
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -103,7 +103,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **585/585**（2026-10-04）。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **587/587**（2026-10-04）。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
@@ -131,7 +131,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 |---|---|---|
 | `00-收件箱/YYYY-MM-DD/`（**待建**） | **当天做的、还没想好放哪**的东西先扔这儿，等 skill `project-tidy` 归位 | 当成长期仓库；归位后不删空的日期夹 |
 | `src/` | 插件代码（宿主半边 / 浏览器半边；Blue 专属代码只在 `src/blue/`）。**与上游不同的四处差异逐条记在 `docs/FORK-VS-UPSTREAM.md`** | 手工补丁备份（`src/plugin.js.bak-pre-*` 属**一次性产物 → 直接清除**）；日志 |
-| `test/` | 测试（`node --test`，全量基线 585/585） | 手跑脚本冒充测试 |
+| `test/` | 测试（`node --test`，全量基线 587/587） | 手跑脚本冒充测试 |
 | `docs/` | 文档 ＋ `docs/决策记录.md` ＋ `docs/FORK-VS-UPSTREAM.md`，**按主题分** | 根目录上的一次性报告 |
 | `node_modules/` | 依赖；**已 gitignore**（没跑 `npm install` 别下「测试挂了」的结论，见红线 2）；按新口径属**清除 / 忽略**项，不该常驻可见 | 提交进 git；当源码读 |
 | `logs/`、`state/`（**待建**） | 运行期产物：`.log` · `.pid` · 状态 json —— **一律进 `.gitignore`**（账本 `~/.dsh/tokenledger.sqlite` 在用户目录，**不在本项目**、别删） | 放在根目录；提交进 git |

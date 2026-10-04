@@ -912,18 +912,80 @@ test("every account gets its own balance card, and there is nothing to select", 
 		"deepseek-official": card({ scheme: "deepseek", displayName: "DeepSeek", currency: "CNY", total: 36.44 }),
 		yos: card({ scheme: "newapi", displayName: "api2.yoshub.com", currency: "USD", total: 5 })
 	});
-	assert.equal(findAll(both, "tkl_balance").length, 2, "one card per account, both at once");
+	// 用户 2026-10-04「这样东西太多了 每个压缩成一行」: one line each, and no
+	// full card until a line is opened.
+	assert.equal(findAll(both, "tkl_balRow").length, 2, "one line per account, both at once");
+	assert.equal(findAll(both, "tkl_balance").length, 0, "the full cards stay folded");
 	const text = textOf(both);
-	for (const name of ["DeepSeek", "api2.yoshub.com"]) assert.ok(text.includes(name), `unnamed card: ${text}`);
+	for (const name of ["DeepSeek", "api2.yoshub.com"]) assert.ok(text.includes(name), `unnamed line: ${text}`);
 	assert.ok(text.includes("¥36.44") && text.includes("$5.00"), "both figures are on screen, not one of them");
 	assert.equal(typesOf(both).includes("select"), false, "nothing is left to choose with");
 	assert.equal(typesOf(both).includes("option"), false);
 
-	// A read that has not landed yet keeps its seat as a skeleton: dropping the
-	// card would move every figure below it on each open.
+	// A read that has not landed yet keeps its line: dropping it would move
+	// every figure below it on each open.
 	const pending = body({ "deepseek-official": card({ displayName: "DeepSeek", currency: "CNY", total: 36.44 }) });
-	assert.equal(findAll(pending, "tkl_balance").length, 1);
-	assert.equal(findAll(pending, "tkl_skel").length, 1, "the unread account is still on screen");
+	assert.equal(findAll(pending, "tkl_balRow").length, 2, "the unread account is still on screen");
+	assert.equal(findAll(pending, "tkl_balRowDim").length, 1);
+});
+
+test("a balance line shows the money, or the plan's longest window", async () => {
+	// 用户 2026-10-04「有余额的显示余额 套餐的显示最长那个比如月周」.
+	const { exports } = await loadBundle();
+	const line = (over) =>
+		exports.balanceRowValue({ ok: true, supported: true, fetched: true, isAvailable: true, ...over }, T).text;
+
+	assert.equal(line({ currency: "CNY", total: 36.44 }), "¥36.44");
+	// A wallet beside a plan: the money wins.
+	assert.equal(line({ currency: "CNY", total: 3, windows: [{ kind: "monthly", usedPercent: 40 }] }), "¥3.00");
+	assert.equal(line({ currency: "USD", used: 5, unlimited: true }), "badge.spent:$5.00");
+
+	// The month over the week over the 5 h, whatever order they arrive in.
+	const plan = [
+		{ kind: "session", minutes: 300, usedPercent: 1.9 },
+		{ kind: "monthly", usedPercent: 18.5 },
+		{ kind: "weekly", usedPercent: 37 }
+	];
+	assert.equal(line({ scheme: "commandcode", windows: plan }), "30d 18.5%");
+	assert.equal(line({ scheme: "sub2api", windows: plan.slice(0, 1).concat(plan[2]) }), "7d 37%");
+	// A window with no figure is not a candidate.
+	assert.equal(line({ windows: [{ kind: "monthly" }, { kind: "weekly", usedPercent: 2 }] }), "7d 2%");
+	// Two pools, the longest of each.
+	assert.equal(
+		line({
+			scheme: "antigravity",
+			windows: [
+				{ kind: "session", minutes: 300, usedPercent: 7, group: "gemini" },
+				{ kind: "weekly", usedPercent: 20, group: "gemini" },
+				{ kind: "session", minutes: 300, usedPercent: 0, group: "non-gemini" },
+				{ kind: "weekly", usedPercent: 3, group: "non-gemini" }
+			]
+		}),
+		"balance.group.gemini 7d 20% · balance.group.non-gemini 7d 3%"
+	);
+
+	// The failure states in two words; the card under the line explains.
+	assert.equal(line({ fetched: false, reason: "unreachable" }), "balance.row.failed");
+	assert.equal(line({ fetched: false, reason: "no-credential" }), "balance.row.noKey");
+	assert.equal(line({ supported: false, reason: "unknown-software" }), "balance.row.unsupported");
+	assert.equal(exports.balanceRowValue(undefined, T).text, "…");
+});
+
+test("a balance line opens its full card, button and all", async () => {
+	const { exports, render, renderWithState } = await loadBundle();
+	const props = {
+		state: { status: "ready", data: { ok: true, supported: true, fetched: false, reason: "401", scheme: "newapi", displayName: "api2.yoshub.com" } },
+		account: { id: "yos", displayName: "api2.yoshub.com", origin: "https://api2.yoshub.com" },
+		translate: T,
+		onConfigure() {}
+	};
+	const shut = render(exports.BalanceRow, props);
+	assert.equal(findAll(shut, "tkl_balance").length, 0);
+	assert.equal(findAll(shut, "tkl_balRowBad").length, 1, "a failed read stands out on its line");
+	// [open]
+	const opened = renderWithState(exports.BalanceRow, props, [true]);
+	assert.equal(findAll(opened, "tkl_balance").length, 1);
+	assert.ok(textOf(opened).includes("balance.setButton"), "the credentials button still lives in the card");
 });
 
 test("a balance that could not be read never becomes an error banner", async () => {
@@ -1625,7 +1687,7 @@ test("opening the panel reads every account's balance, once each", async () => {
 
 		// Every card is on screen, and the refresh button forces the lot.
 		const tree = harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells());
-		assert.equal(findAll(tree, "tkl_balance").length, 3, "one card per account");
+		assert.equal(findAll(tree, "tkl_balRow").length, 3, "one line per account");
 		assert.equal(typesOf(tree).includes("select"), false, "no dropdown to choose with");
 
 		const forced = cells();

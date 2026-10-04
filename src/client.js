@@ -361,10 +361,18 @@ window.__ModuleLoader__.load({
 			".tkl_sortMark{color:var(--dsw-alias-label-secondary);margin-left:2px}",
 
 			// -- balance -----------------------------------------------------------
-			// One card per account, stacked: the section lists them all rather
-			// than hiding all but one behind a dropdown, and the body scrolls —
-			// a stack is the only layout that keeps every figure visible.
-			".tkl_balances{display:flex;flex-direction:column;gap:8px}",
+			// One LINE per account (用户 2026-10-04「这样东西太多了 每个压缩成一行」):
+			// the name, then the one figure that answers "how much is left". A
+			// press opens that account's full card under its line.
+			".tkl_balances{display:flex;flex-direction:column;gap:2px}",
+			".tkl_balRow{display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;padding:4px 6px;border:none;border-radius:var(--tkl-radius-xs);background:0 0;cursor:pointer;font:inherit;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);text-align:left}",
+			".tkl_balRow:hover{background:var(--dsw-alias-interactive-bg-hover)}",
+			".tkl_balRowMark{flex:none;width:10px;color:var(--dsw-alias-label-tertiary);font-size:9px}",
+			".tkl_balRowName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+			".tkl_balRowValue{flex:none;max-width:65%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary);font-weight:500;font-variant-numeric:tabular-nums}",
+			".tkl_balRowDim{color:var(--dsw-alias-label-tertiary);font-weight:400}",
+			".tkl_balRowBad{color:var(--dsw-alias-state-warn-primary)}",
+			".tkl_balItem > .tkl_balance{margin:2px 0 6px}",
 			// The card is a column so quota windows can stack under the amount.
 			// With no windows it holds a single child, the gap never applies, and
 			// the row renders exactly as it did before they existed.
@@ -523,6 +531,13 @@ window.__ModuleLoader__.load({
 			hit: "tkl_hit",
 			sortMark: "tkl_sortMark",
 			balances: "tkl_balances",
+			balItem: "tkl_balItem",
+			balRow: "tkl_balRow",
+			balRowMark: "tkl_balRowMark",
+			balRowName: "tkl_balRowName",
+			balRowValue: "tkl_balRowValue",
+			balRowDim: "tkl_balRowDim",
+			balRowBad: "tkl_balRowBad",
 			balance: "tkl_balance",
 			balanceTop: "tkl_balanceTop",
 			balanceMain: "tkl_balanceMain",
@@ -1922,6 +1937,96 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * How long a window runs, in minutes — only to pick a plan's longest. A
+		 * billing period is a month; a kind with no length sorts last.
+		 */
+		function windowSpan(window) {
+			if (window.kind === "session") return typeof window.minutes === "number" ? window.minutes : 0;
+			return { daily: 1440, weekly: 10080, monthly: 43200, billing: 43200 }[window.kind] ?? 0;
+		}
+
+		/**
+		 * The longest window of each pool (用户 2026-10-04「套餐的显示最长那个比如月周」):
+		 * a month when the plan has one, else the week, else the shortest. A
+		 * plan split by model group (Antigravity) keeps one per group, or the
+		 * line would speak for one pool and hide the other.
+		 */
+		function longestWindows(windows) {
+			const best = new Map();
+			for (const window of Array.isArray(windows) ? windows : []) {
+				if (typeof window?.usedPercent !== "number" && window?.unlimited !== true) continue;
+				const held = best.get(window.group);
+				if (held === undefined || windowSpan(window) > windowSpan(held)) best.set(window.group, window);
+			}
+			return [...best.values()];
+		}
+
+		/**
+		 * The one figure an account's line shows: the balance when there is
+		 * one, what was spent for an unlimited key, else the plan's longest
+		 * window as a bare percentage used (the badge's form). A read that
+		 * failed says so in two words; the card under the line explains.
+		 */
+		function balanceRowValue(balance, translate) {
+			if (balance === undefined) return { text: "…", tone: "dim" };
+			if (balance.supported === false) return { text: translate("balance.row.unsupported"), tone: "dim" };
+			if (balance.fetched !== true) {
+				const key =
+					balance.reason === "rate-limited"
+						? "balance.row.limited"
+						: balance.reason === "no-credential"
+							? "balance.row.noKey"
+							: "balance.row.failed";
+				return { text: translate(key), tone: "bad" };
+			}
+			const tone = balance.isAvailable === false ? "bad" : undefined;
+			if (typeof balance.total === "number") return { text: fmtMoney(balance.total, balance.currency), tone };
+			if (typeof balance.used === "number") return { text: translate("badge.spent", { amount: fmtMoney(balance.used, balance.currency) }), tone };
+			if (balance.quota?.available !== undefined) return { text: translate("balance.quota", { n: fmt(balance.quota.available) }), tone };
+			const windows = longestWindows(balance.windows);
+			if (windows.length === 0) return { text: "—", tone: "dim" };
+			const text = windows
+				.map((w) => {
+					const pool = w.group === undefined ? "" : `${translate(`balance.group.${w.group}`)} `;
+					const used = w.unlimited === true ? translate("balance.window.unlimited") : `${w.usedPercent}%`;
+					return `${pool}${compactWindowLabel(w, translate)} ${used}`;
+				})
+				.join(" · ");
+			const full = windows.some((w) => typeof w.usedPercent === "number" && w.usedPercent >= 100);
+			return { text, tone: full ? "bad" : tone };
+		}
+
+		/**
+		 * One account as one line; a press opens its full card underneath, where
+		 * the reset times, the notes and the 设置查询API button still live.
+		 */
+		function BalanceRow({ state, account, translate, onConfigure }) {
+			const [open, setOpen] = react.useState(false);
+			const balance = state.status === "ready" ? state.data : undefined;
+			const name = account?.displayName ?? balance?.displayName ?? translate("section.balance");
+			const value = balanceRowValue(balance, translate);
+			const tone = value.tone === "bad" ? ` ${S.balRowBad}` : value.tone === "dim" ? ` ${S.balRowDim}` : "";
+			return jsxs("div", {
+				className: S.balItem,
+				children: [
+					jsxs("button", {
+						type: "button",
+						className: S.balRow,
+						"aria-expanded": open,
+						title: `${name} · ${value.text}`,
+						onClick: () => setOpen(!open),
+						children: [
+							jsx("span", { className: S.balRowMark, children: open ? "▾" : "▸" }),
+							jsx("span", { className: S.balRowName, children: name }),
+							jsx("span", { className: `${S.balRowValue}${tone}`, children: value.text })
+						]
+					}),
+					open && balance !== undefined ? jsx(BalanceCard, { state, account, translate, onConfigure }) : null
+				]
+			});
+		}
+
+		/**
 		 * How each relay program is named on the card — the who-line keeps the
 		 * origin and the software, and deliberately NOT the username: the 账号
 		 * belongs to the site's console, not to a card the picker attributes.
@@ -2634,7 +2739,7 @@ window.__ModuleLoader__.load({
 							className: S.balances,
 							children: cards.map((account) =>
 								jsx(
-									BalanceCard,
+									BalanceRow,
 									{
 										state: balanceStateOf(balances, account),
 										account,
@@ -2981,6 +3086,10 @@ window.__ModuleLoader__.load({
 			"balance.granted": "其中赠送 {amount}",
 			"balance.grantedRecharge": "其中累计充值 {amount}",
 			"balance.failedPlain": "余额读取失败。",
+			"balance.row.failed": "读取失败",
+			"balance.row.unsupported": "不支持",
+			"balance.row.limited": "限流中",
+			"balance.row.noKey": "未配置密钥",
 			"balance.setButton": "设置查询API",
 			"balance.setCookie": "设置 Cookie",
 			"balance.hint.mimo-cookie-missing": "小米 MiMo 的余额只能从控制台读：API key 没有余额接口。点「设置 Cookie」粘贴控制台的登录 Cookie。",
@@ -3130,6 +3239,10 @@ window.__ModuleLoader__.load({
 			"balance.granted": "{amount} granted",
 			"balance.grantedRecharge": "of which recharged {amount}",
 			"balance.failedPlain": "Could not read the balance.",
+			"balance.row.failed": "unreadable",
+			"balance.row.unsupported": "unsupported",
+			"balance.row.limited": "rate-limited",
+			"balance.row.noKey": "no key",
 			"balance.setButton": "Set query API",
 			"balance.setCookie": "Set cookie",
 			"balance.hint.mimo-cookie-missing": "Xiaomi MiMo's balance is only readable from its console; API keys have no balance endpoint. Use \"Set cookie\" to paste the console's sign-in cookie.",
@@ -3283,6 +3396,8 @@ window.__ModuleLoader__.load({
 		exports.niceCeil = niceCeil;
 		exports.ModelTable = ModelTable;
 		exports.BalanceCard = BalanceCard;
+		exports.BalanceRow = BalanceRow;
+		exports.balanceRowValue = balanceRowValue;
 		exports.badgeBalanceText = badgeBalanceText;
 		exports.SetBalanceButton = SetBalanceButton;
 		exports.UserAuthDialog = UserAuthDialog;
