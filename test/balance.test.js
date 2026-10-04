@@ -17,6 +17,8 @@ import {
 	UNRECOGNIZED_RETRY_MS,
 	createBalanceReader,
 	deepSeekAccountClient,
+	findAccount,
+	mapAntigravityQuota,
 	isOfficialDeepSeek,
 	listAccounts,
 	mapDeepSeekAccountWallets,
@@ -416,6 +418,109 @@ test("DeepSeek is still collapsed, because there the account is the unit", () =>
 		})
 	);
 	assert.equal(accounts.length, 1);
+});
+
+test("a route folded into a vendor card still finds that card", async () => {
+	// The sidebar asks by the route the session's model sits on. A DeepSeek
+	// card keeps ONE route's id, so asking by the other one — 0.1.7's keyless
+	// `deepseek-account` beside the keyed route — read "unknown-account" and
+	// the sidebar showed nothing for the default model.
+	const ctx = ctxWith(
+		[piAi("deepseek-account"), piAi("official"), piAi("api99")],
+		{
+			providers: {
+				"deepseek-account": { baseURL: "https://api.deepseek.com" },
+				official: { baseURL: "https://api.deepseek.com", apiKeyEnv: "DEEPSEEK_KEY" },
+				api99: { baseURL: "https://api.relay-one.example/v1", apiKeyEnv: "K" }
+			}
+		},
+		undefined,
+		{ deepseekAccount: signedIn(ACCOUNT_WALLETS) }
+	);
+	const accounts = listAccounts(ctx);
+	assert.equal(accounts.length, 2);
+	assert.equal(accounts[0].id, "official", "the keyed route still takes the card");
+	assert.deepEqual([...accounts[0].routes].sort(), ["deepseek-account", "official"]);
+	assert.equal(findAccount(accounts, "deepseek-account"), accounts[0]);
+	assert.equal(findAccount(accounts, "api99").id, "api99");
+	assert.equal(findAccount(accounts, undefined), accounts[0], "no id is still the first card");
+	assert.equal(findAccount(accounts, "nope"), undefined);
+
+	const result = await createBalanceReader(ctx, { fetch: async () => assert.fail("no request") })("deepseek-account");
+	assert.equal(result.fetched, true);
+	assert.equal(result.account, "official");
+	assert.equal(result.total, 49.8913457);
+});
+
+// --- Antigravity --------------------------------------------------------------
+
+/** `antigravityAuth.usage()`'s normalized answer, as `dsh-antigravity-auth` 0.1.4-rc.5 returns it. */
+const ANTIGRAVITY_USAGE = {
+	state: "available",
+	checkedAt: "2026-10-04T08:00:00.000Z",
+	groups: [
+		{
+			group: "gemini",
+			modelCount: 2,
+			windows: [
+				{ window: "5h", remainingFraction: 0.6, resetTime: "2026-10-04T12:00:00.000Z" },
+				{ window: "weekly", remainingFraction: 0.85, resetTime: "2026-10-10T00:00:00.000Z" }
+			]
+		},
+		{ group: "non-gemini", modelCount: 3, windows: [{ window: "5h", remainingFraction: 0, resetTime: "2026-10-04T10:00:00.000Z" }] }
+	]
+};
+
+test("the Antigravity adapter's route is an account when its plugin is mounted", async () => {
+	// The route is registered as an ADAPTER, so the configurable directory
+	// never lists it — before this it had no account and its quota showed
+	// nowhere. The quota is read through the plugin's own service: the OAuth
+	// token never leaves it, and nothing here talks to Google.
+	const calls = [];
+	const service = { usage: async (signal, force) => (calls.push(force), ANTIGRAVITY_USAGE) };
+	const ctx = ctxWith(
+		[piAi("official")],
+		{ providers: { official: { baseURL: "https://api.deepseek.com", apiKeyEnv: "K" } } },
+		undefined,
+		{ antigravityAuth: service }
+	);
+	const accounts = listAccounts(ctx);
+	const account = accounts.find((a) => a.id === "google-antigravity");
+	assert.ok(account, `not listed: ${accounts.map((a) => a.id)}`);
+	assert.equal(account.displayName, "Antigravity");
+	assert.equal(account.scheme, "antigravity");
+
+	const read = createBalanceReader(ctx, { fetch: async () => assert.fail("no request of our own") });
+	const result = await read("google-antigravity");
+	assert.equal(result.fetched, true);
+	assert.equal(result.scheme, "antigravity");
+	assert.deepEqual(result.windows, [
+		{ kind: "session", minutes: 300, usedPercent: 40, resetsAt: "2026-10-04T12:00:00.000Z", group: "gemini" },
+		{ kind: "weekly", usedPercent: 15, resetsAt: "2026-10-10T00:00:00.000Z", group: "gemini" },
+		{ kind: "session", minutes: 300, usedPercent: 100, resetsAt: "2026-10-04T10:00:00.000Z", group: "non-gemini" }
+	]);
+	assert.equal(result.isAvailable, false, "one group exhausted is not 'all available'");
+	await read("google-antigravity", { force: true });
+	assert.deepEqual(calls, [false, true], "the refresh button reaches the plugin as force");
+
+	// No plugin, no account: there would be nothing to read it with.
+	assert.equal(listAccounts(ctxWith([piAi("official")], { providers: { official: { apiKeyEnv: "K" } } })).some((a) => a.id === "google-antigravity"), false);
+});
+
+test("an Antigravity plugin that is signed out says so, and its throttle is not ours", async () => {
+	const readWith = (answer) =>
+		createBalanceReader(ctxWith([], {}, undefined, { antigravityAuth: { usage: async () => answer } }))("google-antigravity");
+	const out = await readWith({ state: "unauthenticated" });
+	assert.equal(out.fetched, false);
+	assert.equal(out.hint, "antigravity-signin");
+	const throttled = await readWith({ state: "rate-limited", checkedAt: "2026-10-04T08:00:00.000Z" });
+	assert.equal(throttled.reason, "upstream-429", "'rate-limited' is the panel's word for OUR backoff and wants a retry time");
+	const thrown = await createBalanceReader(
+		ctxWith([], {}, undefined, { antigravityAuth: { usage: async () => { throw new Error("boom"); } } })
+	)("google-antigravity");
+	assert.equal(thrown.fetched, false);
+	assert.equal(thrown.reason, "failed");
+	assert.deepEqual(mapAntigravityQuota({ groups: [{ group: "x", windows: [{ window: "5h", remainingFraction: 0.5 }] }, { group: "gemini", windows: [{ window: "5h", remainingFraction: 2 }] }] }), [], "unknown groups and impossible fractions are dropped");
 });
 
 test("a relay's software is fingerprinted when a balance is asked for, and only once", async () => {

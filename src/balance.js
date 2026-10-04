@@ -914,6 +914,80 @@ export async function readDeepSeekAccountBalance(ctx, options = {}) {
 	return wallet === undefined ? { ok: false, reason: "no-wallets" } : { ok: true, ...wallet };
 }
 
+/**
+ * The service `dsh-antigravity-auth` provides on the Host, and the route its
+ * LLM adapter registers. The route is an ADAPTER, not a configurable
+ * provider: it never appears in `listConfigurableProviders()`, so without
+ * this it had no account at all and its quota showed nowhere.
+ */
+export const ANTIGRAVITY_SERVICE = "antigravityAuth";
+export const ANTIGRAVITY_ROUTE = "google-antigravity";
+/** Where its requests go (`ANTIGRAVITY_WIRE_ORIGIN` in that plugin); a label here, never requested by us. */
+export const ANTIGRAVITY_ORIGIN = "https://daily-cloudcode-pa.googleapis.com";
+
+/**
+ * The Antigravity quota, read through the plugin that owns the OAuth grant.
+ *
+ * `usage(signal, force)` answers `{ state, checkedAt?, groups? }`: up to two
+ * groups (`gemini`, `non-gemini` = Claude and GPT), each with a five-hour and
+ * a weekly window carrying `remainingFraction` (0–1) and `resetTime`. The
+ * plugin calls Google itself and keeps its own 30 s floor; the token never
+ * leaves it, which is the whole reason to ask the service instead of the API.
+ */
+export async function readAntigravityQuota(ctx, options = {}) {
+	const service = typeof ctx?.get === "function" ? ctx.get(ANTIGRAVITY_SERVICE) : undefined;
+	if (typeof service?.usage !== "function") return { ok: false, reason: "no-account-service" };
+	let result;
+	try {
+		result = await withDeadline(
+			Promise.resolve().then(() => service.usage(options.signal, options.force === true)),
+			options.timeoutMs ?? ACCOUNT_TIMEOUT_MS
+		);
+	} catch (error) {
+		return { ok: false, reason: error?.kind === "timeout" ? "timeout" : "failed" };
+	}
+	if (options.signal?.aborted === true) return { ok: false, reason: "aborted" };
+	if (result?.state === "unauthenticated") return { ok: false, reason: "signed-out" };
+	// The plugin's own states pass through as the reason, except its throttle:
+	// "rate-limited" is the panel's word for OUR backoff and wants a retry time.
+	if (result?.state !== "available") {
+		const state = typeof result?.state === "string" ? result.state : "failed";
+		return { ok: false, reason: state === "rate-limited" ? "upstream-429" : state };
+	}
+	const windows = mapAntigravityQuota(result);
+	return {
+		ok: true,
+		windows,
+		isAvailable: windows.length === 0 ? undefined : windows.every((w) => w.usedPercent < 100)
+	};
+}
+
+/**
+ * Antigravity's groups as the panel's windows. `usedPercent` is derived from
+ * the remaining fraction so the card draws them like every other plan; `group`
+ * says which models a window governs, since both groups have a 5 h and a week.
+ */
+export function mapAntigravityQuota(result) {
+	const windows = [];
+	for (const group of Array.isArray(result?.groups) ? result.groups : []) {
+		if (group?.group !== "gemini" && group?.group !== "non-gemini") continue;
+		for (const window of Array.isArray(group.windows) ? group.windows : []) {
+			const remaining = window?.remainingFraction;
+			if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < 0 || remaining > 1) continue;
+			const kind = window.window === "5h" ? "session" : window.window === "weekly" ? "weekly" : undefined;
+			if (kind === undefined) continue;
+			windows.push({
+				kind,
+				...(kind === "session" ? { minutes: 300 } : {}),
+				usedPercent: Math.round((1 - remaining) * 100),
+				...(typeof window.resetTime === "string" ? { resetsAt: window.resetTime } : {}),
+				group: group.group
+			});
+		}
+	}
+	return windows;
+}
+
 /** Walk a settings path; shared shape with `discovery.readAtPath`. */
 function readAt(section, path) {
 	let cursor = section;
@@ -1064,7 +1138,11 @@ export function listAccounts(ctx, options = {}) {
 			// lazily, when a balance is actually requested for that site. A
 			// vendor needs no probe: its origin names its scheme.
 			scheme: vendor?.scheme ?? softwareOf.get(origin),
-			hasCredential
+			hasCredential,
+			// Every route this card answers for. A vendor card stands for all
+			// its routes, so asking by a folded one (the session's model sits
+			// on `deepseek-account`, the card kept `deepseek`) still finds it.
+			routes: [entry.provider]
 		};
 		// Vendors collapse per origin: two routes at one vendor draw on one
 		// wallet. Relays do not — there the quota belongs to the key.
@@ -1075,13 +1153,35 @@ export function listAccounts(ctx, options = {}) {
 				// keyless `deepseek-account` (sign-in) route beside the API-key one;
 				// whichever the catalog listed first took the DeepSeek card, and
 				// when it was the sign-in route the balance read "no key".
-				if (!out[seen].hasCredential && hasCredential) out[seen] = account;
+				if (!out[seen].hasCredential && hasCredential) {
+					account.routes = [...out[seen].routes, ...account.routes];
+					out[seen] = account;
+				} else {
+					out[seen].routes.push(entry.provider);
+				}
 				continue;
 			}
 			seenVendor.set(origin, out.length);
 		}
 		perHost.set(host, (perHost.get(host) ?? 0) + 1);
 		out.push(account);
+	}
+
+	// The Antigravity adapter's route, when its plugin is mounted. Probed, not
+	// assumed: without the service there is nothing to read the quota with.
+	const antigravity = typeof ctx.get === "function" ? ctx.get(ANTIGRAVITY_SERVICE) : undefined;
+	if (typeof antigravity?.usage === "function" && !out.some((a) => a.routes.includes(ANTIGRAVITY_ROUTE))) {
+		seenVendor.set(ANTIGRAVITY_ORIGIN, out.length);
+		out.push({
+			id: ANTIGRAVITY_ROUTE,
+			route: ANTIGRAVITY_ROUTE,
+			host: hostLabel(ANTIGRAVITY_ORIGIN),
+			displayName: "Antigravity",
+			origin: ANTIGRAVITY_ORIGIN,
+			scheme: "antigravity",
+			hasCredential: true,
+			routes: [ANTIGRAVITY_ROUTE]
+		});
 	}
 
 	// Vendors first, otherwise in catalog order. The first account is the card
@@ -1098,6 +1198,15 @@ export function listAccounts(ctx, options = {}) {
 		if ((perHost.get(account.host) ?? 0) > 1) account.displayName = `${account.host} · ${account.route}`;
 	}
 	return out;
+}
+
+/**
+ * The account a balance request names: by its id first, then by any route
+ * folded into it. Undefined `id` is the first account, as it always was.
+ */
+export function findAccount(accounts, id) {
+	if (id === undefined) return accounts[0];
+	return accounts.find((a) => a.id === id) ?? accounts.find((a) => a.routes?.includes(id) === true);
 }
 
 /** How long a site that fingerprinted as nothing we know is left unprobed. */
@@ -1124,8 +1233,19 @@ export function createBalanceReader(ctx, options = {}) {
 		const accounts = listAccounts(ctx, options);
 		if (accounts.length === 0) return { ok: true, supported: false, reason: "no-provider-directory" };
 
-		const account = id === undefined ? accounts[0] : accounts.find((a) => a.id === id);
+		const account = findAccount(accounts, id);
 		if (account === undefined) return { ok: true, supported: false, reason: "unknown-account" };
+
+		// Antigravity is read only through its own plugin; there is no key
+		// here, and no relay to fingerprint.
+		if (account.scheme === "antigravity") {
+			const quota = await readAntigravityQuota(ctx, { signal, force: request.force === true, timeoutMs: options.accountTimeoutMs });
+			const who = { account: account.id, displayName: account.displayName, scheme: "antigravity", supported: true };
+			if (quota.ok !== true) {
+				return { ok: true, ...who, fetched: false, reason: quota.reason, ...(quota.reason === "signed-out" ? { hint: "antigravity-signin" } : {}) };
+			}
+			return { ok: true, ...who, fetched: true, windows: quota.windows, ...(quota.isAvailable === undefined ? {} : { isAvailable: quota.isAvailable }) };
+		}
 
 		// The signed-in wallet first, and only for DeepSeek itself. It is the
 		// wallet the sign-in route spends, it survives an API key being deleted

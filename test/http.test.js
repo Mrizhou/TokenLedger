@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BALANCE_PATH, BASE_PATH, USAGE_PATH, USERAUTH_PATH, accountOf, forceOf, hostNameOf, isLoopbackAddress, originOf, parseQuery, readJsonBody, registerRoutes, screenRequest, usagePayload } from "../src/http.js";
+import { BALANCE_PATH, BASE_PATH, USAGE_PATH, USERAUTH_PATH, accountOf, dailySeries, forceOf, hostNameOf, isLoopbackAddress, originOf, parseQuery, readJsonBody, registerRoutes, screenRequest, usagePayload } from "../src/http.js";
 import { dailyModels, hostTimeZone } from "../src/usage.js";
 import { LedgerStore } from "../src/store.js";
 import { applyUsageDelta } from "../src/usage.js";
@@ -93,6 +93,61 @@ const seeded = () => {
 	store.commitSession("s", state);
 	return store;
 };
+
+test("the trend line's days carry each day's own cost, priced at that day's rates", () => {
+	// A schedule: the price doubles on the 2nd. Pricing the whole history at
+	// one date's rates (what the range-wide 估算 does) would draw day one at
+	// the wrong price.
+	const rates = [
+		{ model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 1 } },
+		{ model: "m", currency: "CNY", effectiveFrom: "2026-01-02", perMillion: { inputTokens: 2 } }
+	];
+	const rows = [
+		{ day: "2026-01-01", site: "a", provider: "deepseek-official", model: "m", inputTokens: 1_000_000, tokens: 1_000_000, requests: 2 },
+		{ day: "2026-01-02", site: "a", provider: "deepseek-official", model: "m", inputTokens: 1_000_000, tokens: 1_000_000, requests: 3 },
+		{ day: "2026-01-02", site: "b", provider: "relay", model: "m", inputTokens: 500_000, tokens: 500_000, requests: 1 }
+	];
+	const store = {
+		byDay: () => [
+			{ day: "2026-01-01", tokens: 1_000_000, requests: 2 },
+			{ day: "2026-01-02", tokens: 1_500_000, requests: 4 }
+		],
+		byRoute: (range, site, provider) => rows.filter((r) => provider === undefined || r.provider === provider)
+	};
+	const series = dailySeries(store, undefined, undefined, rates);
+	assert.deepEqual(
+		series.map((d) => [d.day, d.tokens, d.requests, d.cost, d.currency]),
+		[
+			["2026-01-01", 1_000_000, 2, 1, "CNY"],
+			["2026-01-02", 1_500_000, 4, 3, "CNY"]
+		],
+		"configured rates price every route, each day at its own price"
+	);
+
+	// The shipped list prices the official route only, like the 估算 column:
+	// a relay's own prices are not DeepSeek's.
+	const shipped = dailySeries({ ...store, byRoute: () => [] }, undefined, undefined, undefined);
+	assert.deepEqual(shipped.map((d) => d.cost), [undefined, undefined], "nothing priced, no cost and no currency");
+	assert.equal(shipped[0].tokens, 1_000_000, "tokens stand without a price");
+
+	// A malformed table costs the cost line, never the token one.
+	const broken = dailySeries(store, undefined, undefined, [{ model: 1 }]);
+	assert.deepEqual(broken.map((d) => d.tokens), [1_000_000, 1_500_000]);
+	assert.equal(broken[0].cost, undefined);
+});
+
+test("the payload carries the whole daily history for the trend line", () => {
+	const store = seeded();
+	try {
+		const p = usagePayload({ store, sites: () => [] }, { range: { from: "2999-01-01" } });
+		assert.equal(p.daily.length, 1, "independent of the selected range");
+		assert.equal(p.daily[0].tokens, p.days.length === 0 ? 1100 : p.days[0].tokens);
+		const wired = usagePayload({ store, sites: () => [], daily: () => [{ day: "x", tokens: 7 }] }, { range: {} });
+		assert.deepEqual(wired.daily, [{ day: "x", tokens: 7 }], "the plugin's rates reach it through deps");
+	} finally {
+		store.close();
+	}
+});
 
 test("one request carries the whole panel, so its sections cannot disagree mid-load", () => {
 	const store = seeded();

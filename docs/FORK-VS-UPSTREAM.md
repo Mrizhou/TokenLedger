@@ -128,3 +128,55 @@
     「the route the Command Code provider plugin mounts with a default endpoint still gets its card」、
     `test/discovery.test.js`「a provider plugin's route with a default endpoint stops being an unknown route」
     （均变异验证）。**合上游时这一处要保留**（上游没有这个 vendor）。
+- **侧边栏「用量账本」下方显示当前所选模型的余额**（2026-10-04，用户「我想在左边栏上加上余额显示 就是用量账本四个字下方 显示为当前选择模型的余额」）：
+  - 「当前所选模型」取 DSH 自己的选择，**不从账本推断**：`uiSession.current` 给出主会话 id →
+    `modelDirectories.directoryFor(id).store` 的 `current = { provider, model }`（与输入框的模型席位同一个 store，
+    出处：`@deepseek-ai/dsh-client-ui-model-selection` / `dsh-client-ui-session` 0.2.0-rc.2 的 `lib/client.js`）。
+    两个服务都用 `ctx.get` 取、**不进 `inject`**（`docs/HOST-CONTRACT.md` §2：声明即必需，宿主没有就整个插件挂起）；
+    取不到就每 2 s 重试、最多 60 次（两分钟），之后这一行不出，徽章其余照旧。
+  - **刚加载不显示、选了模型才出（同日用户报「我刚加载进去没显示」）**：两处根因，都改成会重试。
+    ① 重启后第一次查余额早于宿主的 provider 目录 / 登录态就绪，答 `no-provider-directory` 之类，这个空答案一直挂到 5 分钟节拍或换模型 →
+    现在没读到（`fetched !== true` 或请求失败）就按 5 s / 15 s / 30 s / 60 s 再问，读到即停；
+    ② 主会话先被点名、作用域后建，`directoryFor()` 抛「resolved no scope」时旧代码已把会话记为「处理过」、再不重试 → 现在忘掉它、2 s 后重来。
+    守卫测试 `test/client.test.js`「a fresh load that finds the host or the session not ready yet asks again」（两处各自变异验证）。
+  - `provider` 就是路由 id，直接当 `/api/tokenledger/balance?account=` 用；从不 `force`，走宿主的新鲜度窗口，
+    跟今日用量同一个 5 分钟节拍。读不到 / 不支持 / 失败 → **这一行不出**（解释留给面板里的余额卡）；
+    换模型时旧路由的数字立即撤掉，不会挂在新模型下。显示：有余额 `余额 ¥x`，无限额 key `已用 $x`，
+    只有订阅窗口（Command Code）取第一个有百分比的窗口 `5 小时窗口 已用 40%`；悬停给 `路由/模型 · 卡名`。收起成 56px 轨道时隐藏。
+  - **宿主侧配套**：`listAccounts()` 每个账户多带 `routes`（被厂商卡折叠进来的路由 id 也记上），
+    `findAccount()` 先按 id、再按 `routes` 找 —— 否则会话停在 `deepseek-account`、而 DeepSeek 卡留的是另一条路由的 id 时，
+    按路由问余额得到 `unknown-account`，默认模型那一行永远是空的。`plugin.js` 的钱包分支同样改用 `findAccount()`。
+  - 守卫测试：`test/client.test.js`「the badge's second line is the balance behind the open session's model」
+    「the badge's balance line says nothing it cannot say in a few words」、
+    `test/balance.test.js`「a route folded into a vendor card still finds that card」（前一条与第三条均变异验证）。
+    **合上游时这一处要保留**（上游没有）。
+- **Antigravity（`dsh-antigravity-auth` 插件）进余额账户**（2026-10-04，用户「antigravity的插件可以显示进账户吗」「dsh里装的那个插件」）：
+  - 来由：`google-antigravity` 是插件用 `llm.registerAdapter` 挂的**适配器路由**，不在 `listConfigurableProviders()` 里，
+    所以从来没有账户、余额查它答 `unknown-account`（2026-10-04 对运行中宿主 `GET /api/tokenledger/balance?account=google-antigravity` 实测）。
+  - 做法：探测宿主服务 `antigravityAuth`（插件 `lib/index.js` `ctx.provide("antigravityAuth", service)`，0.1.4-rc.5），
+    有 `usage()` 就在 `listAccounts()` 末尾补一个厂商账户（id `google-antigravity`、scheme `antigravity`）；
+    读额度调 `service.usage(signal, force)` —— **令牌留在那个插件里，我们不碰 OAuth、不自己请求 Google**，插件自带 30 s 下限。
+    返回 `{ state, groups: [{ group: "gemini" | "non-gemini", windows: [{ window: "5h" | "weekly", remainingFraction, resetTime }] }] }`，
+    转成面板通用窗口 `{ kind, minutes?, usedPercent = round((1−剩余)×100), resetsAt, group }`；卡片窗口名前缀组名
+    （「Gemini」「Claude 与 GPT」，沿用该插件自己的分组叫法），侧边栏按当前模型名含不含 `gemini` 取对应组。
+    未登录给 hint `antigravity-signin`；插件自己的 `rate-limited` 改报 `upstream-429`（我们的 `rate-limited` 带重试时刻，语义不同）。
+  - **不碰** `BUILTIN_PROVIDER_ORIGINS` / 站点归因：`listAccounts()` 只供余额，不进 origin 集合，**不会触发账本整表重折叠**（10-03 手工归并不受影响）。
+  - 守卫测试：`test/balance.test.js`「the Antigravity adapter's route is an account when its plugin is mounted」
+    「an Antigravity plugin that is signed out says so, and its throttle is not ours」（均变异验证）、
+    `test/client.test.js`「Antigravity's quota is labelled by model group, and the badge reads the selected model's group」。
+    **合上游时这一处要保留**（上游没有）。
+- **Command Code 与 Antigravity 的窗口标成 `5h` / `7d` / `30d`**（2026-10-04，用户「cc的用量别写5小时窗口 用5h week month标出来」）：
+  `client.js` 的 `COMPACT_WINDOW_SCHEMES`（`commandcode`；同日用户问「antigravity的做匹配了吗 5h week」后加 `antigravity` —— 侧边栏只列当前模型所在组的 `5h` / `7d`，并前缀组名：`Gemini 5h 7% · 7d 20%` / `Claude 与 GPT 5h 0% · 7d 0%`；用户问「选opus显示claude、还有个gpt的」—— **GPT 与 Claude 在 Antigravity 是同一个额度池**（插件 `parseUsageResult` 只允许 `gemini` / `non-gemini` 两组），所以选 GPT 也显示「Claude 与 GPT」）→ `compactWindowLabel()`，面板卡片用短标签；
+  侧边栏那一行**三个窗口都列、不写「已用」**（同日用户「那一行三个都要显示 已用两个字不写」）：`5h 1.9% · 7d 37% · 30d 18.5%`（同日用户「别写week 写7d 和30d吧」，`daily` 相应写 `1d`，目前只有 Sub2API 有日窗口），悬停给全文；
+  其他方案仍是「5 小时窗口 / 每周窗口」。守卫测试：`test/client.test.js`「Command Code's windows read 5h / 7d / 30d, on the card and on the badge」。
+- **面板：「模型」挪到「活跃度」上方；最下面加「日用量」折线**（2026-10-04，用户「模型提到活跃度上方，然后在最下面搞一个日用量折线图可以选按token还是估算的费用 选单日（按小时或者分钟来，如果做不到换成90天） 30天 全部」）：
+  - **单日按小时做不到**：账本 `session_rollups` 的最细粒度是「会话 × 天」，没有时刻列；要小时就得改 schema → 整表 DROP + 从会话日志重折叠，
+    会丢日志已删的会话、并冲掉 10-03 的手工归并。按用户给的退路换成 **30 天 / 90 天 / 全部**。
+  - 宿主：`http.js` `dailySeries()` → 载荷字段 `daily: [{ day, tokens, requests, cost?, currency? }]`，全历史、与所选区间无关（同活跃度）；
+    费用口径同「估算」列（配了 `rates` 计全部路由，只有内置表则只计官方路由），但**每天按当天的价目**计；多币种时只画总额最大的那种、不相加。
+    `plugin.js` 两处 deps 用 `config.rates` 接上。
+  - 浏览器：`client.js` `TrendChart` 手写 SVG 单线（无依赖）。Token / 估算费用 切换（没有任何计价记录时费用按钮置灰），30 / 90 天 / 全部；
+    空闲日补 0；十字线吸附到最近一天，悬停提示复用活跃度的 `.tkl_tip`。线色 `#0284c7`，用 dataviz 校验脚本在浅/深两种底色上都过了亮度带、彩度和 3:1 对比。
+  - 守卫测试：`test/http.test.js`「the trend line's days carry each day's own cost, priced at that day's rates」（变异验证）
+    「the payload carries the whole daily history for the trend line」、`test/client.test.js`「the trend line fills idle days…」
+    「the trend chart toggles tokens and cost…」「the panel orders 模型 above 活跃度 and puts the daily line last」。**合上游时这一处要保留**。

@@ -39,10 +39,10 @@ import { RelaySiteRegistry, SITE_TYPES, createSiteResolver, domainOf, normalizeO
 import { createFingerprintRegistry } from "./fingerprints.js";
 import { describeProject, readProjectTitles, workspaceRegistry } from "./projects.js";
 import { discoverFromContext, mergeSites, withKnownSoftware } from "./discovery.js";
-import { SCHEMES, createBalanceReader, listAccounts, normalizeConsoleCookie } from "./balance.js";
+import { SCHEMES, createBalanceReader, findAccount, listAccounts, normalizeConsoleCookie } from "./balance.js";
 import { createCredentialsFile, credentialsPathFor } from "./credentials-file.js";
 import { createNewApiWalletReader, shouldUseWallet } from "./newapi-user.js";
-import { VERSION, priceToday, registerRoutes, usagePayload } from "./http.js";
+import { VERSION, dailySeries, priceToday, registerRoutes, usagePayload } from "./http.js";
 import { DashboardController, DashboardControllerError } from "./dashboard-controller.js";
 import { mountTokenLedgerBlue } from "./blue/index.js";
 
@@ -1222,9 +1222,7 @@ export function apply(ctx, userConfig = {}) {
 			const account =
 				warmOrigin !== undefined
 					? accounts.find((a) => a.origin === warmOrigin)
-					: id === undefined
-						? accounts[0]
-						: accounts.find((a) => a.id === id);
+					: findAccount(accounts, id);
 			const auth = account === undefined ? undefined : config.userAuth?.[account.origin];
 			if (!shouldUseWallet(account, auth)) {
 				// Warming an account WITHOUT credentials must never fall through
@@ -1285,6 +1283,7 @@ export function apply(ctx, userConfig = {}) {
 			pricedRoutes: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider, true),
 			// The badge's "today" figure, same rate default as `priced`.
 			todayPriced: (site) => priceToday(store, site, config.rates, config.dayOffsetMinutes),
+			daily: (site, provider) => dailySeries(store, site, provider, config.rates),
 			accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 			projectTitles: () => projectTitles,
 			lastSweepAt: () => lastSweepAt,
@@ -1310,6 +1309,7 @@ export function apply(ctx, userConfig = {}) {
 		priced: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider),
 		pricedRoutes: (range, site, provider) => priceWithConfiguredRates(store, range, site, config.rates, provider, true),
 		todayPriced: (site) => priceToday(store, site, config.rates, config.dayOffsetMinutes),
+		daily: (site, provider) => dailySeries(store, site, provider, config.rates),
 		accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 		projectTitles: () => projectTitles,
 		lastSweepAt: () => lastSweepAt,

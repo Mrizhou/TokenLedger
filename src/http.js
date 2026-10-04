@@ -280,6 +280,60 @@ export function priceToday(store, site = undefined, rates = undefined, dayOffset
 }
 
 /**
+ * Every day's tokens and estimated cost, for the panel's trend line.
+ *
+ * Whole history, ascending, independent of the selected range (like the
+ * activity strip): the chart picks 30 / 90 days / all on its own. Days are the
+ * finest grain the ledger keeps — it rolls up per session per DAY, so an hourly
+ * line would need a schema change and a full refold, which is not worth losing
+ * deleted sessions' history over.
+ *
+ * Cost follows the panel's 估算 column: the configured rates price every row,
+ * the shipped list prices only the official route. Unlike that column each day
+ * is priced at ITS OWN date's rates. With several currencies in play, the one
+ * with the largest total is charted and the rest are left out, never summed.
+ *
+ * @returns `[{ day, tokens, requests, cost?, currency? }]`.
+ */
+export function dailySeries(store, site = undefined, provider = undefined, rates = undefined) {
+	const days = store.byDay({}, site, provider);
+	const costs = new Map();
+	try {
+		const table = new RateTable(rates === undefined ? DEEPSEEK_OFFICIAL_RATES : rates);
+		const rows =
+			rates !== undefined
+				? store.byRoute({}, site, provider)
+				: provider === undefined || provider === "deepseek-official"
+					? store.byRoute({}, site, "deepseek-official")
+					: [];
+		const byDay = new Map();
+		for (const row of rows) {
+			const list = byDay.get(row.day);
+			if (list === undefined) byDay.set(row.day, [row]);
+			else list.push(row);
+		}
+		for (const [day, dayRows] of byDay) costs.set(day, priceRows(dayRows, table, day).totals);
+	} catch {
+		// A malformed rate table costs the cost line, not the token one.
+		costs.clear();
+	}
+	const grand = new Map();
+	for (const totals of costs.values()) {
+		for (const [currency, amount] of Object.entries(totals)) grand.set(currency, (grand.get(currency) ?? 0) + amount);
+	}
+	const currency = [...grand].sort((a, b) => b[1] - a[1])[0]?.[0];
+	return days.map((d) => {
+		const cost = currency === undefined ? undefined : costs.get(d.day)?.[currency];
+		return {
+			day: d.day,
+			tokens: d.tokens,
+			requests: d.requests,
+			...(currency === undefined ? {} : { cost: cost ?? 0, currency })
+		};
+	});
+}
+
+/**
  * Build the whole panel payload in one read.
  *
  * One request rather than six: the panel renders as a unit, and six requests
@@ -336,6 +390,9 @@ export function usagePayload(deps, query) {
 		// show what ran that day rather than only how much. Sent with the panel
 		// rather than fetched per hover: a request on mouseover would lag behind
 		// the pointer, and these are counts, not content.
+		// Every day ever recorded, with its cost, for the trend line at the
+		// bottom of the panel. Its own window too: 30 / 90 days / all.
+		daily: deps.daily?.(site, provider) ?? dailySeries(store, site, provider),
 		activityModels: dailyModels(store.byRoute({ from: fromDaysAgo(ACTIVITY_DAYS, deps.dayOffsetMinutes) }, site, provider)),
 		models: store.byModel(range, site, provider),
 		// The same totals split by the route that served them, so the panel can

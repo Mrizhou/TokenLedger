@@ -1573,6 +1573,307 @@ test("the badge reads today's figure with the panel shut, and keeps it current",
 	}
 });
 
+test("the badge's second line is the balance behind the open session's model", async () => {
+	// 用量账本 over 余额 ¥…: the route comes from DSH's own model selection
+	// (`uiSession.current` → `modelDirectories`), never from the ledger, and the
+	// balance is asked for by that route.
+	const harness = await loadBundle();
+	const T_ = exports_of(harness);
+	// The host's snapshot-store shape: getSnapshot / subscribe.
+	const mkStore = (value) => {
+		const listeners = new Set();
+		return {
+			getSnapshot: () => value,
+			subscribe: (fn) => (listeners.add(fn), () => listeners.delete(fn)),
+			emit: (next) => {
+				value = next;
+				for (const fn of listeners) fn();
+			}
+		};
+	};
+	const main = mkStore({ key: "s1" });
+	const models = {
+		s1: mkStore({ current: { provider: "deepseek-account", model: "deepseek-v4.1-flash" } }),
+		s2: mkStore({ current: { provider: "commandcode", model: "deepseek/deepseek-v4.1-flash" } })
+	};
+	const loads = [];
+	const services = {
+		uiSession: { current: main },
+		modelDirectories: {
+			directoryFor: (id) => ({ store: models[id], load: async () => void loads.push(id) })
+		}
+	};
+	T_.apply({
+		get: (name) => services[name],
+		effect: (fn) => fn(),
+		locale: { register: () => {} },
+		slots: { inject: () => {}, register: () => {} }
+	});
+
+	const requested = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async (path) => {
+		requested.push(path);
+		const body = path.includes("commandcode")
+			? { ok: true, fetched: true, displayName: "Command Code", scheme: "commandcode", windows: [{ kind: "session", minutes: 300, usedPercent: 40 }] }
+			: path.startsWith(T_.USAGE_PATH)
+				? { ok: true, windows: { today: { tokens: 1 } } }
+				: { ok: true, fetched: true, displayName: "DeepSeek", currency: "CNY", total: 47.39 };
+		return { ok: true, json: async () => body };
+	};
+	const cells = () => Array.from({ length: 24 }, (_, i) => harness.readState(i));
+	const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+	const subOf = (tree) => findAll(tree, "tkl_badgeSub")[0];
+	try {
+		// First pass: the model is learned, nothing is asked for it yet.
+		let tree = harness.render(T_.TokenLedgerPanel, { wide: true });
+		assert.equal(subOf(tree), undefined, "no line before the model is known");
+		harness.runEffects();
+		await settle();
+		assert.deepEqual(loads, ["s1"], "the catalog the selection resolves against is loaded");
+
+		// Second pass: the route is known, so its balance is read — closed panel.
+		harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells());
+		harness.runEffects();
+		await settle();
+		assert.ok(requested.includes("/api/tokenledger/balance?account=deepseek-account"), `asked: ${requested}`);
+		assert.equal(requested.some((p) => p.includes("force=1")), false, "never forced from the badge");
+
+		tree = harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells());
+		assert.equal(textOf(subOf(tree)), "余额 ¥47.39");
+		assert.equal(subOf(tree).props.title, "余额 ¥47.39\ndeepseek-account/deepseek-v4.1-flash · DeepSeek");
+
+		// Switching sessions follows the other session's model.
+		main.emit({ key: "s2" });
+		harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells());
+		tree = harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells());
+		assert.equal(subOf(tree), undefined, "an old route's figure never shows under a new model");
+		harness.runEffects();
+		await settle();
+		tree = harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells());
+		assert.ok(requested.includes("/api/tokenledger/balance?account=commandcode"), `asked: ${requested}`);
+		assert.equal(textOf(subOf(tree)), "5h 40%");
+
+		// The rail has no room for it.
+		const css = harness.dom.head.children.map((tag) => tag.textContent).join("");
+		assert.match(css, /\.tkl_layer\.tkl_rail \.tkl_badgeText/);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+test("a fresh load that finds the host or the session not ready yet asks again", async () => {
+	// 用户 2026-10-04：「我刚加载进去没显示」，选过模型才出现。Right after a
+	// restart the balance route answered before the provider directory was up,
+	// and that empty answer stood until the 5-minute tick or a model switch;
+	// the main session could also be named before its scope existed.
+	const harness = await loadBundle();
+	const T_ = exports_of(harness);
+	const mkStore = (value) => {
+		const listeners = new Set();
+		return {
+			getSnapshot: () => value,
+			subscribe: (fn) => (listeners.add(fn), () => listeners.delete(fn)),
+			emit: (next) => {
+				value = next;
+				for (const fn of listeners) fn();
+			}
+		};
+	};
+	const model = mkStore({ current: { provider: "deepseek-account", model: "deepseek-v4.1-flash" } });
+	let scopeReady = false;
+	T_.apply({
+		get: (name) =>
+			({
+				uiSession: { current: mkStore({ key: "s1" }) },
+				modelDirectories: {
+					directoryFor: () => {
+						if (!scopeReady) throw new Error('ui-model-selection: session "s1" resolved no scope');
+						return { store: model, load: async () => {} };
+					}
+				}
+			})[name],
+		effect: (fn) => fn(),
+		locale: { register: () => {} },
+		slots: { inject: () => {}, register: () => {} }
+	});
+
+	let hostReady = false;
+	const balanceReads = [];
+	const realFetch = globalThis.fetch;
+	const realTimeout = globalThis.setTimeout;
+	const timers = [];
+	globalThis.fetch = async (path) => {
+		if (path.includes("/balance")) balanceReads.push(path);
+		const body = path.includes("/balance")
+			? hostReady
+				? { ok: true, fetched: true, currency: "CNY", total: 40.75 }
+				: { ok: true, supported: false, reason: "no-provider-directory" }
+			: { ok: true, windows: { today: { tokens: 1 } } };
+		return { ok: true, json: async () => body };
+	};
+	const cells = () => Array.from({ length: 24 }, (_, i) => harness.readState(i));
+	const settle = () => new Promise((resolve) => realTimeout(resolve, 0));
+	const pass = async () => {
+		harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells());
+		harness.runEffects();
+		await settle();
+	};
+	const fire = () => {
+		for (const t of timers.splice(0)) t.fn();
+	};
+	globalThis.setTimeout = (fn, ms) => (timers.push({ fn, ms }), timers.length);
+	try {
+		harness.render(T_.TokenLedgerPanel, { wide: true });
+		harness.runEffects();
+		await settle();
+		assert.ok(timers.some((t) => t.ms === 2_000), "a session without a scope is retried, not marked handled");
+		scopeReady = true;
+		fire();
+		await pass(); // the retry finds the model
+		await pass(); // ...and reads its balance: not ready
+		assert.equal(balanceReads.length, 1, balanceReads.join());
+		assert.ok(timers.some((t) => t.ms === 5_000), `an unread balance is asked again soon: ${timers.map((t) => t.ms)}`);
+
+		hostReady = true;
+		fire();
+		await pass();
+		assert.equal(balanceReads.length, 2);
+		const tree = harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells());
+		assert.equal(textOf(findAll(tree, "tkl_badgeSub")[0]), "余额 ¥40.75");
+		assert.equal(timers.some((t) => t.ms === 15_000), false, "a read that landed schedules nothing more");
+	} finally {
+		globalThis.fetch = realFetch;
+		globalThis.setTimeout = realTimeout;
+	}
+});
+
+test("the badge's balance line says nothing it cannot say in a few words", async () => {
+	const { exports } = await loadBundle();
+	const line = (balance) => exports.badgeBalanceText(balance, exports.translateWith(undefined));
+	assert.equal(line(undefined), undefined);
+	assert.equal(line({ supported: false, reason: "unknown-software" }), undefined, "unsupported stays blank");
+	assert.equal(line({ supported: true, fetched: false, reason: "http-401" }), undefined, "a failure is the panel's to explain");
+	assert.equal(line({ fetched: true, total: 47.39, currency: "CNY" }), "余额 ¥47.39");
+	assert.equal(line({ fetched: true, used: 3.5, currency: "USD", unlimited: true }), "已用 $3.50");
+	assert.equal(line({ fetched: true, quota: { available: 1200 } }), `${exports.fmt(1200)} 额度`);
+	assert.equal(line({ fetched: true }), undefined);
+	for (const key of ["badge.balance", "badge.spent"]) assert.ok(key in exports.zh && key in exports.en, key);
+});
+
+test("Command Code's windows read 5h / 7d / 30d, on the card and on the badge", async () => {
+	// 用户 2026-10-04：「cc的用量别写5小时窗口，用5h week month标出来」，
+	// 侧边栏那一行「三个都要显示，已用两个字不写」；随后「别写week 写7d 和30d吧」。
+	const { exports, render } = await loadBundle();
+	const t = exports.translateWith(undefined);
+	const windows = [
+		{ kind: "session", minutes: 300, usedPercent: 1.9 },
+		{ kind: "weekly", usedPercent: 37 },
+		{ kind: "monthly", usedPercent: 18.5 }
+	];
+	const card = textOf(
+		render(exports.BalanceCard, {
+			state: { status: "ready", data: { ok: true, supported: true, fetched: true, scheme: "commandcode", displayName: "Command Code", plan: "GOAT", windows } },
+			translate: t
+		})
+	);
+	for (const label of ["5h", "7d", "30d"]) assert.ok(card.includes(label), `${label} missing: ${card}`);
+	assert.equal(card.includes("小时窗口"), false, card);
+	assert.equal(exports.badgeBalanceText({ fetched: true, scheme: "commandcode", windows }, t, "deepseek/deepseek-v4.1-flash"), "5h 1.9% · 7d 37% · 30d 18.5%");
+	// Only Command Code: other plans keep their full labels.
+	assert.equal(exports.badgeBalanceText({ fetched: true, scheme: "zai", windows }, t, "glm"), "5 小时窗口 已用 1.9%");
+});
+
+test("Antigravity's quota is labelled by model group, and the badge reads the selected model's group", async () => {
+	const { exports, render } = await loadBundle();
+	const windows = [
+		{ kind: "session", minutes: 300, usedPercent: 40, group: "gemini" },
+		{ kind: "weekly", usedPercent: 15, group: "gemini" },
+		{ kind: "session", minutes: 300, usedPercent: 100, group: "non-gemini" }
+	];
+	const text = textOf(render(exports.QuotaWindows, { windows, translate: exports.translateWith(undefined) }));
+	assert.ok(text.includes("Gemini · 5 小时窗口"), text);
+	assert.ok(text.includes("Claude 与 GPT · 5 小时窗口"), text);
+
+	const balance = { fetched: true, scheme: "antigravity", windows };
+	const t = exports.translateWith(undefined);
+	assert.equal(exports.badgeBalanceText(balance, t, "antigravity-gemini-3.8-flash"), "Gemini 5h 40% · 7d 15%", "the Gemini group, both windows");
+	assert.equal(exports.badgeBalanceText(balance, t, "claude-opus-4.6-thinking"), "Claude 与 GPT 5h 100%", "the Claude and GPT group only");
+	assert.equal(exports.badgeBalanceText(balance, t, "gpt-oss-120b-medium"), "Claude 与 GPT 5h 100%", "GPT shares Claude's pool at Antigravity");
+	const card = textOf(render(exports.QuotaWindows, { windows, translate: t, compact: true }));
+	assert.ok(card.includes("Gemini · 5h") && card.includes("Gemini · 7d") && card.includes("Claude 与 GPT · 5h"), card);
+	assert.equal(exports.badgeBalanceText({ fetched: true, windows: [{ kind: "weekly", usedPercent: 7 }] }, t, "anything"), "每周窗口 已用 7%", "ungrouped windows are unaffected");
+	for (const key of ["balance.hint.antigravity-signin", "balance.group.gemini", "balance.group.non-gemini"]) {
+		assert.ok(key in exports.zh && key in exports.en, key);
+	}
+});
+
+test("the trend line fills idle days with zero and spans 30 / 90 days or everything", async () => {
+	const { exports } = await loadBundle();
+	const today = new Date(2026, 9, 4);
+	const daily = [
+		{ day: "2026-09-01", tokens: 10, cost: 1, currency: "CNY", requests: 1 },
+		{ day: "2026-10-02", tokens: 30, cost: 3, currency: "CNY", requests: 2 },
+		{ day: "2026-10-04", tokens: 40, cost: 4, currency: "CNY", requests: 3 }
+	];
+	const last30 = exports.trendPoints(daily, { days: 30 }, "tokens", today);
+	assert.equal(last30.length, 30);
+	assert.equal(last30.at(-1).day, "2026-10-04", "ends today");
+	assert.deepEqual(last30.slice(-3).map((p) => p.value), [30, 0, 40], "an idle day is a zero, not a gap");
+	assert.equal(exports.trendPoints(daily, { days: 90 }, "tokens", today).length, 90);
+	const all = exports.trendPoints(daily, { days: undefined }, "cost", today);
+	assert.equal(all[0].day, "2026-09-01", "all starts at the first recorded day");
+	assert.equal(all.length, 34);
+	assert.equal(all.reduce((s, p) => s + p.value, 0), 8);
+	assert.deepEqual([0, 7, 10, 11, 99, 101, 2.5e6].map(exports.niceCeil), [1, 10, 10, 20, 100, 200, 5e6]);
+});
+
+test("the trend chart toggles tokens and cost, and offers no cost when nothing was priced", async () => {
+	const { exports, render } = await loadBundle();
+	const t = exports.translateWith(undefined);
+	const day = exports.localDayKey(new Date());
+	const priced = render(exports.TrendChart, { data: { daily: [{ day, tokens: 1234, cost: 0.5, currency: "CNY", requests: 1 }] }, translate: t });
+	const buttons = findAll(priced, "tkl_segBtn");
+	assert.deepEqual(buttons.map((b) => b.props.children), ["Token", "估算费用", "30 天", "90 天", "全部"]);
+	assert.equal(buttons[1].props.disabled, undefined, "a priced history can be charted as cost");
+	assert.ok(textOf(priced).includes("合计 1.2K"), textOf(priced));
+
+	const unpriced = render(exports.TrendChart, { data: { daily: [{ day, tokens: 5, requests: 1 }] }, translate: t });
+	assert.equal(findAll(unpriced, "tkl_segBtn")[1].props.disabled, true, "no priced day, no cost line");
+});
+
+test("the panel orders 模型 above 活跃度 and puts the daily line last", async () => {
+	const { exports, render } = await loadBundle();
+	const day = exports.localDayKey(new Date());
+	const data = {
+		totals: { requests: 1, tokens: 10 },
+		windows: {},
+		days: [{ day, tokens: 10 }],
+		activity: [{ day, tokens: 10 }],
+		daily: [{ day, tokens: 10, requests: 1 }],
+		models: [{ model: "m", tokens: 10, requests: 1 }],
+		sites: [],
+		projects: [],
+		accounts: [],
+		diagnostics: {}
+	};
+	const tree = render(exports.Body, {
+		state: { status: "ready", data },
+		balance: { status: "idle" },
+		translate: (k) => k,
+		range: "all",
+		onRange: () => {},
+		onSelect: () => {},
+		onAccount: () => {},
+		onRetry: () => {},
+		onConfigure: () => {}
+	});
+	const titles = tree.props.children.filter(Boolean).map((section) => section.props?.title).filter(Boolean);
+	const at = (key) => titles.indexOf(key);
+	assert.ok(at("section.models") >= 0 && at("section.models") < at("section.activity"), titles.join(","));
+	assert.equal(titles.at(-1), "section.trend", titles.join(","));
+});
+
 test("a MiMo card without a live console session says which, and offers the cookie dialog", async () => {
 	const { exports, render } = await loadBundle();
 	for (const hint of ["mimo-cookie-missing", "mimo-cookie-expired"]) {

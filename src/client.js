@@ -170,13 +170,17 @@ window.__ModuleLoader__.load({
 			// than as spacing. In the rail the badge itself does the centring.
 			".tkl_badgeIcon{flex:none;display:inline-flex;align-items:center}",
 			".tkl_badgeLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}",
+			// 用量账本 over the current model's balance. The column keeps the
+			// title where it was when there is no second line to show.
+			".tkl_badgeText{display:flex;flex-direction:column;align-items:flex-start;min-width:0;text-align:left}",
+			".tkl_badgeSub{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;font-size:11px;line-height:14px;text-overflow:ellipsis;white-space:nowrap;max-width:100%;overflow:hidden}",
 			".tkl_badgeValue{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex:none;margin-left:auto;font-size:12px;line-height:16px}",
 			// Collapsed sidebar: the shell narrows to a 56px rail and every control
 			// becomes a 36px circle. Without this the badge keeps its full width and
 			// spills out of the rail.
 			".tkl_layer.tkl_rail{flex:none;width:36px;height:36px;margin:0}",
 			".tkl_layer.tkl_rail .tkl_badge{border-radius:50%;justify-content:center;gap:0;width:36px;height:36px;padding:0}",
-			".tkl_layer.tkl_rail .tkl_badgeLabel,.tkl_layer.tkl_rail .tkl_badgeValue{display:none}",
+			".tkl_layer.tkl_rail .tkl_badgeText,.tkl_layer.tkl_rail .tkl_badgeValue{display:none}",
 
 			// -- the panel ---------------------------------------------------------
 			//
@@ -330,6 +334,27 @@ window.__ModuleLoader__.load({
 			// The tooltip floats over the panel's own content, so it needs an
 			// opaque ground even more than the panel does.
 			".tkl_tip{position:fixed;z-index:40;pointer-events:none;min-width:180px;max-width:250px;background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base));border:1px solid var(--dsw-alias-border-l2);border-radius:var(--tkl-radius-sm);box-shadow:var(--dsw-shadow-lv2);padding:8px 10px}",
+			// -- the trend line ----------------------------------------------------
+			// One series on one axis. Its hue passes the palette checks against
+			// both surfaces (lightness band, chroma, 3:1 contrast, light and dark
+			// alike), so one value serves both themes; text stays in text tokens.
+			".tkl_trend{--tkl-trend:#0284c7}",
+			".tkl_trendControls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}",
+			".tkl_trendTotal{color:var(--dsw-alias-label-tertiary);margin-left:auto;font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}",
+			".tkl_seg{display:inline-flex;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--tkl-radius-xs);overflow:hidden}",
+			".tkl_segBtn{color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;padding:1px 8px;font:inherit;font-size:11px;line-height:16px}",
+			".tkl_segBtn+.tkl_segBtn{border-left:1px solid var(--dsw-alias-border-l2)}",
+			".tkl_segBtn:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}",
+			".tkl_segBtn[data-on]{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-active)}",
+			".tkl_segBtn:disabled{opacity:.45;cursor:default}",
+			".tkl_trendSvg{display:block;width:100%;height:auto;overflow:visible;touch-action:none}",
+			".tkl_trendGrid{stroke:var(--dsw-alias-border-l2);stroke-width:1}",
+			".tkl_trendAxis{fill:var(--dsw-alias-label-caption);font-size:10px;font-variant-numeric:tabular-nums}",
+			".tkl_trendLine{fill:none;stroke:var(--tkl-trend);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}",
+			".tkl_trendGuide{stroke:var(--dsw-alias-label-tertiary);stroke-width:1;stroke-dasharray:2 2}",
+			".tkl_trendDot{fill:var(--tkl-trend);stroke:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base));stroke-width:2}",
+			".tkl_trendHit{fill:transparent;cursor:crosshair}",
+			".tkl_trendTip{min-width:150px}",
 			".tkl_tipHead{display:flex;align-items:center;gap:6px;justify-content:space-between}",
 			".tkl_tipDate{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}",
 			".tkl_tipLevel{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:0 6px;flex:none}",
@@ -440,6 +465,8 @@ window.__ModuleLoader__.load({
 			badge: "tkl_badge",
 			badgeIcon: "tkl_badgeIcon",
 			badgeLabel: "tkl_badgeLabel",
+			badgeText: "tkl_badgeText",
+			badgeSub: "tkl_badgeSub",
 			badgeValue: "tkl_badgeValue",
 			panel: "tkl_panel",
 			header: "tkl_header",
@@ -481,6 +508,19 @@ window.__ModuleLoader__.load({
 			month: "tkl_month",
 			stripGrid: "tkl_stripGrid",
 			tip: "tkl_tip",
+			trend: "tkl_trend",
+			trendControls: "tkl_trendControls",
+			trendTotal: "tkl_trendTotal",
+			trendSvg: "tkl_trendSvg",
+			trendGrid: "tkl_trendGrid",
+			trendAxis: "tkl_trendAxis",
+			trendLine: "tkl_trendLine",
+			trendGuide: "tkl_trendGuide",
+			trendDot: "tkl_trendDot",
+			trendHit: "tkl_trendHit",
+			trendTip: "tkl_trendTip",
+			seg: "tkl_seg",
+			segBtn: "tkl_segBtn",
 			tipHead: "tkl_tipHead",
 			tipDate: "tkl_tipDate",
 			tipLevel: "tkl_tipLevel",
@@ -709,6 +749,195 @@ window.__ModuleLoader__.load({
 			}, [open, account, nonce, forceNonce]);
 
 			return state;
+		}
+
+		/**
+		 * The Client root context `apply()` was handed, for the services the
+		 * badge reads at render time. Unset outside a host (tests, a bundle that
+		 * never registered), which reads as "no current model".
+		 */
+		let hostCtx;
+
+		/**
+		 * A host service, or undefined. Looked up with `ctx.get`, never declared
+		 * in `inject`: a declared name has no optional form (HOST-CONTRACT §2), and
+		 * a host without model selection must still get its badge.
+		 */
+		function serviceOf(name) {
+			try {
+				return typeof hostCtx?.get === "function" ? (hostCtx.get(name) ?? undefined) : undefined;
+			} catch {
+				return undefined;
+			}
+		}
+
+		/** How often, and how many times, to look again for services not up yet. */
+		const SERVICE_RETRY_MS = 2_000;
+		const SERVICE_RETRIES = 60;
+
+		/**
+		 * The model the open session is set to, as `{ provider, model }`.
+		 *
+		 * Read from DSH's own model-selection store (`uiSession.current` names
+		 * the main session, `modelDirectories` holds its selection) rather than
+		 * guessed from the ledger, so this and the composer's model seat answer
+		 * from one source. `provider` is the route id — the same id the balance
+		 * route takes as `?account=`.
+		 */
+		function useCurrentModel() {
+			const [selection, setSelection] = react.useState(undefined);
+			const [attempt, setAttempt] = react.useState(0);
+			react.useEffect(() => {
+				const main = serviceOf("uiSession")?.current;
+				const directories = serviceOf("modelDirectories");
+				if (typeof main?.subscribe !== "function" || typeof directories?.directoryFor !== "function") {
+					// The sidebar can mount before model selection has applied.
+					if (hostCtx === undefined || attempt >= SERVICE_RETRIES) return undefined;
+					const timer = setTimeout(() => setAttempt((n) => n + 1), SERVICE_RETRY_MS);
+					return () => clearTimeout(timer);
+				}
+				let sessionId;
+				let retry;
+				let unfollowModel = () => {};
+				const followSession = () => {
+					const next = main.getSnapshot?.()?.key;
+					if (next === sessionId) return;
+					sessionId = next;
+					unfollowModel();
+					unfollowModel = () => {};
+					let directory;
+					let failed = false;
+					try {
+						directory = next === undefined ? undefined : directories.directoryFor(next);
+					} catch {
+						// The main session is named before its scope exists on a
+						// fresh load. Forget it, so the retry below asks again
+						// instead of treating the session as handled.
+						failed = true;
+					}
+					if (directory === undefined) {
+						setSelection(undefined);
+						if (failed) {
+							sessionId = undefined;
+							if (attempt < SERVICE_RETRIES) retry = setTimeout(() => setAttempt((n) => n + 1), SERVICE_RETRY_MS);
+						}
+						return;
+					}
+					const read = () => {
+						const current = directory.store.getSnapshot()?.current;
+						const provider = typeof current?.provider === "string" ? current.provider : undefined;
+						const model = typeof current?.model === "string" ? current.model : undefined;
+						setSelection((prev) =>
+							prev?.provider === provider && prev?.model === model
+								? prev
+								: provider === undefined
+									? undefined
+									: { provider, model }
+						);
+					};
+					unfollowModel = directory.store.subscribe(read);
+					read();
+					// The selection is resolved against the shared catalog, which
+					// loads on demand; one load per host generation, shared with
+					// the composer. A subagent session refuses — no model then.
+					Promise.resolve()
+						.then(() => directory.load())
+						.catch(() => undefined);
+				};
+				const unfollowSession = main.subscribe(followSession);
+				followSession();
+				return () => {
+					clearTimeout(retry);
+					unfollowSession();
+					unfollowModel();
+				};
+			}, [attempt]);
+			return selection;
+		}
+
+		/** When an unread balance line is asked again; the 5-minute tick takes over after. */
+		const BALANCE_RETRY_MS = [5_000, 15_000, 30_000, 60_000];
+
+		/**
+		 * The balance behind one route, for the badge's second line.
+		 *
+		 * Read with the panel shut, through the host's freshness window — never
+		 * forced. A failed read keeps nothing: an old route's figure under a new
+		 * model would be the one wrong thing this line could say.
+		 */
+		function useRouteBalance(route, nonce, tick) {
+			const [state, setState] = react.useState(undefined);
+			const [again, setAgain] = react.useState(0);
+			const misses = react.useRef({ route: undefined, n: 0 });
+			react.useEffect(() => {
+				if (route === undefined) return undefined;
+				if (misses.current.route !== route) misses.current = { route, n: 0 };
+				const controller = new AbortController();
+				let timer;
+				// Right after a restart the host answers before its provider
+				// directory and sign-ins are up, and that empty answer used to
+				// stand until the 5-minute tick or a model switch. Ask again soon.
+				const later = () => {
+					const delay = BALANCE_RETRY_MS[misses.current.n++];
+					if (delay !== undefined) timer = setTimeout(() => setAgain((n) => n + 1), delay);
+				};
+				fetchJson(`${BALANCE_PATH}?account=${encodeURIComponent(route)}`, controller.signal).then(
+					(data) => {
+						if (controller.signal.aborted) return;
+						setState({ route, data });
+						if (data?.fetched === true) misses.current.n = 0;
+						else later();
+					},
+					() => {
+						if (controller.signal.aborted) return;
+						setState(undefined);
+						later();
+					}
+				);
+				return () => {
+					controller.abort();
+					clearTimeout(timer);
+				};
+			}, [route, nonce, tick, again]);
+			return route !== undefined && state?.route === route ? state.data : undefined;
+		}
+
+		/**
+		 * One balance as a few words, or undefined when there is nothing true to
+		 * say in a line this short — an unread, unsupported or failed card stays
+		 * blank here; the panel is where it explains itself.
+		 */
+		function badgeBalanceText(balance, translate, model) {
+			if (balance?.fetched !== true) return undefined;
+			if (typeof balance.total === "number") {
+				return translate("badge.balance", { amount: fmtMoney(balance.total, balance.currency) });
+			}
+			if (typeof balance.used === "number") {
+				return translate("badge.spent", { amount: fmtMoney(balance.used, balance.currency) });
+			}
+			if (balance.quota?.available !== undefined) return translate("balance.quota", { n: fmt(balance.quota.available) });
+			// Windows split by model group (Antigravity) answer for the group the
+			// selected model is in; Gemini by name, everything else the other one.
+			const all = Array.isArray(balance.windows) ? balance.windows : [];
+			const group = /gemini/i.test(model ?? "") ? "gemini" : "non-gemini";
+			const scoped = all.some((w) => w?.group === group) ? all.filter((w) => w?.group === group) : all;
+			// The short-label plans list every window on the one line, as bare
+			// percentages: `5h 1.9% · week 37% · month 18.5%`.
+			if (COMPACT_WINDOW_SCHEMES.has(balance.scheme)) {
+				const parts = scoped
+					.filter((w) => typeof w?.usedPercent === "number")
+					.map((w) => `${compactWindowLabel(w, translate)} ${w.usedPercent}%`);
+				if (parts.length === 0) return undefined;
+				// Name the pool when the plan has several, so switching models
+				// visibly switches the line (Claude and GPT share one at Antigravity).
+				const pool = all.some((w) => w?.group === group) ? `${translate(`balance.group.${group}`)} ` : "";
+				return pool + parts.join(" · ");
+			}
+			const window = scoped.find((w) => typeof w?.usedPercent === "number");
+			if (window !== undefined) {
+				return `${windowLabel(window, translate, COMPACT_WINDOW_SCHEMES.has(balance.scheme))} ${translate("balance.window.used", { pct: String(window.usedPercent) })}`;
+			}
+			return undefined;
 		}
 		//#endregion
 
@@ -1388,7 +1617,8 @@ window.__ModuleLoader__.load({
 		 * "5 hours" on both would be a number the panel made up. `weekly` and
 		 * `monthly` already state their period, so a length would only repeat it.
 		 */
-		function windowLabel(window, translate) {
+		function windowLabel(window, translate, compact = false) {
+			if (compact) return compactWindowLabel(window, translate);
 			if (window.kind === "session" && typeof window.minutes === "number") {
 				const minutes = window.minutes;
 				if (minutes % 1440 === 0) return translate("balance.window.days", { n: minutes / 1440 });
@@ -1399,6 +1629,28 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * Schemes whose windows read as `5h` / `7d` / `30d`, and whose badge
+		 * line lists them all (用户 2026-10-04：cc 的用量这样标；antigravity 同样).
+		 */
+		const COMPACT_WINDOW_SCHEMES = new Set(["commandcode", "antigravity"]);
+
+		/**
+		 * The short form: the length for a rolling window, the period's own word
+		 * otherwise. A kind with no short word keeps its full label.
+		 */
+		function compactWindowLabel(window, translate) {
+			if (window.kind === "session" && typeof window.minutes === "number") {
+				const minutes = window.minutes;
+				if (minutes % 1440 === 0) return `${minutes / 1440}d`;
+				if (minutes % 60 === 0) return `${minutes / 60}h`;
+				return `${minutes}m`;
+			}
+			// Lengths, not names (用户 2026-10-04：「别写week 写7d 和30d吧」).
+			const short = { daily: "1d", weekly: "7d", monthly: "30d" }[window.kind];
+			return short ?? windowLabel(window, translate);
+		}
+
+		/**
 		 * A subscription's rolling allowances.
 		 *
 		 * These accounts hold no money — several independent windows fill up and
@@ -1406,7 +1658,7 @@ window.__ModuleLoader__.load({
 		 * the question the panel exists to answer. Rendered under the amount
 		 * rather than instead of it: a plan with a wallet behind it has both.
 		 */
-		function QuotaWindows({ windows, translate }) {
+		function QuotaWindows({ windows, translate, compact = false }) {
 			if (!Array.isArray(windows) || windows.length === 0) return null;
 			return jsx("div", {
 				className: S.wins,
@@ -1422,7 +1674,14 @@ window.__ModuleLoader__.load({
 							jsxs("div", {
 								className: S.winHead,
 								children: [
-									jsx("span", { className: S.winName, children: windowLabel(window, translate) }),
+									jsx("span", {
+										className: S.winName,
+										// Antigravity has a 5 h and a week for EACH model group;
+										// without the group the four rows read as two duplicated.
+										children: window.group === undefined
+											? windowLabel(window, translate, compact)
+											: `${translate(`balance.group.${window.group}`)} · ${windowLabel(window, translate, compact)}`
+									}),
 									window.resetsAt === undefined
 										? null
 										: jsx("span", {
@@ -1450,7 +1709,7 @@ window.__ModuleLoader__.load({
 										"aria-valuenow": used,
 										"aria-valuemin": 0,
 										"aria-valuemax": 100,
-										"aria-label": windowLabel(window, translate),
+										"aria-label": windowLabel(window, translate, compact),
 										children: jsx("div", { className: `${S.winFill}${tone}`, style: { width: `${used}%` } })
 									})
 						]
@@ -1670,7 +1929,7 @@ window.__ModuleLoader__.load({
 					}),
 					// Under the amount, not instead of it. An account can hold both
 					// a wallet and a plan, and the card has to be able to say so.
-					jsx(QuotaWindows, { windows: balance.windows, translate }),
+					jsx(QuotaWindows, { windows: balance.windows, translate, compact: COMPACT_WINDOW_SCHEMES.has(balance.scheme) }),
 					unparsed === undefined ? null : jsx("p", { className: S.note, children: unparsed })
 				]
 			});
@@ -1681,7 +1940,7 @@ window.__ModuleLoader__.load({
 		 * origin and the software, and deliberately NOT the username: the 账号
 		 * belongs to the site's console, not to a card the picker attributes.
 		 */
-		const SCHEME_LABELS = { deepseek: "API 余额", "deepseek-account": "登录账户余额", newapi: "New API", sub2api: "Sub2API", mimo: "控制台余额" };
+		const SCHEME_LABELS = { deepseek: "API 余额", "deepseek-account": "登录账户余额", newapi: "New API", sub2api: "Sub2API", mimo: "控制台余额", antigravity: "Google 账户额度" };
 
 		/** Where a scheme read through a console session signs in; the cookie is stored per console. */
 		const CONSOLE_ORIGINS = { mimo: "https://platform.xiaomimimo.com" };
@@ -2061,6 +2320,252 @@ window.__ModuleLoader__.load({
 			return translate("footer.days", { n: Math.round(hours / 24) });
 		}
 
+		//#region trend
+
+		/** The trend line's spans, newest day last. `all` starts at the first recorded day. */
+		const TREND_SPANS = [
+			{ id: "30", days: 30 },
+			{ id: "90", days: 90 },
+			{ id: "all", days: undefined }
+		];
+
+		/** The drawing box, in viewBox units; the SVG scales it to the panel's width. */
+		const TREND_BOX = { width: 560, height: 150, left: 46, right: 10, top: 10, bottom: 22 };
+
+		/** A round ceiling for the y axis: 1, 2 or 5 times a power of ten. */
+		function niceCeil(value) {
+			if (!(value > 0)) return 1;
+			const power = 10 ** Math.floor(Math.log10(value));
+			for (const step of [1, 2, 5, 10]) if (step * power >= value) return step * power;
+			return 10 * power;
+		}
+
+		/**
+		 * Every day of a span, idle days present as zero. A line that skipped
+		 * them would slope straight across a quiet week as if it had been busy.
+		 */
+		function trendPoints(daily, span, metric, today = new Date()) {
+			const byDay = new Map((daily ?? []).map((d) => [d.day, d]));
+			const end = new Date(today);
+			end.setHours(0, 0, 0, 0);
+			const first = (daily ?? [])[0]?.day;
+			let start;
+			if (span.days !== undefined) {
+				start = new Date(end);
+				start.setDate(start.getDate() - (span.days - 1));
+			} else if (first !== undefined) {
+				const [y, m, d] = first.split("-").map(Number);
+				start = new Date(y, m - 1, d);
+			} else {
+				start = new Date(end);
+			}
+			const points = [];
+			// Stepped by calendar date, not by 86 400 000 ms: a daylight-saving
+			// day is 23 or 25 hours long, and a fixed step drifts off midnight.
+			for (const date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
+				const key = localDayKey(date);
+				const row = byDay.get(key);
+				const value = metric === "cost" ? (row?.cost ?? 0) : (row?.tokens ?? 0);
+				points.push({ day: key, value, row });
+			}
+			return points;
+		}
+
+		/** One value as the axis and the tooltip print it. */
+		function trendValue(value, metric, currency) {
+			return metric === "cost" ? fmtMoney(value, currency) : fmtCompact(value);
+		}
+
+		/**
+		 * Daily usage as a line: tokens or estimated cost, over 30 / 90 days or
+		 * the whole ledger. One series, so no legend — the toggle names it. One
+		 * axis: the two measures are never drawn together.
+		 *
+		 * Days are the finest grain the ledger keeps (it rolls up per session per
+		 * day), which is why there is no single-day, by-hour view.
+		 */
+		function TrendChart({ data, translate }) {
+			const [metric, setMetric] = react.useState("tokens");
+			const [spanId, setSpanId] = react.useState("30");
+			const [hover, setHover] = react.useState(null);
+
+			const daily = data.daily ?? [];
+			const currency = daily.find((d) => typeof d.currency === "string")?.currency;
+			// No priced day at all: there is no cost line to draw, only zeros.
+			const costable = currency !== undefined && daily.some((d) => (d.cost ?? 0) > 0);
+			const shown = metric === "cost" && costable ? "cost" : "tokens";
+			const span = TREND_SPANS.find((s) => s.id === spanId) ?? TREND_SPANS[0];
+			const points = trendPoints(daily, span, shown);
+
+			const B = TREND_BOX;
+			const plotW = B.width - B.left - B.right;
+			const plotH = B.height - B.top - B.bottom;
+			const max = niceCeil(Math.max(0, ...points.map((p) => p.value)));
+			const xAt = (i) => B.left + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+			const yAt = (v) => B.top + plotH - (v / max) * plotH;
+			const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(1)},${yAt(p.value).toFixed(1)}`).join("");
+			const total = points.reduce((sum, p) => sum + p.value, 0);
+
+			// The crosshair snaps to the nearest DAY under the pointer; nobody has
+			// to land on a 2px line to read it.
+			const onMove = (event) => {
+				const box = event.currentTarget.getBoundingClientRect();
+				if (!(box.width > 0) || points.length === 0) return;
+				const x = ((event.clientX - box.left) / box.width) * B.width;
+				const ratio = points.length <= 1 ? 0 : (x - B.left) / plotW;
+				const index = Math.min(points.length - 1, Math.max(0, Math.round(ratio * (points.length - 1))));
+				setHover({
+					index,
+					x: box.left + xAt(index) * (box.width / B.width),
+					y: box.top + yAt(points[index].value) * (box.height / B.height)
+				});
+			};
+
+			const seg = (options, value, onChange) =>
+				jsx("div", {
+					className: S.seg,
+					role: "group",
+					children: options.map((o) =>
+						jsx(
+							"button",
+							{
+								type: "button",
+								className: S.segBtn,
+								...(o.id === value ? { "data-on": "" } : {}),
+								...(o.disabled ? { disabled: true, title: translate("trend.noCost") } : {}),
+								onClick: () => onChange(o.id),
+								children: o.label
+							},
+							o.id
+						)
+					)
+				});
+
+			const grid = [0, 0.5, 1].map((f) => f * max);
+			const xTicks = points.length === 0 ? [] : [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+			const shortDay = (key) => {
+				const [, m, d] = key.split("-").map(Number);
+				return `${m}/${d}`;
+			};
+			const hovered = hover === null ? undefined : points[hover.index];
+
+			return jsxs("div", {
+				className: S.trend,
+				children: [
+					jsxs("div", {
+						className: S.trendControls,
+						children: [
+							seg(
+								[
+									{ id: "tokens", label: translate("trend.tokens") },
+									{ id: "cost", label: translate("trend.cost"), disabled: !costable }
+								],
+								shown,
+								setMetric
+							),
+							seg(
+								TREND_SPANS.map((s) => ({ id: s.id, label: translate(`trend.span.${s.id}`) })),
+								span.id,
+								setSpanId
+							),
+							jsx("span", {
+								className: S.trendTotal,
+								children: translate("trend.total", { value: trendValue(total, shown, currency) })
+							})
+						]
+					}),
+					jsxs("svg", {
+						className: S.trendSvg,
+						viewBox: `0 0 ${B.width} ${B.height}`,
+						role: "img",
+						"aria-label": translate("trend.aria", {
+							span: translate(`trend.span.${span.id}`),
+							metric: translate(`trend.${shown}`),
+							value: trendValue(total, shown, currency)
+						}),
+						onPointerMove: onMove,
+						onPointerLeave: () => setHover(null),
+						children: [
+							...grid.map((v, i) =>
+								jsxs(
+									"g",
+									{
+										children: [
+											jsx("line", { className: S.trendGrid, x1: B.left, x2: B.width - B.right, y1: yAt(v), y2: yAt(v) }),
+											jsx("text", { className: S.trendAxis, x: B.left - 6, y: yAt(v) + 3, textAnchor: "end", children: trendValue(v, shown, currency) })
+										]
+									},
+									`g${i}`
+								)
+							),
+							...xTicks.map((i) =>
+								jsx(
+									"text",
+									{
+										className: S.trendAxis,
+										x: xAt(i),
+										y: B.height - 6,
+										textAnchor: i === 0 ? "start" : i === points.length - 1 ? "end" : "middle",
+										children: shortDay(points[i].day)
+									},
+									`x${i}`
+								)
+							),
+							points.length > 1 ? jsx("path", { className: S.trendLine, d: path }) : null,
+							hovered === undefined
+								? null
+								: jsx("line", { className: S.trendGuide, x1: xAt(hover.index), x2: xAt(hover.index), y1: B.top, y2: B.top + plotH }),
+							hovered === undefined && points.length !== 1
+								? null
+								: jsx("circle", {
+										className: S.trendDot,
+										cx: xAt(hovered === undefined ? 0 : hover.index),
+										cy: yAt((hovered ?? points[0]).value),
+										r: 4
+									}),
+							// The hit area: the whole plot, so the pointer only has to
+							// be over the right date.
+							jsx("rect", { className: S.trendHit, x: B.left, y: 0, width: plotW, height: B.height })
+						]
+					}),
+					hovered === undefined
+						? null
+						: jsx(TrendTip, { point: hovered, x: hover.x, y: hover.y, metric: shown, currency, translate })
+				]
+			});
+		}
+
+		/** The crosshair's readout: the day, the charted figure, and the other one beside it. */
+		function TrendTip({ point, x, y, metric, currency, translate }) {
+			const left = Math.min(Math.max(x - 90, 8), Math.max(8, window.innerWidth - 198));
+			const row = point.row;
+			const other =
+				metric === "cost"
+					? `${fmtCompact(row?.tokens ?? 0)} tokens`
+					: typeof row?.cost === "number" && currency !== undefined
+						? translate("trend.costOf", { value: fmtMoney(row.cost, currency) })
+						: undefined;
+			return jsxs("div", {
+				className: `${S.tip} ${S.trendTip}`,
+				style: { left: `${left}px`, top: `${Math.max(8, y - 12)}px`, transform: "translateY(-100%)" },
+				children: [
+					jsx("div", { className: S.tipHead, children: jsx("span", { className: S.tipDate, children: point.day }) }),
+					jsxs("div", {
+						className: S.tipTotal,
+						children: [
+							trendValue(point.value, metric, currency),
+							metric === "cost" ? null : jsx("span", { className: S.tipUnit, children: "tokens" })
+						]
+					}),
+					jsx("p", {
+						className: S.tipQuiet,
+						children: [other, translate("caption.requests", { n: fmt(row?.requests ?? 0) })].filter(Boolean).join(" · ")
+					})
+				]
+			});
+		}
+		//#endregion
+
 		function Footer({ data, translate }) {
 			const d = data.diagnostics ?? {};
 			// When the logs were LOOKED AT, not when they last changed. Those are
@@ -2172,6 +2677,7 @@ window.__ModuleLoader__.load({
 					empty
 						? null
 						: jsx(Section, { title: translate("section.projects"), children: jsx(ProjectRows, { data, translate }) }),
+					empty ? null : jsx(Section, { title: translate("section.models"), children: jsx(ModelTable, { data, translate }) }),
 					empty
 						? null
 						: jsx(Section, {
@@ -2187,7 +2693,10 @@ window.__ModuleLoader__.load({
 											}),
 								children: jsx(ActivityStrip, { data, translate })
 							}),
-					empty ? null : jsx(Section, { title: translate("section.models"), children: jsx(ModelTable, { data, translate }) }),
+					// Last: the day-by-day line, with its own window and its own measure.
+					(data.daily ?? []).length === 0
+						? null
+						: jsx(Section, { title: translate("section.trend"), children: jsx(TrendChart, { data, translate }) }),
 					jsx(Footer, { data, translate })
 				]
 			});
@@ -2220,6 +2729,9 @@ window.__ModuleLoader__.load({
 			const days = (RANGES.find((r) => r.id === range) ?? RANGES[2]).days();
 			const state = useUsage(open, days, site, nonce, tick);
 			const balance = useBalance(open, account, nonce, forceNonce);
+			// After every hook above, so their state cells keep their order.
+			const currentModel = useCurrentModel();
+			const routeBalance = useRouteBalance(currentModel?.provider, nonce, tick);
 			const reload = () => setNonce((n) => n + 1);
 			const translate = translateWith(t);
 
@@ -2262,6 +2774,21 @@ window.__ModuleLoader__.load({
 				? ""
 				: fmtMoney(todayCostAmount.cost, todayCostAmount.currency);
 			const totalLabel = [badgeTokens, badgeCost].filter(Boolean).join(" · ");
+			// The second line: what is left behind the model the open session is
+			// set to. The hover names that route and model, since the line itself
+			// has room for the figure only.
+			const balanceLine = badgeBalanceText(routeBalance, translate, currentModel?.model);
+			const balanceTitle =
+				balanceLine === undefined
+					? undefined
+					: [
+							// The line itself first: three windows can outrun a narrow
+							// sidebar, and the ellipsis must not be the only copy.
+							balanceLine,
+							[currentModel.model === undefined ? currentModel.provider : `${currentModel.provider}/${currentModel.model}`, routeBalance?.displayName]
+								.filter(Boolean)
+								.join(" · ")
+						].join("\n");
 
 			return jsxs("div", {
 				ref: root,
@@ -2276,7 +2803,15 @@ window.__ModuleLoader__.load({
 						onClick: () => setOpen((value) => !value),
 						children: [
 							jsx("span", { className: S.badgeIcon, children: jsx(IconData, { size: 16 }) }),
-							jsx("span", { className: S.badgeLabel, children: translate("panel.title") }),
+							jsxs("span", {
+								className: S.badgeText,
+								children: [
+									jsx("span", { className: S.badgeLabel, children: translate("panel.title") }),
+									balanceLine === undefined
+										? null
+										: jsx("span", { className: S.badgeSub, title: balanceTitle, children: balanceLine })
+								]
+							}),
 							jsx("span", { className: S.badgeValue, children: totalLabel })
 						]
 					}),
@@ -2359,6 +2894,8 @@ window.__ModuleLoader__.load({
 		//#region locales
 		const zh = {
 			"panel.title": "用量账本",
+			"badge.balance": "余额 {amount}",
+			"badge.spent": "已用 {amount}",
 			"range.today": "今日",
 			"range.month": "本月",
 			"range.all": "累计",
@@ -2407,6 +2944,16 @@ window.__ModuleLoader__.load({
 			"weekday.6": "日",
 			"activity.less": "少",
 			"activity.more": "多",
+			"section.trend": "日用量",
+			"trend.tokens": "Token",
+			"trend.cost": "估算费用",
+			"trend.noCost": "没有可估算费用的记录",
+			"trend.span.30": "30 天",
+			"trend.span.90": "90 天",
+			"trend.span.all": "全部",
+			"trend.total": "合计 {value}",
+			"trend.costOf": "估算 {value}",
+			"trend.aria": "{span}每日{metric}折线，合计 {value}",
 			"table.model": "模型",
 			"table.requests": "请求",
 			"table.total": "总计",
@@ -2437,6 +2984,9 @@ window.__ModuleLoader__.load({
 			"balance.setCookie": "设置 Cookie",
 			"balance.hint.mimo-cookie-missing": "小米 MiMo 的余额只能从控制台读：API key 没有余额接口。点「设置 Cookie」粘贴控制台的登录 Cookie。",
 			"balance.hint.mimo-cookie-expired": "小米控制台的登录已过期（Cookie 约一天失效）。重新登录后点「设置 Cookie」换一份。",
+			"balance.hint.antigravity-signin": "Antigravity 没有登录 Google 账号（{reason}）。在 DSH 设置里的 Antigravity 认证页登录后，这里会显示各模型组的 5 小时与每周额度。",
+			"balance.group.gemini": "Gemini",
+			"balance.group.non-gemini": "Claude 与 GPT",
 			"balance.hint.deepseek-signin": "DeepSeek 没有登录（或登录已失效），这条路由的 key 也读不到余额（{reason}）。在 DSH 里登录 DeepSeek 后，这里会显示登录账户的钱包。",
 			"cookie.title": "设置 Cookie — 控制台登录",
 			"cookie.step1": "浏览器登录 {origin}",
@@ -2494,6 +3044,8 @@ window.__ModuleLoader__.load({
 		};
 		const en = {
 			"panel.title": "Token Ledger",
+			"badge.balance": "Balance {amount}",
+			"badge.spent": "Spent {amount}",
 			"range.today": "Today",
 			"range.month": "This month",
 			"range.all": "All time",
@@ -2542,6 +3094,16 @@ window.__ModuleLoader__.load({
 			"weekday.6": "Sun",
 			"activity.less": "Less",
 			"activity.more": "More",
+			"section.trend": "Daily usage",
+			"trend.tokens": "Tokens",
+			"trend.cost": "Est. cost",
+			"trend.noCost": "Nothing priced to estimate",
+			"trend.span.30": "30 days",
+			"trend.span.90": "90 days",
+			"trend.span.all": "All",
+			"trend.total": "Total {value}",
+			"trend.costOf": "est. {value}",
+			"trend.aria": "Daily {metric} over {span}, total {value}",
 			"table.model": "Model",
 			"table.requests": "Req",
 			"table.total": "Total",
@@ -2572,6 +3134,9 @@ window.__ModuleLoader__.load({
 			"balance.setCookie": "Set cookie",
 			"balance.hint.mimo-cookie-missing": "Xiaomi MiMo's balance is only readable from its console; API keys have no balance endpoint. Use \"Set cookie\" to paste the console's sign-in cookie.",
 			"balance.hint.mimo-cookie-expired": "The Xiaomi console session has expired (cookies last about a day). Sign in again and use \"Set cookie\" to replace it.",
+			"balance.hint.antigravity-signin": "Antigravity has no Google account signed in ({reason}). Sign in on the Antigravity auth page in DSH settings and this card shows each model group's five-hour and weekly quota.",
+			"balance.group.gemini": "Gemini",
+			"balance.group.non-gemini": "Claude and GPT",
 			"balance.hint.deepseek-signin": "DeepSeek is not signed in on this Host (or the sign-in lapsed), and the route's key could not read a balance either ({reason}). Sign in to DeepSeek in DSH and this card shows the account's wallet.",
 			"cookie.title": "Set cookie — console sign-in",
 			"cookie.step1": "Sign in to {origin} in a browser.",
@@ -2658,6 +3223,7 @@ window.__ModuleLoader__.load({
 		 */
 		function apply(ctx) {
 			console.info("[tokenledger] apply() called; registering the footer seat");
+			hostCtx = ctx;
 			// Warm the wallet cache at PAGE LOAD, once: one passive read per
 			// configured site, so the first panel open finds the host's cache
 			// hot and renders instantly instead of waiting on the network. The
@@ -2712,8 +3278,12 @@ window.__ModuleLoader__.load({
 		exports.ProjectRows = ProjectRows;
 		exports.colorOf = colorOf;
 		exports.ActivityStrip = ActivityStrip;
+		exports.TrendChart = TrendChart;
+		exports.trendPoints = trendPoints;
+		exports.niceCeil = niceCeil;
 		exports.ModelTable = ModelTable;
 		exports.BalanceCard = BalanceCard;
+		exports.badgeBalanceText = badgeBalanceText;
 		exports.SetBalanceButton = SetBalanceButton;
 		exports.UserAuthDialog = UserAuthDialog;
 		exports.CookieDialog = CookieDialog;
