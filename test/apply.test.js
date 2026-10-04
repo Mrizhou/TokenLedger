@@ -377,65 +377,66 @@ test("no llm and no settings still collects, attributing everything to direct", 
 test("on a host with no settings namespace, panel credentials land in a file and survive a restart", async () => {
 	// 0.1.7 dropped `settings.register`, so the namespace never registered and
 	// every save from the panel was refused as "internal" — the New API wallet
-	// dialog had stored nothing since the upgrade. The MiMo console cookie
-	// needs the same seat.
-	const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+	// dialog had stored nothing since the upgrade. A typed MiMo balance needs
+	// the same seat.
+	const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
 	const { tmpdir } = await import("node:os");
 	const { join } = await import("node:path");
 	const { PassThrough } = await import("node:stream");
 	const dir = mkdtempSync(join(tmpdir(), "tokenledger-cred-"));
 	const credentialsPath = join(dir, "tokenledger-credentials.json");
-	const cookie = 'api-platform_serviceToken="st"; userId=123; api-platform_slh="s"';
+	// A file from the cookie era: the session must not outlive the reader.
+	writeFileSync(credentialsPath, JSON.stringify({ userAuth: {}, consoleCookies: { "https://platform.xiaomimimo.com": 'api-platform_serviceToken="st"; userId=123' } }));
+	const xiaomi = {
+		providers: [{ provider: "xiaomi", settingsNs: "llm-pi-ai", settingsPath: ["providers", "xiaomi"], declared: false }],
+		section: { providers: { xiaomi: { apiKeyEnv: "XIAOMI_API_KEY" } } }
+	};
+	const call = async (route, method, url, body) => {
+		const sent = [];
+		const stream = new PassThrough();
+		stream.end(body === undefined ? "" : JSON.stringify(body));
+		await route.handler(
+			Object.assign(stream, { method, url, headers: { host: "127.0.0.1", "x-tokenledger": "1" }, socket: { remoteAddress: "127.0.0.1" } }),
+			{ writeHead: (s) => sent.push(s), end: (b) => sent.push(b) }
+		);
+		return { status: sent[0], body: JSON.parse(sent[1]) };
+	};
 	try {
 		const routes = [];
 		const httpServer = { register: (spec) => (routes.push(spec), () => {}) };
-		const { ctx, dispose } = fakeContext({ services: { httpServer } });
+		const { ctx, dispose } = fakeContext({ ...xiaomi, services: { httpServer } });
 		apply(ctx, { database: ":memory:", credentialsPath, sweepIntervalMs: 0, sweepOnStart: false });
 		await settle();
+		assert.equal(readFileSync(credentialsPath, "utf8").includes("serviceToken"), false, "the stored console cookie is dropped at start");
 		const auth = routes.find((r) => r.path === "/api/tokenledger/userauth");
-		const post = async (body) => {
-			const sent = [];
-			const stream = new PassThrough();
-			stream.end(JSON.stringify(body));
-			await auth.handler(
-				Object.assign(stream, {
-					method: "POST",
-					url: auth.path,
-					headers: { host: "127.0.0.1", "x-tokenledger": "1" },
-					socket: { remoteAddress: "127.0.0.1" }
-				}),
-				{ writeHead: (s) => sent.push(s), end: (b) => sent.push(b) }
-			);
-			return { status: sent[0], body: JSON.parse(sent[1]) };
-		};
+		const post = (body) => call(auth, "POST", auth.path, body);
 
-		assert.deepEqual(await post({ origin: "https://platform.xiaomimimo.com", kind: "cookie", cookie: "sk-not-a-cookie" }), {
-			status: 400,
-			body: { ok: false, error: "invalid-cookie" }
-		});
-		assert.equal((await post({ origin: "https://evil.example", kind: "cookie", cookie })).body.error, "invalid-origin", "a session is only kept for a console we read");
-		assert.equal((await post({ origin: "https://platform.xiaomimimo.com", kind: "cookie", cookie: `Cookie: ${cookie}` })).status, 200);
+		assert.deepEqual(await post({ kind: "manual", account: "xiaomi", amount: "abc" }), { status: 400, body: { ok: false, error: "invalid-amount" } });
+		assert.equal((await post({ kind: "manual", account: "nobody", amount: 5 })).body.error, "invalid-account", "only an account read that way takes a typed figure");
+		assert.equal((await post({ kind: "manual", account: "xiaomi", amount: "¥36.5" })).status, 200);
 		assert.equal((await post({ origin: "https://relay.example", userId: 7, token: "tok" })).status, 200, "the New API dialog saves again");
 
 		const onDisk = JSON.parse(readFileSync(credentialsPath, "utf8"));
-		assert.equal(onDisk.consoleCookies["https://platform.xiaomimimo.com"], cookie, "stored without the pasted prefix");
+		assert.equal(onDisk.manualBalances.xiaomi.amount, 36.5, "stored without the pasted sign");
+		assert.equal(onDisk.manualBalances.xiaomi.currency, "CNY");
+		assert.ok(Array.isArray(onDisk.manualBalances.xiaomi.baseline));
 		assert.deepEqual(onDisk.userAuth["https://relay.example"], { userId: 7, token: "tok" });
+		assert.equal(onDisk.consoleCookies, undefined);
 		await dispose();
 
-		// A restart reads them back; the renderer only ever learns that they exist.
+		// A restart reads them back; the balance route answers the typed figure.
 		const again = [];
-		const second = fakeContext({ services: { httpServer: { register: (spec) => (again.push(spec), () => {}) } } });
+		const second = fakeContext({ ...xiaomi, services: { httpServer: { register: (spec) => (again.push(spec), () => {}) } } });
 		apply(second.ctx, { database: ":memory:", credentialsPath, sweepIntervalMs: 0, sweepOnStart: false });
 		await settle();
-		const sent = [];
-		await again.find((r) => r.path === "/api/tokenledger/userauth").handler(
-			{ method: "GET", url: "/api/tokenledger/userauth", headers: { host: "127.0.0.1" }, socket: { remoteAddress: "127.0.0.1" } },
-			{ writeHead: (s) => sent.push(s), end: (b) => sent.push(b) }
-		);
-		const origins = JSON.parse(sent[1]).origins;
-		assert.equal(origins["https://platform.xiaomimimo.com"].hasCookie, true);
+		const balanceRoute = again.find((r) => r.path === "/api/tokenledger/balance");
+		const card = (await call(balanceRoute, "GET", "/api/tokenledger/balance?account=xiaomi")).body;
+		assert.equal(card.fetched, true);
+		assert.equal(card.manual, true);
+		assert.equal(card.total, 36.5, "nothing spent since it was typed");
+		const authAgain = again.find((r) => r.path === "/api/tokenledger/userauth");
+		const origins = (await call(authAgain, "GET", "/api/tokenledger/userauth")).body.origins;
 		assert.equal(origins["https://relay.example"].hasToken, true);
-		assert.equal(sent[1].includes("serviceToken"), false, "the cookie never crosses back out");
 		await second.dispose();
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

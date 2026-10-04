@@ -1774,8 +1774,8 @@ window.__ModuleLoader__.load({
 			const who = [balance.displayName ?? account?.displayName, SCHEME_LABELS[balance.scheme]].filter(Boolean).join(" · ");
 			const whoLine = who === "" ? null : jsx("div", { className: S.balanceWho, children: who });
 			const setChip = () =>
-				(balance.scheme === "newapi" || balance.scheme === "mimo") && typeof onConfigure === "function"
-					? jsx(SetBalanceButton, { onConfigure, translate, label: balance.scheme === "mimo" ? "balance.setCookie" : undefined })
+				(balance.scheme === "newapi" || MANUAL_SCHEMES.has(balance.scheme)) && typeof onConfigure === "function"
+					? jsx(SetBalanceButton, { onConfigure, translate, label: MANUAL_SCHEMES.has(balance.scheme) ? "balance.setManual" : undefined })
 					: null;
 
 			if (balance.supported === false) {
@@ -1831,7 +1831,10 @@ window.__ModuleLoader__.load({
 						: balance.quota?.available !== undefined
 							? translate("balance.quota", { n: fmt(balance.quota.available) })
 							: "—";
-			const amountLabel = typeof balance.total === "number" ? undefined : spent ? translate("balance.spent") : undefined;
+			// A typed balance is the user's figure less the ledger's estimate, so it
+			// says so beside the amount rather than passing as a vendor's reading.
+			const amountLabel =
+				balance.manual === true ? translate("balance.estimated") : typeof balance.total === "number" ? undefined : spent ? translate("balance.spent") : undefined;
 
 			const notes = [];
 			// The throttle hint is the one provenance note worth printing: it
@@ -1846,6 +1849,18 @@ window.__ModuleLoader__.load({
 			// distinguishable from the plugin misreading a vendor it claims to
 			// support, or the first bug report will be filed against us.
 			if (balance.declared === true) notes.push(translate("balance.declared"));
+			if (balance.manual === true) {
+				notes.push(
+					translate("balance.manualFrom", {
+						amount: fmtMoney(balance.enteredAmount, balance.currency),
+						ago: agoLabel(balance.enteredAt, translate)
+					})
+				);
+				notes.push(translate("balance.manualSpent", { amount: fmtMoney(balance.spentSince ?? 0, balance.currency) }));
+				if (Array.isArray(balance.unpricedModels) && balance.unpricedModels.length > 0) {
+					notes.push(translate("balance.manualUnpriced", { models: balance.unpricedModels.join("、") }));
+				}
+			}
 			if (balance.unlimited === true) notes.push(translate("balance.unlimited"));
 			if (typeof balance.expiresAt === "number") {
 				notes.push(translate("balance.expires", { at: new Date(balance.expiresAt * 1000).toLocaleDateString() }));
@@ -1970,6 +1985,7 @@ window.__ModuleLoader__.load({
 		function balanceRowValue(balance, translate) {
 			if (balance === undefined) return { text: "…", tone: "dim" };
 			if (balance.supported === false) return { text: translate("balance.row.unsupported"), tone: "dim" };
+			if (balance.reason === "no-manual-balance") return { text: translate("balance.row.unfilled"), tone: "dim" };
 			if (balance.fetched !== true) {
 				const key =
 					balance.reason === "rate-limited"
@@ -1980,7 +1996,7 @@ window.__ModuleLoader__.load({
 				return { text: translate(key), tone: "bad" };
 			}
 			const tone = balance.isAvailable === false ? "bad" : undefined;
-			if (typeof balance.total === "number") return { text: fmtMoney(balance.total, balance.currency), tone };
+			if (typeof balance.total === "number") return { text: `${balance.manual === true ? "≈" : ""}${fmtMoney(balance.total, balance.currency)}`, tone };
 			if (typeof balance.used === "number") return { text: translate("badge.spent", { amount: fmtMoney(balance.used, balance.currency) }), tone };
 			if (balance.quota?.available !== undefined) return { text: translate("balance.quota", { n: fmt(balance.quota.available) }), tone };
 			const windows = longestWindows(balance.windows);
@@ -2031,10 +2047,10 @@ window.__ModuleLoader__.load({
 		 * origin and the software, and deliberately NOT the username: the 账号
 		 * belongs to the site's console, not to a card the picker attributes.
 		 */
-		const SCHEME_LABELS = { deepseek: "API 余额", "deepseek-account": "登录账户余额", newapi: "New API", sub2api: "Sub2API", mimo: "控制台余额", antigravity: "Google 账户额度" };
+		const SCHEME_LABELS = { deepseek: "API 余额", "deepseek-account": "登录账户余额", newapi: "New API", sub2api: "Sub2API", mimo: "手填余额", antigravity: "Google 账户额度" };
 
-		/** Where a scheme read through a console session signs in; the cookie is stored per console. */
-		const CONSOLE_ORIGINS = { mimo: "https://platform.xiaomimimo.com" };
+		/** Schemes whose balance the user types in rather than the host reading it. */
+		const MANUAL_SCHEMES = new Set(["mimo"]);
 
 		/**
 		 * The 设置查询API dialog: per-site console credentials for New API's
@@ -2240,33 +2256,15 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * The 设置 Cookie dialog: a vendor console's session, for a vendor whose
-		 * balance no API key can read (小米 MiMo).
-		 *
-		 * The session lasts about a day, so this is a dialog people come back to:
-		 * the steps say exactly which request to copy the header from, and a
-		 * stored cookie shows as STATE only — the read route answers `hasCookie`,
-		 * never the value.
+		 * The 填写余额 dialog, for an account no key can read (小米 MiMo,
+		 * 用户 2026-10-04「这种改成自己输入吧」): the user types what the console
+		 * shows, and the host keeps it current by subtracting the ledger's priced
+		 * usage from that moment on.
 		 */
-		function CookieDialog({ account, translate, onClose, onSaved }) {
-			const consoleOrigin = CONSOLE_ORIGINS[account.scheme];
-			const [cookie, setCookie] = react.useState("");
-			const [saved, setSaved] = react.useState(undefined);
+		function ManualBalanceDialog({ account, translate, onClose, onSaved }) {
+			const [amount, setAmount] = react.useState("");
 			const [busy, setBusy] = react.useState(false);
 			const [error, setError] = react.useState(undefined);
-
-			react.useEffect(() => {
-				let live = true;
-				fetchJson(`${USERAUTH_PATH}?origin=${encodeURIComponent(consoleOrigin)}`).then(
-					(payload) => {
-						if (live) setSaved(payload.origins?.[consoleOrigin]);
-					},
-					() => {}
-				);
-				return () => {
-					live = false;
-				};
-			}, [consoleOrigin]);
 
 			react.useEffect(() => {
 				const onKey = (event) => {
@@ -2279,23 +2277,19 @@ window.__ModuleLoader__.load({
 				return () => window.removeEventListener("keydown", onKey, true);
 			}, [onClose]);
 
-			const post = async (payload) => {
-				const response = await fetch(USERAUTH_PATH, {
-					method: "POST",
-					headers: { "content-type": "application/json", "x-tokenledger": "1" },
-					body: JSON.stringify({ origin: consoleOrigin, kind: "cookie", ...payload })
-				});
-				if (response.status === 404) throw new Error(translate("dialog.hostStale"));
-				const result = await response.json().catch(() => undefined);
-				if (result?.error === "invalid-cookie") throw new Error(translate("cookie.invalid"));
-				if (result?.ok !== true) throw new Error(result?.error ?? `HTTP ${response.status}`);
-			};
-
 			const run = async (payload) => {
 				setBusy(true);
 				setError(undefined);
 				try {
-					await post(payload);
+					const response = await fetch(USERAUTH_PATH, {
+						method: "POST",
+						headers: { "content-type": "application/json", "x-tokenledger": "1" },
+						body: JSON.stringify({ kind: "manual", account: account.id, ...payload })
+					});
+					if (response.status === 404) throw new Error(translate("dialog.hostStale"));
+					const result = await response.json().catch(() => undefined);
+					if (result?.error === "invalid-amount") throw new Error(translate("manual.invalid"));
+					if (result?.ok !== true) throw new Error(result?.error ?? `HTTP ${response.status}`);
 					onSaved();
 				} catch (e) {
 					setError(translate("dialog.saveFailed", { reason: String(e?.message ?? e) }));
@@ -2305,11 +2299,11 @@ window.__ModuleLoader__.load({
 			};
 
 			const save = () => {
-				if (cookie.trim() === "") {
-					setError(translate("cookie.needCookie"));
+				if (amount.trim() === "") {
+					setError(translate("manual.needAmount"));
 					return;
 				}
-				void run({ cookie });
+				void run({ amount: amount.trim() });
 			};
 
 			return jsxs("div", {
@@ -2321,12 +2315,12 @@ window.__ModuleLoader__.load({
 					jsxs("div", {
 						className: S.dlg,
 						role: "dialog",
-						"aria-label": translate("cookie.title"),
+						"aria-label": translate("manual.title"),
 						children: [
 							jsxs("div", {
 								className: S.dlgHead,
 								children: [
-									jsx("span", { className: S.dlgTitle, children: `${translate("cookie.title")} · ${account.displayName}` }),
+									jsx("span", { className: S.dlgTitle, children: `${translate("manual.title")} · ${account.displayName}` }),
 									jsx("button", {
 										type: "button",
 										className: S.iconButton,
@@ -2336,44 +2330,37 @@ window.__ModuleLoader__.load({
 									})
 								]
 							}),
-							jsxs("ol", {
-								className: S.steps,
-								children: [
-									jsx("li", { children: translate("cookie.step1", { origin: consoleOrigin }) }),
-									jsx("li", { children: translate("cookie.step2") }),
-									jsx("li", { children: translate("cookie.step3") })
-								]
-							}),
-							jsx("p", { className: S.note, children: translate("cookie.note") }),
+							jsx("p", { className: S.note, children: translate("manual.note") }),
 							jsxs("label", {
 								className: S.field,
 								children: [
-									jsx("span", { className: S.fieldLabel, children: translate("cookie.label") }),
+									jsx("span", { className: S.fieldLabel, children: translate("manual.label") }),
 									jsx("input", {
 										className: S.input,
 										type: "text",
-										value: cookie,
-										onChange: (event) => setCookie(event.target.value),
-										placeholder: saved?.hasCookie === true ? translate("cookie.keep") : translate("cookie.placeholder"),
+										inputMode: "decimal",
+										value: amount,
+										onChange: (event) => setAmount(event.target.value),
+										onKeyDown: (event) => {
+											if (event.key === "Enter") save();
+										},
+										placeholder: translate("manual.placeholder"),
 										autoComplete: "off",
 										spellCheck: false
 									})
 								]
 							}),
-							saved?.hasCookie === true ? jsx("p", { className: S.note, children: translate("cookie.configured") }) : null,
 							error === undefined ? null : jsx("p", { className: S.error, children: error }),
 							jsxs("div", {
 								className: S.actions,
 								children: [
-									saved?.hasCookie === true
-										? jsx("button", {
-												type: "button",
-												className: `${S.btn} ${S.btnDanger}${busy ? ` ${S.busy}` : ""}`,
-												disabled: busy,
-												onClick: () => void run({ remove: true }),
-												children: translate("dialog.remove")
-											})
-										: null,
+									jsx("button", {
+										type: "button",
+										className: `${S.btn} ${S.btnDanger}${busy ? ` ${S.busy}` : ""}`,
+										disabled: busy,
+										onClick: () => void run({ remove: true }),
+										children: translate("dialog.remove")
+									}),
 									jsx("button", { type: "button", className: S.btn, disabled: busy, onClick: onClose, children: translate("action.close") }),
 									jsx("button", {
 										type: "button",
@@ -2982,7 +2969,7 @@ window.__ModuleLoader__.load({
 						}),
 						dialogFor === undefined
 							? null
-							: jsx(CONSOLE_ORIGINS[dialogFor.scheme] === undefined ? UserAuthDialog : CookieDialog, {
+							: jsx(MANUAL_SCHEMES.has(dialogFor.scheme) ? ManualBalanceDialog : UserAuthDialog, {
 									account: dialogFor,
 									translate,
 									onClose: () => setDialogFor(undefined),
@@ -3091,24 +3078,23 @@ window.__ModuleLoader__.load({
 			"balance.row.limited": "限流中",
 			"balance.row.noKey": "未配置密钥",
 			"balance.setButton": "设置查询API",
-			"balance.setCookie": "设置 Cookie",
-			"balance.hint.mimo-cookie-missing": "小米 MiMo 的余额只能从控制台读：API key 没有余额接口。点「设置 Cookie」粘贴控制台的登录 Cookie。",
-			"balance.hint.mimo-cookie-expired": "小米控制台的登录已过期（Cookie 约一天失效）。重新登录后点「设置 Cookie」换一份。",
+			"balance.setManual": "填写余额",
+			"balance.estimated": "估算",
+			"balance.manualFrom": "手填 {amount}（{ago}）",
+			"balance.manualSpent": "之后估算花费 {amount}",
+			"balance.manualUnpriced": "未计价：{models}",
+			"balance.row.unfilled": "未填写",
+			"balance.hint.manual-missing": "这个账户的 API key 查不了余额。点「填写余额」，把控制台显示的余额填进来，之后按账本用量自动扣减。",
+			"manual.title": "填写余额",
+			"manual.note": "填控制台当前显示的余额。从现在起按账本里这个账户的用量、按官方单价估算扣减；和控制台对不上时重新填一次即可。",
+			"manual.label": "余额（元）",
+			"manual.placeholder": "例如 36.44",
+			"manual.needAmount": "请填写余额。",
+			"manual.invalid": "余额要是一个不小于 0 的数字。",
 			"balance.hint.antigravity-signin": "Antigravity 没有登录 Google 账号（{reason}）。在 DSH 设置里的 Antigravity 认证页登录后，这里会显示各模型组的 5 小时与每周额度。",
 			"balance.group.gemini": "Gemini",
 			"balance.group.non-gemini": "Claude 与 GPT",
 			"balance.hint.deepseek-signin": "DeepSeek 没有登录（或登录已失效），这条路由的 key 也读不到余额（{reason}）。在 DSH 里登录 DeepSeek 后，这里会显示登录账户的钱包。",
-			"cookie.title": "设置 Cookie — 控制台登录",
-			"cookie.step1": "浏览器登录 {origin}",
-			"cookie.step2": "F12 → 网络（Network）→ 刷新页面，点开任意一个 /api/v1/ 开头的请求（如 balance）",
-			"cookie.step3": "在「请求标头」里复制 cookie 的整段值，粘贴到下面保存",
-			"cookie.note": "Cookie 约一天过期，过期后余额卡会提示，照同样步骤换一份即可。它能登录你的整个控制台账户，只存在本机（~/.dsh/tokenledger-credentials.json），只发往上面这个控制台地址。",
-			"cookie.label": "Cookie",
-			"cookie.placeholder": "粘贴整段 cookie",
-			"cookie.keep": "已配置——粘贴新的即替换",
-			"cookie.configured": "已保存一份 Cookie。",
-			"cookie.needCookie": "请粘贴 Cookie。",
-			"cookie.invalid": "这不像控制台的登录 Cookie：需要同时含 serviceToken 和 userId 两项",
 			"balance.rateLimited": "查询已限流，{at} 后可再试。",
 			"balance.stale": "已限流，{at} 前不刷新 · {ago}的结果",
 			"balance.unparsed": "接口答了，但认不出配额字段（{reason}）。可以把这句话反馈给我们。",
@@ -3244,24 +3230,23 @@ window.__ModuleLoader__.load({
 			"balance.row.limited": "rate-limited",
 			"balance.row.noKey": "no key",
 			"balance.setButton": "Set query API",
-			"balance.setCookie": "Set cookie",
-			"balance.hint.mimo-cookie-missing": "Xiaomi MiMo's balance is only readable from its console; API keys have no balance endpoint. Use \"Set cookie\" to paste the console's sign-in cookie.",
-			"balance.hint.mimo-cookie-expired": "The Xiaomi console session has expired (cookies last about a day). Sign in again and use \"Set cookie\" to replace it.",
+			"balance.setManual": "Enter balance",
+			"balance.estimated": "estimated",
+			"balance.manualFrom": "Entered {amount} ({ago})",
+			"balance.manualSpent": "estimated spend since {amount}",
+			"balance.manualUnpriced": "Unpriced: {models}",
+			"balance.row.unfilled": "not entered",
+			"balance.hint.manual-missing": "This account's API key cannot read a balance. Use \"Enter balance\" to type in what the console shows; the ledger's usage is deducted from then on.",
+			"manual.title": "Enter balance",
+			"manual.note": "Type the balance the console shows now. From then on the ledger's usage on this account is deducted at the official prices; enter it again whenever it drifts from the console.",
+			"manual.label": "Balance (CNY)",
+			"manual.placeholder": "e.g. 36.44",
+			"manual.needAmount": "Enter the balance.",
+			"manual.invalid": "The balance must be a number no less than 0.",
 			"balance.hint.antigravity-signin": "Antigravity has no Google account signed in ({reason}). Sign in on the Antigravity auth page in DSH settings and this card shows each model group's five-hour and weekly quota.",
 			"balance.group.gemini": "Gemini",
 			"balance.group.non-gemini": "Claude and GPT",
 			"balance.hint.deepseek-signin": "DeepSeek is not signed in on this Host (or the sign-in lapsed), and the route's key could not read a balance either ({reason}). Sign in to DeepSeek in DSH and this card shows the account's wallet.",
-			"cookie.title": "Set cookie — console sign-in",
-			"cookie.step1": "Sign in to {origin} in a browser.",
-			"cookie.step2": "F12 → Network → reload, and open any request under /api/v1/ (balance, for one).",
-			"cookie.step3": "Copy the whole cookie value from its request headers and paste it below.",
-			"cookie.note": "The cookie expires after about a day; the balance card says so, and the same steps replace it. It signs in to your whole console account, is kept only on this machine (~/.dsh/tokenledger-credentials.json), and is sent only to the console above.",
-			"cookie.label": "Cookie",
-			"cookie.placeholder": "Paste the whole cookie",
-			"cookie.keep": "Stored — paste a new one to replace it",
-			"cookie.configured": "A cookie is stored.",
-			"cookie.needCookie": "Paste the cookie.",
-			"cookie.invalid": "That does not look like the console's sign-in cookie: it needs both serviceToken and userId",
 			"balance.rateLimited": "Rate-limited; retry after {at}.",
 			"balance.stale": "rate-limited until {at} · showing {ago}",
 			"balance.unparsed": "The endpoint answered, but none of the quota fields were where they were expected ({reason}). Worth reporting.",
@@ -3401,7 +3386,7 @@ window.__ModuleLoader__.load({
 		exports.badgeBalanceText = badgeBalanceText;
 		exports.SetBalanceButton = SetBalanceButton;
 		exports.UserAuthDialog = UserAuthDialog;
-		exports.CookieDialog = CookieDialog;
+		exports.ManualBalanceDialog = ManualBalanceDialog;
 		exports.QuotaWindows = QuotaWindows;
 		exports.Footer = Footer;
 		exports.agoLabel = agoLabel;

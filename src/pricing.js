@@ -330,3 +330,31 @@ export const DEEPSEEK_OFFICIAL_RATES = Object.freeze([
 		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 }
 	})
 ]);
+
+/**
+ * Official 小米 MiMo pay-as-you-go prices, per million tokens, CNY (domestic).
+ *
+ * Source: https://mimo.mi.com/static/docs/price/pay-as-you-go.md (the price
+ * page's own markdown, last modified 2026-09-22 per the site map; fetched
+ * 2026-10-04). Real-time API rows only: the ledger cannot tell a batch call
+ * from a real-time one, and real-time is what an agent makes. Cache writes are
+ * "limited-time free", so they are priced at 0 rather than left unpriced — a
+ * missing price would turn every MiMo row into no estimate at all. The 2.5
+ * models are billed at their 2.6 successors' prices on the same page.
+ *
+ * Used for one thing: the balance a user typed in for MiMo, whose API keys
+ * have no balance endpoint, minus what the ledger has spent there since. It is
+ * NOT folded into the panel's 估算 column, which keeps pricing the DeepSeek
+ * official route only unless the user supplies `rates`.
+ */
+const MIMO_REALTIME = [
+	[["mimo-v2.6-pro", "mimo-v2.5-pro"], { cacheReadTokens: 0.025, inputTokens: 3.0, outputTokens: 6.0, cacheWriteTokens: 0 }],
+	[["mimo-v2.6-flash", "mimo-v2.5"], { cacheReadTokens: 0.02, inputTokens: 1.0, outputTokens: 2.0, cacheWriteTokens: 0 }],
+	[["mimo-v2.6-pro-ultraspeed"], { cacheReadTokens: 0.25, inputTokens: 30.0, outputTokens: 60.0, cacheWriteTokens: 0 }]
+];
+
+export const MIMO_OFFICIAL_RATES = Object.freeze(
+	MIMO_REALTIME.flatMap(([models, perMillion]) =>
+		models.map((model) => defineRate({ model, currency: "CNY", effectiveFrom: "2026-09-22", perMillion }))
+	)
+);

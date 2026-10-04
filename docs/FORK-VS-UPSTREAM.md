@@ -54,23 +54,37 @@
   `test/discovery.test.js`「0.1.7's sign-in route to DeepSeek is direct traffic too…」、
   `test/client.test.js`「the badge reads today's figure with the panel shut…」（每条都做过变异验证）。
 
-- **小米 MiMo 余额走控制台 cookie + 凭据本地文件**（2026-09-25，**推翻 09-23「cookie 方案不做」**，用户原话「mimo 推翻，改成读cookie」）：
-  - MiMo 的 API key（按量 key 与 Token Plan `tp-*` key）**没有任何余额接口**；只有控制台
-    `https://platform.xiaomimimo.com/api/v1/{balance,tokenPlan/usage,tokenPlan/detail}` 能读，鉴权是登录 cookie
-    （需含 `serviceToken` 与 `userId`，约 24 小时过期）。接口形状参照 MIT 的 `Han-1413141/dsh-cost-meter` PR #166。
-  - `src/balance.js`：`api.xiaomimimo.com` 与三个 `token-plan-*` 主机登记为厂商 `mimo`；scheme 声明
-    `credential: { kind: "console-cookie", origin }`，`readBalance` 对它发 `Cookie` 头（不发 Authorization）且只发往该控制台 origin；
-    缺 cookie / 过期各有 hint，卡片据此给「设置 Cookie」按钮。
-  - **凭据存储**：0.1.7 的 settings 服务**没有 `register()`**，插件命名空间注册失败 → 原「设置查询API」对话框
-    **自升级起就存不进去**（接口回 500 `internal`）。新增 `src/credentials-file.js`：宿主没有可写命名空间时，
-    New API 钱包凭据与控制台 cookie 写进账本旁的 `tokenledger-credentials.json`（整份写临时文件再 rename），启动时读回。
-    `saveUserAuth` 的拒绝原因带 `kind`，`invalid-*` 回 400。
-  - 顺带：`withKnownSoftware` 也按 origin 认余额卡懒探测记下的程序类型（以前只按站点 id，站点行永远无类型），
-    站点行悬停提示显示程序类型。
-  守卫测试：`test/balance.test.js` MiMo 五条、`test/apply.test.js`「on a host with no settings namespace…」、
-  `test/client.test.js`「a MiMo card without a live console session…」「the panel opens the cookie dialog…」、
-  `test/discovery.test.js`「a type the balance card learned by origin reaches the site row」（均变异验证）。
-
+- **小米 MiMo 余额改为手填、按账本用量扣减**（2026-10-04，用户「这种改成自己输入吧」「填的数减去之后的估算花费」「去掉 Cookie，只留手填」「单价需要你去核实」；
+  **取代** 09-25 起的控制台 cookie 读法 —— 那次是推翻 09-23「cookie 方案不做」，用户原话「mimo 推翻，改成读cookie」）：
+  - 来由不变：MiMo 的 API key（按量 key 与 Token Plan `tp-*` key）**没有任何余额接口**。10-04 复查官方文档站
+    （`mimo.mi.com/llms.txt` 全部页面清单，站点地图最新 09-29）：API 参考只有对话 / 语音 / 模型列表 / 错误码 / 限流，查余额只能登控制台。
+    cookie 读法能用但约一天过期、要天天重贴（10-04 实测运行中的插件答 `http-401` / `mimo-cookie-expired`）。
+  - 做法：`src/balance.js` 的 `SCHEMES.mimo` 只剩 `credential: { kind: "manual" }`，**没有 `read`、不发任何请求**；
+    `createBalanceReader` 遇 manual 走 `options.manualBalance(account)`，没填过答 `no-manual-balance` + hint `manual-missing`。
+    新增 `src/manual-balance.js`：填数时**先跑一次 sweep**，再记下该账户各路由 ×模型的全量 token 桶作基线；
+    之后余额 = 填的数 − 估价(现在的桶 − 基线)，每个桶只计增长（重折叠让总量变小不算退款）。
+    账本只到「会话 × 天」，所以用快照差而不是时间过滤 —— 跨天也准，误差只在两次 sweep 之间。
+  - 单价：`src/pricing.js` 新增 `MIMO_OFFICIAL_RATES`，**10-04 从官方价目页一手核过**
+    （`https://mimo.mi.com/static/docs/price/pay-as-you-go.md`，站点地图记该页 09-22 更新）：国内按量、实时 API，每百万 token：
+    `mimo-v2.6-pro` 缓存命中 ¥0.025 / 未命中 ¥3 / 输出 ¥6；`mimo-v2.6-flash` ¥0.02 / ¥1 / ¥2；`mimo-v2.6-pro-ultraspeed` ¥0.25 / ¥30 / ¥60；
+    缓存写入「限时免费」记 0；`mimo-v2.5-pro` / `mimo-v2.5` 与 2.6 同价（10-21 下线）。Batch 价（减半）不用 —— 账本分不出 batch。
+    查价顺序：用户 `rates` 里有这个模型就用用户的，没有才用内置表（用户 profile 里已配的 MiMo 两条与官方一致）。
+    这张表**只用于手填余额的扣减**，不进面板「估算」列（那列的口径不变）。
+  - 存储：`credentials-file.js` 的第二张表从 `consoleCookies` 换成 `manualBalances`（按账户 id：`{ amount, currency, at, baseline }`，不是机密）；
+    启动时发现旧文件里还有 `consoleCookies` 就**整份重写掉它**（那份 cookie 能登录整个小米控制台）。settings schema 删掉 `consoleCookies`。
+    写口仍是 `POST /api/tokenledger/userauth`，`{ kind: "manual", account, amount, currency?, remove? }`，只接受 scheme 为 manual 的账户（否则 `invalid-account`），金额不合法 `invalid-amount`。
+  - 面板：「设置 Cookie」对话框（`CookieDialog`）换成「填写余额」（`ManualBalanceDialog`）；卡上金额旁标「估算」，备注「手填 ¥x（N 天前）」「之后估算花费 ¥y」，
+    有没单价的模型就列「未计价：…」；一行里显示 `≈¥26.19`，没填过显示灰色「未填写」（不是失败的警示色）。
+  - 删掉：`normalizeConsoleCookie`、`MIMO_CONSOLE_ORIGIN`、`readMimoPlan`（Token Plan 月额度读取随之没了）、`readBalance` 的 Cookie 头分支、`CONSOLE_ORIGINS`、全部 `cookie.*` 文案。
+  - 顺带（09-25 那次留下、仍有效）：0.1.7 的 settings 服务**没有 `register()`**，所以钱包凭据落 `tokenledger-credentials.json`（整份写临时文件再 rename）；
+    `saveUserAuth` 的拒绝原因带 `kind`，`invalid-*` 回 400；`withKnownSoftware` 也按 origin 认余额卡懒探测记下的程序类型。
+  守卫测试：`test/manual-balance.test.js` 七条（含「MiMo's shipped prices are the official page's」「only usage after the snapshot is charged…」
+  「…a shrunken ledger is never a refund」）、`test/balance.test.js`「MiMo is typed in: nothing is fetched…」「a typed MiMo balance is the host's answer…」、
+  `test/apply.test.js`「on a host with no settings namespace…」（含旧 cookie 被清掉、重启后余额照答）、
+  `test/client.test.js`「a MiMo account with no typed balance asks for one…」「a typed balance reads as an estimate…」
+  「the panel opens the balance dialog for a typed-in account…」「the balance dialog sends the typed figure…」、
+  `test/discovery.test.js`「a type the balance card learned by origin reaches the site row」。
+  变异验证：去掉「只计增长」、宿主不接 `manualBalance`、行上去掉 `≈`，对应测试各自失败。**合上游时这一处要保留**（上游没有 MiMo）。
 - **DeepSeek 余额先读「登录账户」钱包，路由的 key 只是兜底**（2026-09-27，用户报「把 api 删了，
   另一个显示不了余额了」）：DeepSeek 的钱在两个平面上 —— `/user/balance` 回答的是 **API key**
   背后的钱包，0.1.7 免 key 的 `deepseek-account`（登录账户）永远答不了它；key 被删/被吊销时更是什么

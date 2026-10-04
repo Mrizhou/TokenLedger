@@ -10,15 +10,18 @@
  * wallet dialog had been silently unable to store anything since the upgrade.
  *
  * This file is the fallback: a small JSON document next to the ledger, written
- * whole and renamed into place, read back once at start. It holds the same two
- * maps the settings namespace would, and nothing else:
+ * whole and renamed into place, read back once at start. It holds two maps
+ * and nothing else:
  *
  * - `userAuth` — New API console credentials by site origin (`{ userId, token }`).
- * - `consoleCookies` — a vendor console's session `Cookie` header by console
- *   origin (小米 MiMo).
+ *   Secrets: never logged, never sent to the renderer; the route that reads
+ *   them answers only whether one exists.
+ * - `manualBalances` — balances the user typed in, by account id
+ *   (`{ amount, currency, at, baseline }`, see `manual-balance.js`). Not secret.
  *
- * Both are secrets. They are never logged and never sent to the renderer; the
- * route that reads them answers only whether one exists.
+ * A file written before 2026-10-04 may still carry `consoleCookies` (小米 MiMo's
+ * console session, which the typed balance replaced). `load` reports it so the
+ * plugin can rewrite the file without it; `save` never writes it.
  *
  * @module dsh-tokenledger/credentials-file
  */
@@ -50,20 +53,24 @@ export function createCredentialsFile(path) {
 	return {
 		path,
 		load() {
-			if (path === undefined) return { userAuth: {}, consoleCookies: {} };
+			if (path === undefined) return { userAuth: {}, manualBalances: {}, hadConsoleCookies: false };
 			let parsed;
 			try {
 				parsed = JSON.parse(readFileSync(path, "utf8"));
 			} catch {
 				parsed = undefined;
 			}
-			return { userAuth: plainMap(parsed?.userAuth), consoleCookies: plainMap(parsed?.consoleCookies) };
+			return {
+				userAuth: plainMap(parsed?.userAuth),
+				manualBalances: plainMap(parsed?.manualBalances),
+				hadConsoleCookies: parsed?.consoleCookies !== undefined
+			};
 		},
-		save({ userAuth, consoleCookies }) {
+		save({ userAuth, manualBalances }) {
 			if (path === undefined) throw Object.assign(new Error("settings-not-ready"), { kind: "settings-not-ready" });
 			mkdirSync(dirname(path), { recursive: true });
 			const staging = `${path}.tmp`;
-			writeFileSync(staging, `${JSON.stringify({ userAuth: plainMap(userAuth), consoleCookies: plainMap(consoleCookies) }, null, 2)}\n`, {
+			writeFileSync(staging, `${JSON.stringify({ userAuth: plainMap(userAuth), manualBalances: plainMap(manualBalances) }, null, 2)}\n`, {
 				mode: 0o600
 			});
 			renameSync(staging, path);

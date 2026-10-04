@@ -2006,25 +2006,50 @@ test("the panel orders 模型 above 活跃度 and puts the daily line last", asy
 	assert.equal(titles.at(-1), "section.trend", titles.join(","));
 });
 
-test("a MiMo card without a live console session says which, and offers the cookie dialog", async () => {
+test("a MiMo account with no typed balance asks for one, and is not a failure", async () => {
+	// 用户 2026-10-04「这种改成自己输入吧」: no key reads MiMo's balance, so the
+	// user types it in. Until they do, the card says how and offers the button.
 	const { exports, render } = await loadBundle();
-	for (const hint of ["mimo-cookie-missing", "mimo-cookie-expired"]) {
-		const text = textOf(
-			render(exports.BalanceCard, {
-				state: { status: "ready", data: { ok: true, supported: true, fetched: false, scheme: "mimo", reason: "no-credential", hint } },
-				translate: T,
-				onConfigure: () => {}
-			})
-		);
-		assert.ok(text.includes(`balance.hint.${hint}`), text);
-		assert.ok(text.includes("balance.setCookie"), `no way to fix it from the card: ${text}`);
-		assert.equal(text.includes("balance.noKey"), false, "the route key is not what is missing");
+	const untyped = { ok: true, supported: true, fetched: false, scheme: "mimo", reason: "no-manual-balance", hint: "manual-missing" };
+	const text = textOf(render(exports.BalanceCard, { state: { status: "ready", data: untyped }, translate: T, onConfigure: () => {} }));
+	assert.ok(text.includes("balance.hint.manual-missing"), text);
+	assert.ok(text.includes("balance.setManual"), `no way to fix it from the card: ${text}`);
+	assert.ok("balance.hint.manual-missing" in exports.zh && "balance.hint.manual-missing" in exports.en);
+	for (const gone of ["balance.setCookie", "balance.hint.mimo-cookie-missing", "balance.hint.mimo-cookie-expired", "cookie.title"]) {
+		assert.equal(gone in exports.zh, false, `${gone} outlived the cookie reader`);
 	}
-	for (const hint of ["mimo-cookie-missing", "mimo-cookie-expired"]) {
-		assert.ok(`balance.hint.${hint}` in exports.zh && `balance.hint.${hint}` in exports.en);
-	}
+	// On its line: two quiet words, not the warning colour of a failed read.
+	assert.deepEqual(exports.balanceRowValue(untyped, T), { text: "balance.row.unfilled", tone: "dim" });
 });
 
+test("a typed balance reads as an estimate, and says what it started from", async () => {
+	// 用户 2026-10-04「填的数减去之后的估算花费」.
+	const { exports, render } = await loadBundle();
+	const typed = {
+		ok: true,
+		supported: true,
+		fetched: true,
+		manual: true,
+		scheme: "mimo",
+		displayName: "小米 MiMo",
+		currency: "CNY",
+		total: 26.19,
+		isAvailable: true,
+		enteredAmount: 36.44,
+		enteredAt: Date.now() - 3 * 86_400_000,
+		spentSince: 10.25
+	};
+	const text = textOf(render(exports.BalanceCard, { state: { status: "ready", data: typed }, translate: T, onConfigure: () => {} }));
+	assert.ok(text.includes("¥26.19"), text);
+	assert.ok(text.includes("balance.estimated"), "a typed figure less an estimate is not a vendor's reading");
+	assert.ok(text.includes("balance.manualFrom:¥36.44"), text);
+	assert.ok(text.includes("balance.manualSpent:¥10.25"), text);
+	assert.ok(text.includes("balance.setManual"), "the figure can be typed again from the card");
+	assert.equal(exports.balanceRowValue(typed, T).text, "≈¥26.19");
+
+	const unpriced = textOf(render(exports.BalanceCard, { state: { status: "ready", data: { ...typed, unpricedModels: ["mimo-v9"] } }, translate: T }));
+	assert.ok(unpriced.includes("balance.manualUnpriced:mimo-v9"), "a model left out of the sum is named");
+});
 test("the sign-in wallet is labelled as the account's, not the API key's", async () => {
 	// One DeepSeek card owns both routes, so the label is the only thing that
 	// says whose money is on it: an API key's wallet and the signed-in
@@ -2057,7 +2082,7 @@ test("a Host whose account is signed out is told to sign in, and both dictionari
 	assert.ok(text.includes("http-401"), "the hint carries the reason, which is what the route did");
 });
 
-test("the panel opens the cookie dialog for a console-read account, the wallet dialog otherwise", async () => {
+test("the panel opens the balance dialog for a typed-in account, the wallet dialog otherwise", async () => {
 	const harness = await loadBundle();
 	const dialogOf = (account) => {
 		// [open, range, site, nonce, forceNonce, dialogFor]
@@ -2073,12 +2098,46 @@ test("the panel opens the cookie dialog for a console-read account, the wallet d
 		return found;
 	};
 	const mimo = dialogOf({ id: "xiaomi", scheme: "mimo", origin: "https://api.xiaomimimo.com", displayName: "小米 MiMo" });
-	assert.ok(mimo.includes(exports_of(harness).CookieDialog));
+	assert.ok(mimo.includes(exports_of(harness).ManualBalanceDialog));
 	assert.equal(mimo.includes(exports_of(harness).UserAuthDialog), false);
+	assert.equal(exports_of(harness).CookieDialog, undefined, "the cookie dialog is gone");
 	const relay = dialogOf({ id: "yos", scheme: "newapi", origin: "https://api2.yoshub.com", displayName: "api2.yoshub.com" });
 	assert.ok(relay.includes(exports_of(harness).UserAuthDialog));
 });
 
+test("the balance dialog sends the typed figure for its account", async () => {
+	const harness = await loadBundle();
+	const sent = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async (path, init) => {
+		sent.push({ path, body: JSON.parse(init.body) });
+		return { status: 200, json: async () => ({ ok: true }) };
+	};
+	const realWindow = globalThis.window;
+	globalThis.window = { ...(realWindow ?? {}), addEventListener() {}, removeEventListener() {} };
+	try {
+		let saved = 0;
+		const props = { account: { id: "xiaomi", displayName: "小米 MiMo", scheme: "mimo" }, translate: T, onClose() {}, onSaved: () => saved++ };
+		// [amount, busy, error]
+		const tree = harness.renderWithState(exports_of(harness).ManualBalanceDialog, props, ["36.44", false, undefined]);
+		const buttons = [];
+		const walk = (node) => {
+			if (node === null || typeof node !== "object") return;
+			if (Array.isArray(node)) return node.forEach(walk);
+			if (node.type === "button") buttons.push(node);
+			walk(node.props?.children);
+		};
+		walk(tree);
+		const save = buttons.find((b) => b.props.children === "dialog.save");
+		save.props.onClick();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.deepEqual(sent, [{ path: "/api/tokenledger/userauth", body: { kind: "manual", account: "xiaomi", amount: "36.44" } }]);
+		assert.equal(saved, 1);
+	} finally {
+		globalThis.fetch = realFetch;
+		globalThis.window = realWindow;
+	}
+});
 /** The bundle's exports, named for readability at the call sites above. */
 function exports_of(harness) {
 	return harness.exports;

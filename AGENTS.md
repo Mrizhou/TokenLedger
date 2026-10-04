@@ -30,7 +30,7 @@ pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revi
 > `docs/FORK-VS-UPSTREAM.md` —— 2026-09-30 移出（为压到 Antigravity 读规则文件的 24000 字节上限以内），内容一字未改。
 > 上面那段只是目录，逐条结论在那份文件里：① `balance.js` 跳过没配置的 catalog 路由；② `BUILTIN_PROVIDER_ORIGINS` 加 `xiaomi`；
 > ③ `plugin.js` `revisionUnchanged()` 的 0.1.7 revision 形态；④ `client.js` 的 0.1.7 侧边栏席位样式；⑤ 0.1.7 首开慢那组修复；
-> ⑥ MiMo 走控制台 cookie + `credentials-file.js`；⑦ DeepSeek 先读登录账户钱包；⑧ Command Code 的 `/alpha/*` 额度与表项；⑨ 侧边栏「用量账本」下的当前模型余额（`client.js` 读 DSH 模型选择 ＋ `balance.js` 的 `findAccount`）；⑩ Antigravity 插件的额度进余额账户（探测 `antigravityAuth` 服务）；⑪ 面板「余额」一节列**全部账户**、去掉下拉选择（`client.js` `useBalances`）。
+> ⑥ MiMo 余额改手填、按账本用量扣减（`manual-balance.js`，10-04 起；09-25 ~ 10-04 是控制台 cookie）+ `credentials-file.js`；⑦ DeepSeek 先读登录账户钱包；⑧ Command Code 的 `/alpha/*` 额度与表项；⑨ 侧边栏「用量账本」下的当前模型余额（`client.js` 读 DSH 模型选择 ＋ `balance.js` 的 `findAccount`）；⑩ Antigravity 插件的额度进余额账户（探测 `antigravityAuth` 服务）；⑪ 面板「余额」一节列**全部账户**、去掉下拉选择（`client.js` `useBalances`）。
 >
 > **什么时候必须去读它**：同步 / 合并上游之前；要动上面 ①–⑪ 涉及的 `src/` 文件之前；想删某条守卫测试之前。
 > **合上游的铁律**：标了「合上游时这一处要保留」的一律保留本 fork 写法；上游自己修了同一处就取上游那份，
@@ -50,7 +50,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 587/587（2026-10-04）
+npm test                           # 全量，当前基线 593/593（2026-10-04）
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -103,7 +103,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **587/587**（2026-10-04）。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **593/593**（2026-10-04）。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
@@ -131,7 +131,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 |---|---|---|
 | `00-收件箱/YYYY-MM-DD/`（**待建**） | **当天做的、还没想好放哪**的东西先扔这儿，等 skill `project-tidy` 归位 | 当成长期仓库；归位后不删空的日期夹 |
 | `src/` | 插件代码（宿主半边 / 浏览器半边；Blue 专属代码只在 `src/blue/`）。**与上游不同的四处差异逐条记在 `docs/FORK-VS-UPSTREAM.md`** | 手工补丁备份（`src/plugin.js.bak-pre-*` 属**一次性产物 → 直接清除**）；日志 |
-| `test/` | 测试（`node --test`，全量基线 587/587） | 手跑脚本冒充测试 |
+| `test/` | 测试（`node --test`，全量基线 593/593） | 手跑脚本冒充测试 |
 | `docs/` | 文档 ＋ `docs/决策记录.md` ＋ `docs/FORK-VS-UPSTREAM.md`，**按主题分** | 根目录上的一次性报告 |
 | `node_modules/` | 依赖；**已 gitignore**（没跑 `npm install` 别下「测试挂了」的结论，见红线 2）；按新口径属**清除 / 忽略**项，不该常驻可见 | 提交进 git；当源码读 |
 | `logs/`、`state/`（**待建**） | 运行期产物：`.log` · `.pid` · 状态 json —— **一律进 `.gitignore`**（账本 `~/.dsh/tokenledger.sqlite` 在用户目录，**不在本项目**、别删） | 放在根目录；提交进 git |

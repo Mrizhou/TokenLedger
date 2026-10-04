@@ -39,7 +39,8 @@ import { RelaySiteRegistry, SITE_TYPES, createSiteResolver, domainOf, normalizeO
 import { createFingerprintRegistry } from "./fingerprints.js";
 import { describeProject, readProjectTitles, workspaceRegistry } from "./projects.js";
 import { discoverFromContext, mergeSites, withKnownSoftware } from "./discovery.js";
-import { SCHEMES, createBalanceReader, findAccount, listAccounts, normalizeConsoleCookie } from "./balance.js";
+import { SCHEMES, createBalanceReader, findAccount, listAccounts } from "./balance.js";
+import { manualBalanceCard, manualRateLookup, normalizeManualAmount, normalizeManualCurrency, usageSnapshot } from "./manual-balance.js";
 import { createCredentialsFile, credentialsPathFor } from "./credentials-file.js";
 import { createNewApiWalletReader, shouldUseWallet } from "./newapi-user.js";
 import { VERSION, dailySeries, priceToday, registerRoutes, usagePayload } from "./http.js";
@@ -47,7 +48,7 @@ import { DashboardController, DashboardControllerError } from "./dashboard-contr
 import { mountTokenLedgerBlue } from "./blue/index.js";
 
 import { LedgerStore } from "./store.js";
-import { DEEPSEEK_OFFICIAL_RATES, RateTable, priceRows } from "./pricing.js";
+import { DEEPSEEK_OFFICIAL_RATES, MIMO_OFFICIAL_RATES, RateTable, priceRows } from "./pricing.js";
 import { num, renderReport, table } from "./report.js";
 
 /** `YYYY-MM-DD` for N days before today, in local time. */
@@ -124,13 +125,6 @@ export const name = "tokenledger";
  * service that mounts later is picked up on its own.
  */
 export const inject = ["sessionPersistence"];
-
-/** Vendor consoles a built-in scheme signs in to; the only origins a cookie may be stored for. */
-const CONSOLE_ORIGINS = new Set(
-	Object.values(SCHEMES)
-		.map((spec) => spec.credential?.origin)
-		.filter((origin) => typeof origin === "string")
-);
 
 /** Defaults chosen so an unconfigured mount still does something useful. */
 const DEFAULTS = {
@@ -764,7 +758,17 @@ export function apply(ctx, userConfig = {}) {
 	{
 		const stored = credentialsFile.load();
 		config.userAuth = { ...stored.userAuth, ...(config.userAuth ?? {}) };
-		config.consoleCookies = { ...stored.consoleCookies, ...(config.consoleCookies ?? {}) };
+		config.manualBalances = { ...stored.manualBalances, ...(config.manualBalances ?? {}) };
+		// 小米 MiMo's console cookie is no longer read (a typed balance replaced
+		// it, 2026-10-04). It signs in to the user's whole console account, so a
+		// file still holding one is rewritten without it rather than left be.
+		if (stored.hadConsoleCookies) {
+			try {
+				credentialsFile.save({ userAuth: stored.userAuth, manualBalances: stored.manualBalances });
+			} catch (error) {
+				logger?.warn?.("tokenledger: could not drop the stored console cookie: %s", error?.message ?? error);
+			}
+		}
 	}
 
 	// --- the site directory -------------------------------------------------
@@ -1111,61 +1115,85 @@ export function apply(ctx, userConfig = {}) {
 	// to the per-key readers exactly as before.
 	let balance;
 
-	/** The stored credentials as a renderer may SEE them: never the token, never the cookie. */
+	/** The stored credentials as a renderer may SEE them: never the token. */
 	const userAuth = (origin) => {
 		const wallets = config.userAuth ?? {};
-		const cookies = config.consoleCookies ?? {};
 		const view = (key) => {
 			const entry = wallets[key];
 			return {
 				userId: typeof entry?.userId === "number" ? entry.userId : undefined,
-				hasToken: typeof entry?.token === "string" && entry.token !== "",
-				hasCookie: typeof cookies[key] === "string" && cookies[key] !== ""
+				hasToken: typeof entry?.token === "string" && entry.token !== ""
 			};
 		};
-		const keys = origin !== undefined ? [origin] : [...new Set([...Object.keys(wallets), ...Object.keys(cookies)])];
-		return Object.fromEntries(keys.filter((key) => Object.hasOwn(wallets, key) || Object.hasOwn(cookies, key)).map((key) => [key, view(key)]));
+		const keys = origin !== undefined ? [origin] : Object.keys(wallets);
+		return Object.fromEntries(keys.filter((key) => Object.hasOwn(wallets, key)).map((key) => [key, view(key)]));
 	};
 
 	/** A save failure the dialog can name, rather than "internal". */
 	const refuse = (kind) => Object.assign(new Error(kind), { kind });
 
 	/**
-	 * Persist both credential maps. The settings namespace where the host still
-	 * offers one (≤0.1.6); otherwise the file beside the ledger — 0.1.7 has no
-	 * `settings.register`, and without this every save was refused.
+	 * Persist the wallet credentials. The settings namespace where the host
+	 * still offers one (≤0.1.6); otherwise the file beside the ledger — 0.1.7
+	 * has no `settings.register`, and without this every save was refused.
 	 */
 	const persistCredentials = async () => {
 		if (settingsScope !== undefined) {
-			await settingsScope.update({ userAuth: config.userAuth ?? {}, consoleCookies: config.consoleCookies ?? {} });
+			await settingsScope.update({ userAuth: config.userAuth ?? {} });
 			return;
 		}
-		credentialsFile.save({ userAuth: config.userAuth, consoleCookies: config.consoleCookies });
+		credentialsFile.save({ userAuth: config.userAuth, manualBalances: config.manualBalances });
 	};
 
 	/**
-	 * Save or clear one origin's entry. `{ kind: "cookie" }` addresses a vendor
-	 * console's session cookie, and only for a console a built-in scheme reads.
+	 * Typed balances live in the file always: the settings schema has no slot
+	 * for them, and they are not secret. The wallets ride along only where the
+	 * file is also their home.
+	 */
+	const persistManualBalances = () => {
+		credentialsFile.save({ userAuth: settingsScope === undefined ? config.userAuth : {}, manualBalances: config.manualBalances });
+	};
+
+	/**
+	 * Type in (or clear) one account's balance — only for an account whose
+	 * scheme is read that way (小米 MiMo). The ledger is swept first, so usage
+	 * from before this moment lands in the snapshot rather than being charged
+	 * against the figure just typed.
+	 */
+	const saveManualBalance = async (body) => {
+		const id = typeof body.account === "string" && body.account !== "" ? body.account : undefined;
+		const account = id === undefined ? undefined : findAccount(listAccounts(ctx, { softwareOf: fingerprints.software }), id);
+		if (account === undefined || SCHEMES[account.scheme]?.credential?.kind !== "manual") throw refuse("invalid-account");
+		const next = { ...(config.manualBalances ?? {}) };
+		if (body.remove === true) {
+			delete next[account.id];
+		} else {
+			const amount = normalizeManualAmount(body.amount);
+			if (amount === undefined) throw refuse("invalid-amount");
+			const currency = normalizeManualCurrency(body.currency);
+			if (currency === undefined) throw refuse("invalid-currency");
+			try {
+				await runSweepAndPublish();
+			} catch {
+				// A failed sweep leaves the snapshot a little behind: the next
+				// sweep's usage is charged against the new figure, never lost.
+			}
+			next[account.id] = { amount, currency, at: Date.now(), baseline: usageSnapshot(store, account.routes ?? [account.id]) };
+		}
+		config.manualBalances = next;
+		persistManualBalances();
+		dashboardController?.notifyChanged(true);
+	};
+
+	/**
+	 * Save or clear one origin's entry. `{ kind: "manual" }` addresses a typed
+	 * balance by account instead.
 	 */
 	const saveUserAuth = async (body) => {
 		if (body === null || typeof body !== "object") throw refuse("invalid-body");
+		if (body.kind === "manual") return saveManualBalance(body);
 		const origin = normalizeOrigin(body.origin);
 		if (origin === undefined) throw refuse("invalid-origin");
-		if (body.kind === "cookie") {
-			if (!CONSOLE_ORIGINS.has(origin)) throw refuse("invalid-origin");
-			const next = { ...(config.consoleCookies ?? {}) };
-			if (body.remove === true) {
-				delete next[origin];
-			} else {
-				const cookie = normalizeConsoleCookie(body.cookie);
-				if (cookie === undefined) throw refuse("invalid-cookie");
-				next[origin] = cookie;
-			}
-			config.consoleCookies = next;
-			await persistCredentials();
-			dashboardController?.notifyChanged(true);
-			return;
-		}
 		if (body.remove === true) {
 			if (settingsRemoveUserAuth !== undefined) {
 				await settingsRemoveUserAuth(origin);
@@ -1175,7 +1203,7 @@ export function apply(ctx, userConfig = {}) {
 			const next = { ...(config.userAuth ?? {}) };
 			delete next[origin];
 			config.userAuth = next;
-			if (settingsRemoveUserAuth === undefined) credentialsFile.save({ userAuth: config.userAuth, consoleCookies: config.consoleCookies });
+			if (settingsRemoveUserAuth === undefined) credentialsFile.save({ userAuth: config.userAuth, manualBalances: config.manualBalances });
 		} else {
 			const userId = body.userId;
 			if (typeof userId !== "number" || !Number.isInteger(userId) || userId <= 0) {
@@ -1194,7 +1222,19 @@ export function apply(ctx, userConfig = {}) {
 	try {
 		/** The per-key readers, unchanged underneath the wallet override. */
 		const baseBalance = createBalanceReader(ctx, {
-			consoleCookie: (origin) => config.consoleCookies?.[origin],
+			// A typed balance, kept current against the ledger: the routes' usage
+			// now, priced at the user's rates where they set one and MiMo's
+			// official list otherwise.
+			manualBalance: (account) => {
+				const entry = config.manualBalances?.[account.id];
+				if (typeof entry?.amount !== "number" || typeof entry.currency !== "string") return undefined;
+				return manualBalanceCard(
+					entry,
+					usageSnapshot(store, account.routes ?? [account.id]),
+					manualRateLookup(config.rates, MIMO_OFFICIAL_RATES),
+					dayKey(Date.now(), config.dayOffsetMinutes)
+				);
+			},
 			softwareOf: fingerprints.software,
 			// A lazily detected relay program is remembered, so the probe
 			// happens once per site rather than once per balance read.
