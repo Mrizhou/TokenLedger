@@ -40,6 +40,7 @@ import { createFingerprintRegistry } from "./fingerprints.js";
 import { describeProject, readProjectTitles, workspaceRegistry } from "./projects.js";
 import { discoverFromContext, mergeSites, withKnownSoftware } from "./discovery.js";
 import { SCHEMES, createBalanceReader, findAccount, listAccounts } from "./balance.js";
+import { maskAccessKeyId, normalizeAccessKey } from "./aliyun-bss.js";
 import { manualBalanceCard, manualRateLookup, normalizeManualAmount, normalizeManualCurrency, usageSnapshot } from "./manual-balance.js";
 import { createCredentialsFile, credentialsPathFor } from "./credentials-file.js";
 import { createNewApiWalletReader, shouldUseWallet } from "./newapi-user.js";
@@ -759,12 +760,13 @@ export function apply(ctx, userConfig = {}) {
 		const stored = credentialsFile.load();
 		config.userAuth = { ...stored.userAuth, ...(config.userAuth ?? {}) };
 		config.manualBalances = { ...stored.manualBalances, ...(config.manualBalances ?? {}) };
+		config.aliyunAccessKey = config.aliyunAccessKey ?? stored.aliyunAccessKey;
 		// 小米 MiMo's console cookie is no longer read (a typed balance replaced
 		// it, 2026-10-04). It signs in to the user's whole console account, so a
 		// file still holding one is rewritten without it rather than left be.
 		if (stored.hadConsoleCookies) {
 			try {
-				credentialsFile.save({ userAuth: stored.userAuth, manualBalances: stored.manualBalances });
+				credentialsFile.save({ userAuth: stored.userAuth, manualBalances: stored.manualBalances, aliyunAccessKey: stored.aliyunAccessKey });
 			} catch (error) {
 				logger?.warn?.("tokenledger: could not drop the stored console cookie: %s", error?.message ?? error);
 			}
@@ -1129,6 +1131,20 @@ export function apply(ctx, userConfig = {}) {
 		return Object.fromEntries(keys.filter((key) => Object.hasOwn(wallets, key)).map((key) => [key, view(key)]));
 	};
 
+	/**
+	 * Everything the credentials file holds. Wallets ride along only where the
+	 * file is their home (no settings namespace); the rest live nowhere else.
+	 */
+	const fileCredentials = () => ({
+		userAuth: settingsScope === undefined ? config.userAuth : {},
+		manualBalances: config.manualBalances,
+		aliyunAccessKey: config.aliyunAccessKey
+	});
+
+	/** What the 设置 AccessKey dialog may show: a masked ID, never the secret. */
+	const aliyunAccessKeyView = () =>
+		config.aliyunAccessKey === undefined ? null : { accessKeyId: maskAccessKeyId(config.aliyunAccessKey.accessKeyId), hasSecret: true };
+
 	/** A save failure the dialog can name, rather than "internal". */
 	const refuse = (kind) => Object.assign(new Error(kind), { kind });
 
@@ -1142,7 +1158,7 @@ export function apply(ctx, userConfig = {}) {
 			await settingsScope.update({ userAuth: config.userAuth ?? {} });
 			return;
 		}
-		credentialsFile.save({ userAuth: config.userAuth, manualBalances: config.manualBalances });
+		credentialsFile.save(fileCredentials());
 	};
 
 	/**
@@ -1151,7 +1167,25 @@ export function apply(ctx, userConfig = {}) {
 	 * file is also their home.
 	 */
 	const persistManualBalances = () => {
-		credentialsFile.save({ userAuth: settingsScope === undefined ? config.userAuth : {}, manualBalances: config.manualBalances });
+		credentialsFile.save(fileCredentials());
+	};
+
+	/**
+	 * Store (or clear) the 阿里云 AccessKey. A blank secret with the same ID
+	 * keeps the stored secret, so the dialog never has to show it back.
+	 */
+	const saveAliyunAccessKey = async (body) => {
+		if (body.remove === true) {
+			config.aliyunAccessKey = undefined;
+		} else {
+			const id = typeof body.accessKeyId === "string" ? body.accessKeyId.trim() : "";
+			const keep = (typeof body.accessKeySecret !== "string" || body.accessKeySecret.trim() === "") && config.aliyunAccessKey?.accessKeyId === id;
+			const key = normalizeAccessKey(id, keep ? config.aliyunAccessKey.accessKeySecret : body.accessKeySecret);
+			if (key === undefined) throw refuse("invalid-access-key");
+			config.aliyunAccessKey = key;
+		}
+		credentialsFile.save(fileCredentials());
+		dashboardController?.notifyChanged(true);
 	};
 
 	/**
@@ -1192,6 +1226,7 @@ export function apply(ctx, userConfig = {}) {
 	const saveUserAuth = async (body) => {
 		if (body === null || typeof body !== "object") throw refuse("invalid-body");
 		if (body.kind === "manual") return saveManualBalance(body);
+		if (body.kind === "aliyun-access-key") return saveAliyunAccessKey(body);
 		const origin = normalizeOrigin(body.origin);
 		if (origin === undefined) throw refuse("invalid-origin");
 		if (body.remove === true) {
@@ -1203,7 +1238,7 @@ export function apply(ctx, userConfig = {}) {
 			const next = { ...(config.userAuth ?? {}) };
 			delete next[origin];
 			config.userAuth = next;
-			if (settingsRemoveUserAuth === undefined) credentialsFile.save({ userAuth: config.userAuth, manualBalances: config.manualBalances });
+			if (settingsRemoveUserAuth === undefined) credentialsFile.save(fileCredentials());
 		} else {
 			const userId = body.userId;
 			if (typeof userId !== "number" || !Number.isInteger(userId) || userId <= 0) {
@@ -1225,6 +1260,7 @@ export function apply(ctx, userConfig = {}) {
 			// A typed balance, kept current against the ledger: the routes' usage
 			// now, priced at the user's rates where they set one and MiMo's
 			// official list otherwise.
+			aliyunAccessKey: () => config.aliyunAccessKey,
 			manualBalance: (account) => {
 				const entry = config.manualBalances?.[account.id];
 				if (typeof entry?.amount !== "number" || typeof entry.currency !== "string") return undefined;
@@ -1330,6 +1366,7 @@ export function apply(ctx, userConfig = {}) {
 			dayOffsetMinutes: config.dayOffsetMinutes,
 			balance,
 			userAuth,
+			aliyunAccessKey: aliyunAccessKeyView,
 			saveUserAuth,
 			logger
 		});

@@ -442,3 +442,69 @@ test("on a host with no settings namespace, panel credentials land in a file and
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("the 阿里云 AccessKey is stored once, shown masked, and signs the 百炼 card's read", async () => {
+	const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const { PassThrough } = await import("node:stream");
+	const dir = mkdtempSync(join(tmpdir(), "tokenledger-ak-"));
+	const credentialsPath = join(dir, "tokenledger-credentials.json");
+	const call = async (route, method, url, body) => {
+		const sent = [];
+		const stream = new PassThrough();
+		stream.end(body === undefined ? "" : JSON.stringify(body));
+		await route.handler(
+			Object.assign(stream, { method, url, headers: { host: "127.0.0.1", "x-tokenledger": "1" }, socket: { remoteAddress: "127.0.0.1" } }),
+			{ writeHead: (s) => sent.push(s), end: (b) => sent.push(b) }
+		);
+		return { status: sent[0], body: JSON.parse(sent[1]), raw: sent[1] };
+	};
+	const asked = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async (url, init) => {
+		asked.push({ url: String(url), init });
+		return { ok: true, status: 200, json: async () => ({ Code: "200", Success: true, Data: { AvailableAmount: "42.00", AvailableCashAmount: "42.00", Currency: "CNY" } }) };
+	};
+	try {
+		const routes = [];
+		const { ctx, dispose } = fakeContext({
+			providers: [{ provider: "ali", settingsNs: "llm-pi-ai", settingsPath: ["providers", "ali"] }],
+			section: { providers: { ali: { baseURL: "https://llm-7ub39ukw6sjudiit.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", apiKeyEnv: "ALI_KEY" } } },
+			services: { httpServer: { register: (spec) => (routes.push(spec), () => {}) } }
+		});
+		apply(ctx, { database: ":memory:", credentialsPath, sweepIntervalMs: 0, sweepOnStart: false });
+		await settle();
+		const auth = routes.find((r) => r.path === "/api/tokenledger/userauth");
+		const balance = routes.find((r) => r.path === "/api/tokenledger/balance");
+
+		assert.equal((await call(balance, "GET", "/api/tokenledger/balance?account=ali")).body.hint, "aliyun-ak-missing");
+		assert.deepEqual(await call(auth, "POST", auth.path, { kind: "aliyun-access-key", accessKeyId: "sk-not-an-ak", accessKeySecret: "x" }).then((r) => r.body), {
+			ok: false,
+			error: "invalid-access-key"
+		});
+		const secret = "ExampleSecretValue0123456789ab";
+		assert.equal((await call(auth, "POST", auth.path, { kind: "aliyun-access-key", accessKeyId: "LTAI5tExampleKeyId01", accessKeySecret: secret })).status, 200);
+		// The same ID with a blank secret keeps the stored one.
+		assert.equal((await call(auth, "POST", auth.path, { kind: "aliyun-access-key", accessKeyId: "LTAI5tExampleKeyId01", accessKeySecret: "" })).status, 200);
+
+		const view = await call(auth, "GET", auth.path);
+		assert.deepEqual(view.body.aliyun, { accessKeyId: "LTAI…Id01", hasSecret: true });
+		assert.equal(view.raw.includes(secret), false, "the secret never crosses back out");
+		assert.equal(view.raw.includes("LTAI5tExampleKeyId01"), false, "nor the whole ID");
+		assert.deepEqual(JSON.parse(readFileSync(credentialsPath, "utf8")).aliyunAccessKey, { accessKeyId: "LTAI5tExampleKeyId01", accessKeySecret: secret });
+
+		const card = (await call(balance, "GET", "/api/tokenledger/balance?account=ali")).body;
+		assert.equal(card.fetched, true);
+		assert.equal(card.total, 42);
+		assert.equal(new URL(asked.at(-1).url).host, "bssopenapi.aliyuncs.com");
+
+		assert.equal((await call(auth, "POST", auth.path, { kind: "aliyun-access-key", remove: true })).status, 200);
+		assert.equal(JSON.parse(readFileSync(credentialsPath, "utf8")).aliyunAccessKey, undefined);
+		assert.equal((await call(auth, "GET", auth.path)).body.aliyun, null);
+		await dispose();
+	} finally {
+		globalThis.fetch = realFetch;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

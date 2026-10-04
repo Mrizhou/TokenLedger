@@ -220,3 +220,23 @@
     写成侧边栏同款的裸百分比 `30d 18.5%`。有钱包又有套餐（Z.ai）时只显示钱包。读失败只写两个字（读取失败 / 未配置密钥 / 限流中 / 不支持），标警示色，详情点开看。
     守卫测试：「a balance line shows the money, or the plan's longest window」「a balance line opens its full card, button and all」
     （变异验证：`Body` 换回 `BalanceCard`、或去掉取最长的比较，对应测试失败）。
+- **阿里云百炼的余额：用 AccessKey 读阿里云费用中心**（2026-10-04，用户「llm-7ub39ukw6sjudiit.cn-beijing.maas.aliyuncs.com 这个是阿里云百炼的，真的抓不到吗」→「这个需要经常维护吗」→「尝试一下」）：
+  - 来由：百炼的推理域名（`dashscope.aliyuncs.com`、业务空间专属域名 `{WorkspaceId}.{region}.maas.aliyuncs.com`）只认 API key、只答模型；
+    官方 Base URL 页只列 `/compatible-mode/v1`、`/apps/anthropic`、`/api/v1`，没有余额接口（10-04 核）。此前这个账户答 `unknown-software`。
+    钱在阿里云费用中心：BssOpenApi `2017-12-14` 的 `QueryAccountBalance`，用 AccessKey 签名（V3 `ACS3-HMAC-SHA256`），权限只要 `bss:DescribeAcccount`（官方拼写三个 c）。
+  - 新增 `src/aliyun-bss.js`：V3 签名器照官方「V3 版本请求体&签名机制」页实现，**用该页的 RunInstances 示例逐字节核对过签名**（守卫测试原样用那组固定输入与期望值）；
+    `readAliyunBalance` 对 `https://bssopenapi.aliyuncs.com/` 发签名 POST（不跟跨源重定向、响应体有上限、15 s 超时），
+    `AvailableAmount` 作总额、`AvailableCashAmount` 与总额不同时作 `toppedUp`；`InvalidAccessKeyId*` / `SignatureDoesNotMatch` 给 hint `aliyun-ak-invalid`，
+    `NoPermission` / `NotAuthorized` 给 `aliyun-ak-permission`，没存 key 给 `aliyun-ak-missing`。
+  - `src/balance.js`：`vendorOf` 对百炼主机按模式认（`ALIYUN_VENDOR`，scheme `aliyun`、显示「阿里云百炼」）；`SCHEMES.aliyun` 只有 `credential: { kind: "aliyun-access-key" }`；
+    `createBalanceReader` 走 `options.aliyunAccessKey()`，**不碰路由的 API key**。`vendorOf` 只在 `balance.js` 里用，不影响站点归因、不会触发账本重折叠。
+  - 存储：`credentials-file.js` 加 `aliyunAccessKey`（整个安装一份，不按 origin —— 余额是整个阿里云账号的）；`plugin.js` 所有落盘改走 `fileCredentials()` 一处，
+    免得哪次保存漏掉某张表。写口 `POST /api/tokenledger/userauth` `{ kind: "aliyun-access-key", accessKeyId, accessKeySecret | remove }`，同 ID 空 Secret 保留原 Secret；
+    `GET` 多回一个 `aliyun: { accessKeyId: "LTAI…abcd", hasSecret }`，**Secret 和完整 ID 都不回显**。
+  - 面板：百炼卡上「设置 AccessKey」按钮 → `AliyunAccessKeyDialog`（三步：RAM 建用户 → 只授权 `bss:DescribeAcccount` → 填 ID/Secret）。
+  - 已知局限：读到的是**整个阿里云账号**的可用余额（各产品共用），不是百炼单独的；百炼的免费额度读不到；只认中国站（`bssopenapi.aliyuncs.com`）。
+  守卫测试：`test/aliyun-bss.test.js` 五条（含「the signature matches Alibaba Cloud's own worked V3 example」）、
+  `test/balance.test.js`「a 百炼 workspace route is the 阿里云 card, read with the stored AccessKey and never the route key」、
+  `test/apply.test.js`「the 阿里云 AccessKey is stored once, shown masked, and signs the 百炼 card's read」、
+  `test/client.test.js`「a 百炼 card with no AccessKey says where the balance lives…」。
+  变异验证：签名头分隔符改错、读余额不取已存的 key、ID 不打码，对应测试各自失败。**合上游时这一处要保留**（上游没有阿里云）。

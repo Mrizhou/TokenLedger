@@ -40,6 +40,7 @@ test("official is decided by origin, not by what the route is called", () => {
 
 test("every scheme answers the same shape, so one card renders all of them", () => {
 	assert.deepEqual(Object.keys(SCHEMES).sort(), [
+		"aliyun",
 		"commandcode",
 		"deepseek",
 		"kimi",
@@ -53,8 +54,9 @@ test("every scheme answers the same shape, so one card renders all of them", () 
 		"zai"
 	]);
 	for (const [name, spec] of Object.entries(SCHEMES)) {
-		// A typed-in balance (MiMo) has nothing to fetch.
-		if (spec.credential?.kind === "manual") assert.equal(spec.read, undefined, name);
+		// A typed-in balance (MiMo) and the 阿里云 billing center are read
+		// outside the per-key path.
+		if (spec.credential !== undefined) assert.equal(spec.read, undefined, name);
 		else assert.equal(typeof spec.read, "function", name);
 		assert.equal(typeof spec.label, "string", name);
 		if (spec.envelope !== undefined) assert.equal(typeof spec.envelope, "function", name);
@@ -1410,6 +1412,43 @@ test("a typed MiMo balance is the host's answer, asked for by account", async ()
 	assert.equal(result.manual, true);
 	assert.equal(result.scheme, "mimo");
 	assert.equal(result.account, "xiaomi");
+});
+
+// --- 阿里云百炼: the account balance, read with an AccessKey --------------------
+
+test("a 百炼 workspace route is the 阿里云 card, read with the stored AccessKey and never the route key", async () => {
+	const ctx = ctxWith(
+		[{ provider: "ali", settingsNs: "llm-pi-ai", settingsPath: ["providers", "ali"] }],
+		{ providers: { ali: { baseURL: "https://llm-7ub39ukw6sjudiit.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", apiKeyEnv: "ALI_KEY" } } },
+		{ resolve: async () => ({ value: "sk-route-key" }) }
+	);
+	const [account] = listAccounts(ctx);
+	assert.equal(account.scheme, "aliyun");
+	assert.equal(account.displayName, "阿里云百炼");
+
+	// No key stored: the card asks for one, and nothing is sent anywhere.
+	let calls = 0;
+	const none = await createBalanceReader(ctx, { fetch: async () => (calls++, {}), aliyunAccessKey: () => undefined })("ali");
+	assert.equal(calls, 0);
+	assert.equal(none.fetched, false);
+	assert.equal(none.scheme, "aliyun", "the card needs the scheme to offer the button");
+	assert.equal(none.hint, "aliyun-ak-missing");
+
+	const seen = [];
+	const read = createBalanceReader(ctx, {
+		fetch: async (url, init) => {
+			seen.push({ url, init });
+			return { ok: true, status: 200, json: async () => ({ Code: "200", Success: true, Data: { AvailableAmount: "88.80", AvailableCashAmount: "88.80", Currency: "CNY" } }) };
+		},
+		aliyunAccessKey: () => ({ accessKeyId: "LTAI5tExampleKeyId01", accessKeySecret: "ExampleSecretValue0123456789ab" })
+	});
+	const card = await read("ali");
+	assert.equal(card.fetched, true);
+	assert.equal(card.total, 88.8);
+	assert.equal(card.account, "ali");
+	assert.equal(seen.length, 1);
+	assert.equal(new URL(seen[0].url).host, "bssopenapi.aliyuncs.com", "the balance is asked of the billing center, not the workspace host");
+	assert.equal(JSON.stringify(seen[0].init).includes("sk-route-key"), false, "the inference key never leaves for the billing center");
 });
 
 // --- Command Code: two rolling caps and the month's pool -----------------------

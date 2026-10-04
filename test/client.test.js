@@ -2105,6 +2105,30 @@ test("the panel opens the balance dialog for a typed-in account, the wallet dial
 	assert.ok(relay.includes(exports_of(harness).UserAuthDialog));
 });
 
+test("a 百炼 card with no AccessKey says where the balance lives, and the panel opens the AccessKey dialog", async () => {
+	const harness = await loadBundle();
+	const { exports, render } = harness;
+	for (const hint of ["aliyun-ak-missing", "aliyun-ak-invalid", "aliyun-ak-permission"]) {
+		const data = { ok: true, supported: true, fetched: false, scheme: "aliyun", reason: "x", hint };
+		const text = textOf(render(exports.BalanceCard, { state: { status: "ready", data }, translate: T, onConfigure: () => {} }));
+		assert.ok(text.includes(`balance.hint.${hint}`), text);
+		assert.ok(text.includes("balance.setAccessKey"), `no way to fix it from the card: ${text}`);
+		assert.ok(`balance.hint.${hint}` in exports.zh && `balance.hint.${hint}` in exports.en);
+	}
+	// [open, range, site, nonce, forceNonce, dialogFor]
+	const tree = harness.renderWithState(exports.TokenLedgerPanel, { wide: true }, [false, "all", undefined, 0, 0, { id: "ali", scheme: "aliyun", displayName: "阿里云百炼" }]);
+	const found = [];
+	const walk = (node) => {
+		if (node === null || typeof node !== "object") return;
+		if (Array.isArray(node)) return node.forEach(walk);
+		if (typeof node.type === "function") found.push(node.type);
+		walk(node.props?.children);
+	};
+	walk(tree);
+	assert.ok(found.includes(exports.AliyunAccessKeyDialog));
+	assert.equal(found.includes(exports.UserAuthDialog), false);
+});
+
 test("the balance dialog sends the typed figure for its account", async () => {
 	const harness = await loadBundle();
 	const sent = [];

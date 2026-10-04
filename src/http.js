@@ -627,7 +627,13 @@ function attachRoutes(ctx, httpServer, deps) {
 								return send(res, 200, { ok: true });
 							}
 							if (req.method === "GET" && typeof deps.userAuth === "function") {
-								return send(res, 200, { ok: true, origins: deps.userAuth(originOf(req.url)) });
+								// The 阿里云 AccessKey is one per install, not per origin: its
+								// view rides beside the wallets, masked.
+								return send(res, 200, {
+									ok: true,
+									origins: deps.userAuth(originOf(req.url)),
+									...(typeof deps.aliyunAccessKey === "function" ? { aliyun: deps.aliyunAccessKey() } : {})
+								});
 							}
 							send(res, 405, { ok: false, error: "method-not-allowed" });
 						} catch (error) {

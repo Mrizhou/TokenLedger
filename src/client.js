@@ -1774,8 +1774,8 @@ window.__ModuleLoader__.load({
 			const who = [balance.displayName ?? account?.displayName, SCHEME_LABELS[balance.scheme]].filter(Boolean).join(" · ");
 			const whoLine = who === "" ? null : jsx("div", { className: S.balanceWho, children: who });
 			const setChip = () =>
-				(balance.scheme === "newapi" || MANUAL_SCHEMES.has(balance.scheme)) && typeof onConfigure === "function"
-					? jsx(SetBalanceButton, { onConfigure, translate, label: MANUAL_SCHEMES.has(balance.scheme) ? "balance.setManual" : undefined })
+				(balance.scheme === "newapi" || balance.scheme === "aliyun" || MANUAL_SCHEMES.has(balance.scheme)) && typeof onConfigure === "function"
+					? jsx(SetBalanceButton, { onConfigure, translate, label: MANUAL_SCHEMES.has(balance.scheme) ? "balance.setManual" : balance.scheme === "aliyun" ? "balance.setAccessKey" : undefined })
 					: null;
 
 			if (balance.supported === false) {
@@ -2047,7 +2047,7 @@ window.__ModuleLoader__.load({
 		 * origin and the software, and deliberately NOT the username: the 账号
 		 * belongs to the site's console, not to a card the picker attributes.
 		 */
-		const SCHEME_LABELS = { deepseek: "API 余额", "deepseek-account": "登录账户余额", newapi: "New API", sub2api: "Sub2API", mimo: "手填余额", antigravity: "Google 账户额度" };
+		const SCHEME_LABELS = { deepseek: "API 余额", "deepseek-account": "登录账户余额", newapi: "New API", sub2api: "Sub2API", mimo: "手填余额", aliyun: "阿里云账户余额", antigravity: "Google 账户额度" };
 
 		/** Schemes whose balance the user types in rather than the host reading it. */
 		const MANUAL_SCHEMES = new Set(["mimo"]);
@@ -2361,6 +2361,160 @@ window.__ModuleLoader__.load({
 										onClick: () => void run({ remove: true }),
 										children: translate("dialog.remove")
 									}),
+									jsx("button", { type: "button", className: S.btn, disabled: busy, onClick: onClose, children: translate("action.close") }),
+									jsx("button", {
+										type: "button",
+										className: `${S.btn} ${S.btnPrimary}${busy ? ` ${S.busy}` : ""}`,
+										disabled: busy,
+										onClick: save,
+										children: translate("dialog.save")
+									})
+								]
+							})
+						]
+					})
+				]
+			});
+		}
+
+		/**
+		 * The 设置 AccessKey dialog, for 阿里云百炼 (用户 2026-10-04「尝试一下」): the
+		 * inference key reads no balance, the billing center does with an
+		 * AccessKey. One per install — the balance is the 阿里云 account's, not a
+		 * workspace's. A stored key shows as a masked ID only; a blank secret with
+		 * the same ID keeps the stored one.
+		 */
+		function AliyunAccessKeyDialog({ account, translate, onClose, onSaved }) {
+			const [id, setId] = react.useState("");
+			const [secret, setSecret] = react.useState("");
+			const [saved, setSaved] = react.useState(undefined);
+			const [busy, setBusy] = react.useState(false);
+			const [error, setError] = react.useState(undefined);
+
+			react.useEffect(() => {
+				let live = true;
+				fetchJson(USERAUTH_PATH).then(
+					(payload) => {
+						if (live) setSaved(payload.aliyun ?? null);
+					},
+					() => {}
+				);
+				return () => {
+					live = false;
+				};
+			}, []);
+
+			react.useEffect(() => {
+				const onKey = (event) => {
+					if (event.key === "Escape") {
+						event.stopPropagation();
+						onClose();
+					}
+				};
+				window.addEventListener("keydown", onKey, true);
+				return () => window.removeEventListener("keydown", onKey, true);
+			}, [onClose]);
+
+			const run = async (payload) => {
+				setBusy(true);
+				setError(undefined);
+				try {
+					const response = await fetch(USERAUTH_PATH, {
+						method: "POST",
+						headers: { "content-type": "application/json", "x-tokenledger": "1" },
+						body: JSON.stringify({ kind: "aliyun-access-key", ...payload })
+					});
+					if (response.status === 404) throw new Error(translate("dialog.hostStale"));
+					const result = await response.json().catch(() => undefined);
+					if (result?.error === "invalid-access-key") throw new Error(translate("aliyun.invalid"));
+					if (result?.ok !== true) throw new Error(result?.error ?? `HTTP ${response.status}`);
+					onSaved();
+				} catch (e) {
+					setError(translate("dialog.saveFailed", { reason: String(e?.message ?? e) }));
+				} finally {
+					setBusy(false);
+				}
+			};
+
+			const save = () => {
+				if (id.trim() === "") {
+					setError(translate("aliyun.needKey"));
+					return;
+				}
+				void run({ accessKeyId: id.trim(), accessKeySecret: secret.trim() });
+			};
+
+			const field = (label, value, onChange, extra) =>
+				jsxs("label", {
+					className: S.field,
+					children: [
+						jsx("span", { className: S.fieldLabel, children: label }),
+						jsx("input", {
+							className: S.input,
+							value,
+							onChange: (event) => onChange(event.target.value),
+							autoComplete: "off",
+							spellCheck: false,
+							...extra
+						})
+					]
+				});
+
+			return jsxs("div", {
+				className: S.dlgOverlay,
+				onPointerDown: (event) => {
+					if (event.target === event.currentTarget) onClose();
+				},
+				children: [
+					jsxs("div", {
+						className: S.dlg,
+						role: "dialog",
+						"aria-label": translate("aliyun.title"),
+						children: [
+							jsxs("div", {
+								className: S.dlgHead,
+								children: [
+									jsx("span", { className: S.dlgTitle, children: `${translate("aliyun.title")} · ${account.displayName}` }),
+									jsx("button", {
+										type: "button",
+										className: S.iconButton,
+										"aria-label": translate("action.close"),
+										onClick: onClose,
+										children: jsx(IconClose, { size: 16 })
+									})
+								]
+							}),
+							jsxs("ol", {
+								className: S.steps,
+								children: [
+									jsx("li", { children: translate("aliyun.step1") }),
+									jsx("li", { children: translate("aliyun.step2") }),
+									jsx("li", { children: translate("aliyun.step3") })
+								]
+							}),
+							jsx("p", { className: S.note, children: translate("aliyun.note") }),
+							field(translate("aliyun.idLabel"), id, setId, {
+								type: "text",
+								placeholder: saved?.accessKeyId === undefined ? "LTAI…" : translate("aliyun.keepId", { id: saved.accessKeyId })
+							}),
+							field(translate("aliyun.secretLabel"), secret, setSecret, {
+								type: "password",
+								placeholder: saved?.hasSecret === true ? translate("aliyun.keepSecret") : ""
+							}),
+							saved?.accessKeyId === undefined ? null : jsx("p", { className: S.note, children: translate("aliyun.configured", { id: saved.accessKeyId }) }),
+							error === undefined ? null : jsx("p", { className: S.error, children: error }),
+							jsxs("div", {
+								className: S.actions,
+								children: [
+									saved?.accessKeyId === undefined
+										? null
+										: jsx("button", {
+												type: "button",
+												className: `${S.btn} ${S.btnDanger}${busy ? ` ${S.busy}` : ""}`,
+												disabled: busy,
+												onClick: () => void run({ remove: true }),
+												children: translate("dialog.remove")
+											}),
 									jsx("button", { type: "button", className: S.btn, disabled: busy, onClick: onClose, children: translate("action.close") }),
 									jsx("button", {
 										type: "button",
@@ -2969,7 +3123,7 @@ window.__ModuleLoader__.load({
 						}),
 						dialogFor === undefined
 							? null
-							: jsx(MANUAL_SCHEMES.has(dialogFor.scheme) ? ManualBalanceDialog : UserAuthDialog, {
+							: jsx(MANUAL_SCHEMES.has(dialogFor.scheme) ? ManualBalanceDialog : dialogFor.scheme === "aliyun" ? AliyunAccessKeyDialog : UserAuthDialog, {
 									account: dialogFor,
 									translate,
 									onClose: () => setDialogFor(undefined),
@@ -3079,6 +3233,22 @@ window.__ModuleLoader__.load({
 			"balance.row.noKey": "未配置密钥",
 			"balance.setButton": "设置查询API",
 			"balance.setManual": "填写余额",
+			"balance.setAccessKey": "设置 AccessKey",
+			"balance.hint.aliyun-ak-missing": "百炼的 API key 查不了余额；余额在阿里云费用中心，要用 AccessKey 读。点「设置 AccessKey」。",
+			"balance.hint.aliyun-ak-invalid": "阿里云拒绝了这个 AccessKey（ID 或 Secret 不对，或已禁用/删除）。点「设置 AccessKey」重新填。",
+			"balance.hint.aliyun-ak-permission": "这个 AccessKey 没有查余额的权限：给它的 RAM 用户授权 bss:DescribeAcccount（或系统策略 AliyunBSSReadOnlyAccess）。",
+			"aliyun.title": "设置 AccessKey — 阿里云余额",
+			"aliyun.step1": "阿里云 RAM 访问控制 → 用户 → 创建用户，勾选「使用永久 AccessKey 访问」",
+			"aliyun.step2": "给它授权：自定义策略只放 bss:DescribeAcccount 一项（或系统策略 AliyunBSSReadOnlyAccess）",
+			"aliyun.step3": "把这个用户的 AccessKey ID 和 Secret 填到下面",
+			"aliyun.note": "读到的是整个阿里云账号的可用余额（各产品共用），不是百炼单独的。AccessKey 只存在本机（~/.dsh/tokenledger-credentials.json），只发往阿里云费用中心 bssopenapi.aliyuncs.com，面板上只显示打码后的 ID。",
+			"aliyun.idLabel": "AccessKey ID",
+			"aliyun.secretLabel": "AccessKey Secret",
+			"aliyun.keepId": "已配置 {id}",
+			"aliyun.keepSecret": "已配置——ID 不变时留空保留",
+			"aliyun.configured": "已保存 AccessKey {id}。",
+			"aliyun.needKey": "请填写 AccessKey ID。",
+			"aliyun.invalid": "AccessKey 格式不对：ID 和 Secret 都应是一串字母数字",
 			"balance.estimated": "估算",
 			"balance.manualFrom": "手填 {amount}（{ago}）",
 			"balance.manualSpent": "之后估算花费 {amount}",
@@ -3231,6 +3401,22 @@ window.__ModuleLoader__.load({
 			"balance.row.noKey": "no key",
 			"balance.setButton": "Set query API",
 			"balance.setManual": "Enter balance",
+			"balance.setAccessKey": "Set AccessKey",
+			"balance.hint.aliyun-ak-missing": "Model Studio API keys cannot read a balance; it lives in the Alibaba Cloud billing center and needs an AccessKey. Use \"Set AccessKey\".",
+			"balance.hint.aliyun-ak-invalid": "Alibaba Cloud refused this AccessKey (wrong ID or secret, or disabled/deleted). Use \"Set AccessKey\" to enter it again.",
+			"balance.hint.aliyun-ak-permission": "This AccessKey may not read the balance: grant its RAM user bss:DescribeAcccount (or the AliyunBSSReadOnlyAccess policy).",
+			"aliyun.title": "Set AccessKey — Alibaba Cloud balance",
+			"aliyun.step1": "Alibaba Cloud RAM → Users → Create user, with permanent AccessKey access",
+			"aliyun.step2": "Grant it only bss:DescribeAcccount in a custom policy (or the AliyunBSSReadOnlyAccess system policy)",
+			"aliyun.step3": "Enter that user's AccessKey ID and secret below",
+			"aliyun.note": "This reads the whole Alibaba Cloud account's available balance (shared by every product), not Model Studio's alone. The AccessKey stays on this machine (~/.dsh/tokenledger-credentials.json), is sent only to bssopenapi.aliyuncs.com, and the panel shows only a masked ID.",
+			"aliyun.idLabel": "AccessKey ID",
+			"aliyun.secretLabel": "AccessKey secret",
+			"aliyun.keepId": "Stored {id}",
+			"aliyun.keepSecret": "Stored — leave blank to keep it while the ID is unchanged",
+			"aliyun.configured": "AccessKey {id} is stored.",
+			"aliyun.needKey": "Enter the AccessKey ID.",
+			"aliyun.invalid": "That is not an AccessKey: the ID and secret are both letters and digits",
 			"balance.estimated": "estimated",
 			"balance.manualFrom": "Entered {amount} ({ago})",
 			"balance.manualSpent": "estimated spend since {amount}",
@@ -3387,6 +3573,7 @@ window.__ModuleLoader__.load({
 		exports.SetBalanceButton = SetBalanceButton;
 		exports.UserAuthDialog = UserAuthDialog;
 		exports.ManualBalanceDialog = ManualBalanceDialog;
+		exports.AliyunAccessKeyDialog = AliyunAccessKeyDialog;
 		exports.QuotaWindows = QuotaWindows;
 		exports.Footer = Footer;
 		exports.agoLabel = agoLabel;

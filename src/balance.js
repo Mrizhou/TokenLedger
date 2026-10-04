@@ -48,6 +48,7 @@ import { VERSION } from "./http.js";
 import { unitFromStatus } from "./newapi-user.js";
 import { normalizeWindows } from "./quota.js";
 import { firstString, normalizeOrigin } from "./relay-sites.js";
+import { isAliyunModelStudio, readAliyunBalance } from "./aliyun-bss.js";
 import { DEFAULT_MAX_BYTES, fetchNoCrossOriginRedirect, readCapped } from "./transport.js";
 import { COMMAND_CODE, KIMI, MINIMAX, OPENCODE_GO, readZaiCodingPlan } from "./subscriptions.js";
 
@@ -108,6 +109,9 @@ const VENDORS = new Map([
 	["token-plan-ams.xiaomimimo.com", { scheme: "mimo", displayName: "小米 MiMo" }]
 ]);
 
+/** 阿里云百炼, matched by host pattern in {@link vendorOf}. */
+const ALIYUN_VENDOR = Object.freeze({ scheme: "aliyun", displayName: "阿里云百炼", currency: "CNY" });
+
 /**
  * The vendor a provider profile addresses, if it is one we can read.
  *
@@ -118,7 +122,9 @@ const VENDORS = new Map([
 export function vendorOf(baseUrl) {
 	if (typeof baseUrl !== "string" || baseUrl === "") return VENDORS.get("api.deepseek.com");
 	try {
-		return VENDORS.get(new URL(baseUrl).hostname.toLowerCase());
+		const host = new URL(baseUrl).hostname.toLowerCase();
+		// 阿里云百炼: every workspace has its own host, so this one is a pattern.
+		return VENDORS.get(host) ?? (isAliyunModelStudio(host) ? ALIYUN_VENDOR : undefined);
 	} catch {
 		return undefined;
 	}
@@ -439,6 +445,16 @@ export const SCHEMES = {
 		credential: { kind: "manual" }
 	},
 
+	/**
+	 * 阿里云百炼. The inference hosts take the API key and answer models only;
+	 * the balance is the 阿里云 account's, read from the billing center with an
+	 * AccessKey the user stores — see `aliyun-bss.js`.
+	 */
+	aliyun: {
+		label: "阿里云",
+		credential: { kind: "aliyun-access-key" }
+	},
+
 	newapi: {
 		label: "New API",
 		async read({ origin, get }) {
@@ -586,6 +602,7 @@ export async function readBalance(options = {}) {
 	// Typed in by the user, never fetched: the host answers for it (see
 	// `createBalanceReader`'s `manualBalance`), so a direct read has nothing to do.
 	if (spec.credential?.kind === "manual") return { supported: true, fetched: false, scheme, reason: "no-manual-balance", hint: "manual-missing" };
+	if (spec.credential?.kind === "aliyun-access-key") return { supported: true, fetched: false, scheme, reason: "no-credential", hint: "aliyun-ak-missing" };
 
 	// A scheme may know where its vendor's own client already keeps a key. Only
 	// consulted when the route carries none, and only ever able to say "no
@@ -1135,10 +1152,11 @@ export const UNRECOGNIZED_RETRY_MS = 10 * 60_000;
  * Build the reader the HTTP route serves.
  *
  * @param ctx - the Cordis context.
- * @param options - `{ readSection?, fetch?, softwareOf?, learnSoftware?, manualBalance? }`.
+ * @param options - `{ readSection?, fetch?, softwareOf?, learnSoftware?, manualBalance?, aliyunAccessKey? }`.
  *   `softwareOf` is the plugin's fingerprint cache; `learnSoftware` records a
  *   lazily detected one so the next read skips the probe. `manualBalance(account)`
  *   answers a typed-in balance's card fields, or undefined when none is typed.
+ *   `aliyunAccessKey()` answers the stored `{ accessKeyId, accessKeySecret }`, or undefined.
  */
 export function createBalanceReader(ctx, options = {}) {
 	const now = options.now ?? Date.now;
@@ -1236,6 +1254,14 @@ export function createBalanceReader(ctx, options = {}) {
 			return typed === undefined
 				? { ok: true, account: account.id, displayName: account.displayName, supported: true, fetched: false, scheme, reason: "no-manual-balance", hint: "manual-missing" }
 				: { ok: true, account: account.id, displayName: account.displayName, scheme, ...typed };
+		}
+
+		// 阿里云: signed with the AccessKey the panel stored, never the route's key.
+		if (SCHEMES[scheme]?.credential?.kind === "aliyun-access-key") {
+			const key = options.aliyunAccessKey?.();
+			const base = { ok: true, account: account.id, displayName: account.displayName, scheme };
+			if (key === undefined) return { ...base, supported: true, fetched: false, reason: "no-credential", hint: "aliyun-ak-missing" };
+			return { ...base, ...(await readAliyunBalance({ ...key, fetch: options.fetch, signal })) };
 		}
 
 		const credentials = typeof ctx.get === "function" ? ctx.get("credentials") : undefined;
