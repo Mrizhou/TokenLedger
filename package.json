@@ -17,6 +17,7 @@
     "./discovery": "./src/discovery.js",
     "./fingerprints": "./src/fingerprints.js",
     "./http": "./src/http.js",
+    "./locale/*.json": "./src/locale/*.json",
     "./package.json": "./package.json",
     "./plugin": "./src/plugin.js",
     "./pricing": "./src/pricing.js",

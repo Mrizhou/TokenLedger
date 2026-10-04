@@ -182,10 +182,32 @@ test("the package root stays a promise, not an inventory", () => {
 	assert.deepEqual(actual, promised, "widening the root is a decision, so it has to be made here first");
 });
 
+test("the plugin page's name and description resolve the way the host reads them", async () => {
+	// DSH's plugin page titles a package from `<name>/locale/<lang>.json`'s
+	// `meta`, resolved through the package's EXPORTS (dsh-app-boot
+	// `readPluginMeta`); an unexported path reads as "no metadata" and the page
+	// shows the bare package name. 用户 2026-10-04：「插件那边点进去把dsh-tokenledger改成中文」。
+	const read = async (lang) => {
+		const url = import.meta.resolve(`dsh-tokenledger/locale/${lang}.json`);
+		const { default: dict } = await import(url, { with: { type: "json" } });
+		return dict.meta;
+	};
+	const zh = await read("zh");
+	assert.equal(zh.title, "用量账本");
+	assert.ok(zh.description.length > 0);
+	assert.equal((await read("en")).title, "Token Ledger");
+	// The host lists the English file's whole directory and rejects the set
+	// when any file there is not named by a language id.
+	for (const file of readdirSync(new URL("../src/locale/", import.meta.url))) {
+		assert.match(file, /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*\.json$/u, file);
+	}
+});
+
 test("every subpath in exports actually resolves", async () => {
 	// Narrowing the root is only safe because the subpaths carry the rest.
 	for (const [subpath, target] of Object.entries(pkg.exports)) {
 		if (subpath === "./package.json" || subpath === "./client") continue; // client needs a browser
+		if (subpath.includes("*")) continue; // a pattern; the locale test resolves it
 		const module = await import(new URL(`../${target.replace(/^\.\//, "")}`, import.meta.url));
 		assert.ok(Object.keys(module).length > 0, `${subpath} resolves but exports nothing`);
 	}

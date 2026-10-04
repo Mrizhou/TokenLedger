@@ -180,3 +180,8 @@
   - 守卫测试：`test/http.test.js`「the trend line's days carry each day's own cost, priced at that day's rates」（变异验证）
     「the payload carries the whole daily history for the trend line」、`test/client.test.js`「the trend line fills idle days…」
     「the trend chart toggles tokens and cost…」「the panel orders 模型 above 活跃度 and puts the daily line last」。**合上游时这一处要保留**。
+- **插件页显示中文名「用量账本」**（2026-10-04，用户「插件那边点进去把dsh-tokenledger改成中文」）：
+  DSH 插件页标题来自 `<包名>/locale/<语言>.json` 的 `meta.title` / `meta.description`（宿主 `dsh-app-boot` `readPluginMeta()`，经包的 **exports** 解析；
+  解析不到报 `ERR_PACKAGE_PATH_NOT_EXPORTED` 就当没有、退回包名）。新增 `src/locale/{en,zh}.json`，`exports` 加
+  `"./locale/*.json": "./src/locale/*.json"`（目标留在 `src/` 下，守上游「新导出只在 src/」的约束；文件名必须是语言 id，宿主会扫整个目录）。
+  守卫测试 `test/packaging.test.js`「the plugin page's name and description resolve the way the host reads them」（变异验证）。
