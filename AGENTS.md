@@ -30,9 +30,9 @@ pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revi
 > `docs/FORK-VS-UPSTREAM.md` —— 2026-09-30 移出（为压到 Antigravity 读规则文件的 24000 字节上限以内），内容一字未改。
 > 上面那段只是目录，逐条结论在那份文件里：① `balance.js` 跳过没配置的 catalog 路由；② `BUILTIN_PROVIDER_ORIGINS` 加 `xiaomi`；
 > ③ `plugin.js` `revisionUnchanged()` 的 0.1.7 revision 形态；④ `client.js` 的 0.1.7 侧边栏席位样式；⑤ 0.1.7 首开慢那组修复；
-> ⑥ MiMo 走控制台 cookie + `credentials-file.js`；⑦ DeepSeek 先读登录账户钱包；⑧ Command Code 的 `/alpha/*` 额度与表项；⑨ 侧边栏「用量账本」下的当前模型余额（`client.js` 读 DSH 模型选择 ＋ `balance.js` 的 `findAccount`）；⑩ Antigravity 插件的额度进余额账户（探测 `antigravityAuth` 服务）。
+> ⑥ MiMo 走控制台 cookie + `credentials-file.js`；⑦ DeepSeek 先读登录账户钱包；⑧ Command Code 的 `/alpha/*` 额度与表项；⑨ 侧边栏「用量账本」下的当前模型余额（`client.js` 读 DSH 模型选择 ＋ `balance.js` 的 `findAccount`）；⑩ Antigravity 插件的额度进余额账户（探测 `antigravityAuth` 服务）；⑪ 面板「余额」一节列**全部账户**、去掉下拉选择（`client.js` `useBalances`）。
 >
-> **什么时候必须去读它**：同步 / 合并上游之前；要动上面 ①–⑩ 涉及的 `src/` 文件之前；想删某条守卫测试之前。
+> **什么时候必须去读它**：同步 / 合并上游之前；要动上面 ①–⑪ 涉及的 `src/` 文件之前；想删某条守卫测试之前。
 > **合上游的铁律**：标了「合上游时这一处要保留」的一律保留本 fork 写法；上游自己修了同一处就取上游那份，
 > 但必须确认对应守卫测试仍全绿。**任何一处都不许在合并里被静默丢掉。**
 

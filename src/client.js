@@ -206,20 +206,14 @@ window.__ModuleLoader__.load({
 				// The activity ramp: Tailwind's emerald over GitHub's neutral zero.
 				// Level 0 is an alpha grey so it reads on both themes without a swap.
 				"--tkl-level-0:rgba(128,128,128,0.16);--tkl-level-1:#a7f3d0;--tkl-level-2:#6ee7b7;--tkl-level-3:#34d399;--tkl-level-4:#10b981;" +
-				// The account picker's dropdown is a NATIVE POPUP the browser draws
-				// OUTSIDE the panel, so it inherits none of the ground above and both
-				// of its colours have to be stated here. Literals, like the ramp
-				// below and for the same reason: a popup cannot be translucent, so a
-				// token a skin is free to set to `transparent` is unusable in one.
-				"--tkl-scheme:light;--tkl-option-bg:#fff;--tkl-option-fg:#1d1f23;" +
 				// Categorical, mid-tone so each reads on either surface. `direct` is
 				// the neutral one; the rest are the relay ramp.
 				"--tkl-direct:#8b93a7;--tkl-series-0:#0ea5e9;--tkl-series-1:#f59e0b;--tkl-series-2:#8b5cf6;--tkl-series-3:#14b8a6;--tkl-series-4:#ec4899;--tkl-series-5:#84cc16}",
-			"@media (prefers-color-scheme:dark){.tkl_panel{--tkl-scheme:dark;--tkl-option-bg:#2b2c2f;--tkl-option-fg:#ededed;--tkl-level-1:#065f46;--tkl-level-2:#059669;--tkl-level-3:#10b981;--tkl-level-4:#34d399;--tkl-direct:#6b7280;--tkl-series-0:#38bdf8;--tkl-series-1:#fbbf24;--tkl-series-2:#a78bfa;--tkl-series-3:#2dd4bf;--tkl-series-4:#f472b6;--tkl-series-5:#a3e635}}",
+			"@media (prefers-color-scheme:dark){.tkl_panel{--tkl-level-1:#065f46;--tkl-level-2:#059669;--tkl-level-3:#10b981;--tkl-level-4:#34d399;--tkl-direct:#6b7280;--tkl-series-0:#38bdf8;--tkl-series-1:#fbbf24;--tkl-series-2:#a78bfa;--tkl-series-3:#2dd4bf;--tkl-series-4:#f472b6;--tkl-series-5:#a3e635}}",
 			// An explicit theme choice must win over the media query in BOTH
 			// directions, so each is stated rather than inherited.
-			"[data-theme='dark'] .tkl_panel{--tkl-scheme:dark;--tkl-option-bg:#2b2c2f;--tkl-option-fg:#ededed;--tkl-level-1:#065f46;--tkl-level-2:#059669;--tkl-level-3:#10b981;--tkl-level-4:#34d399;--tkl-direct:#6b7280;--tkl-series-0:#38bdf8;--tkl-series-1:#fbbf24;--tkl-series-2:#a78bfa;--tkl-series-3:#2dd4bf;--tkl-series-4:#f472b6;--tkl-series-5:#a3e635}",
-			"[data-theme='light'] .tkl_panel{--tkl-scheme:light;--tkl-option-bg:#fff;--tkl-option-fg:#1d1f23;--tkl-level-1:#a7f3d0;--tkl-level-2:#6ee7b7;--tkl-level-3:#34d399;--tkl-level-4:#10b981;--tkl-direct:#8b93a7;--tkl-series-0:#0ea5e9;--tkl-series-1:#f59e0b;--tkl-series-2:#8b5cf6;--tkl-series-3:#14b8a6;--tkl-series-4:#ec4899;--tkl-series-5:#84cc16}",
+			"[data-theme='dark'] .tkl_panel{--tkl-level-1:#065f46;--tkl-level-2:#059669;--tkl-level-3:#10b981;--tkl-level-4:#34d399;--tkl-direct:#6b7280;--tkl-series-0:#38bdf8;--tkl-series-1:#fbbf24;--tkl-series-2:#a78bfa;--tkl-series-3:#2dd4bf;--tkl-series-4:#f472b6;--tkl-series-5:#a3e635}",
+			"[data-theme='light'] .tkl_panel{--tkl-level-1:#a7f3d0;--tkl-level-2:#6ee7b7;--tkl-level-3:#34d399;--tkl-level-4:#10b981;--tkl-direct:#8b93a7;--tkl-series-0:#0ea5e9;--tkl-series-1:#f59e0b;--tkl-series-2:#8b5cf6;--tkl-series-3:#14b8a6;--tkl-series-4:#ec4899;--tkl-series-5:#84cc16}",
 
 			".tkl_header{box-sizing:border-box;border-bottom:1px solid var(--dsw-alias-border-l2);background:transparent;flex:none;justify-content:space-between;align-items:center;min-height:44px;padding:10px 12px;display:flex;gap:8px}",
 			".tkl_headerLeft{align-items:center;gap:8px;display:flex;min-width:0}",
@@ -250,21 +244,6 @@ window.__ModuleLoader__.load({
 			".tkl_sectionTitle{color:var(--dsw-alias-label-tertiary);margin:0 0 6px;font-size:11px;line-height:16px;font-weight:500;display:flex;align-items:center;gap:4px;min-height:18px}",
 			".tkl_filter{color:var(--dsw-alias-label-secondary);cursor:pointer;background:var(--dsw-alias-interactive-bg-active);border:none;border-radius:999px;margin-left:6px;padding:1px 8px;font:inherit;font-size:11px;line-height:16px}",
 			".tkl_filter:hover{color:var(--dsw-alias-label-primary)}",
-			".tkl_picker{display:inline-flex;align-items:center;gap:5px;margin-left:auto}",
-			".tkl_pickerLabel{color:var(--dsw-alias-label-caption);font-size:10px}",
-			// The control keeps the panel's ground (`background:0 0`, pinned by a
-			// test) and adds only `color-scheme`, which is what the browser reads
-			// when it draws the popup's own frame — border, scrollbar, highlight.
-			// 150px cut real account names in half; the cap is now wide enough for
-			// one and still yields to the section title on a narrow panel.
-			".tkl_select{color:var(--dsw-alias-label-secondary);background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--tkl-radius-xs);padding:1px 4px;font:inherit;font-size:11px;line-height:16px;max-width:min(220px,45vw);text-overflow:ellipsis;color-scheme:var(--tkl-scheme,light)}",
-			".tkl_select:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}",
-			// The options are drawn in that popup, OUTSIDE the panel: they inherit
-			// the select's faint `label-secondary` but not its ground, so every
-			// account read grey-on-grey. BOTH halves have to be stated — an opaque
-			// ground AND a high-contrast label — or the popup keeps the system
-			// menu colour for whichever half was left out, which is the bug.
-			".tkl_select option{background-color:var(--tkl-option-bg);color:var(--tkl-option-fg)}",
 
 			// -- stat row ----------------------------------------------------------
 			".tkl_stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}",
@@ -382,6 +361,10 @@ window.__ModuleLoader__.load({
 			".tkl_sortMark{color:var(--dsw-alias-label-secondary);margin-left:2px}",
 
 			// -- balance -----------------------------------------------------------
+			// One card per account, stacked: the section lists them all rather
+			// than hiding all but one behind a dropdown, and the body scrolls —
+			// a stack is the only layout that keeps every figure visible.
+			".tkl_balances{display:flex;flex-direction:column;gap:8px}",
 			// The card is a column so quota windows can stack under the amount.
 			// With no windows it holds a single child, the gap never applies, and
 			// the row renders exactly as it did before they existed.
@@ -483,9 +466,6 @@ window.__ModuleLoader__.load({
 			section: "tkl_section",
 			sectionTitle: "tkl_sectionTitle",
 			filter: "tkl_filter",
-			picker: "tkl_picker",
-			pickerLabel: "tkl_pickerLabel",
-			select: "tkl_select",
 			stats: "tkl_stats",
 			stat: "tkl_stat",
 			statValue: "tkl_statValue",
@@ -542,6 +522,7 @@ window.__ModuleLoader__.load({
 			table: "tkl_table",
 			hit: "tkl_hit",
 			sortMark: "tkl_sortMark",
+			balances: "tkl_balances",
 			balance: "tkl_balance",
 			balanceTop: "tkl_balanceTop",
 			balanceMain: "tkl_balanceMain",
@@ -711,44 +692,70 @@ window.__ModuleLoader__.load({
 		const BADGE_REFRESH_MS = 5 * 60_000;
 
 		/**
-		 * The official account balance, fetched once per opening.
+		 * EVERY account's balance, one read each, as the panel opens.
 		 *
-		 * Separate from the usage payload because it reaches a vendor over the
-		 * network: a slow or unreachable balance API must not hold up figures that
-		 * are already on disk.
+		 * One request per account rather than one for the account being looked
+		 * at: the section lists them all now (用户 2026-10-04：「用量账本点开显示
+		 * 全部余额，不要选择了」), and the host caches each account's card
+		 * separately behind its own freshness window — so this is the read the
+		 * picker used to make, once per account, in parallel.
+		 *
+		 * Separate from the usage payload because each read reaches a vendor
+		 * over the network: a slow or unreachable balance API must not hold up
+		 * figures that are already on disk. Each answer lands on its own, so one
+		 * relay that takes ten seconds delays its own card and nothing else.
+		 *
+		 * Keyed by account id, and the map outlives a reopen, so a figure stays
+		 * on screen while its next read is in flight — keeping the previous
+		 * figure visible is the whole difference between "refreshing" and
+		 * "balance loads slowly". The no-accounts fallback keeps the old single
+		 * read with no `account` parameter, which the host answers for the first
+		 * account it knows.
 		 *
 		 * `forceNonce` moves only when the refresh button is pressed; every other
-		 * change re-reads through the host's freshness window. A request in flight
-		 * never blanks the card — keeping the previous figure visible is the whole
-		 * difference between "refreshing" and "balance loads slowly".
+		 * change re-reads through the host's freshness window.
 		 */
-		function useBalance(open, account, nonce, forceNonce) {
-			const [state, setState] = react.useState({ status: "idle" });
+		function useBalances(open, accounts, nonce, forceNonce) {
+			const [cards, setCards] = react.useState({});
 			const prevForce = react.useRef(0);
+			// The ids are what this effect depends on, not the array's identity:
+			// the accounts are rebuilt from every usage payload, and a dependency
+			// on the reference would read every balance again on each of them.
+			const watched = accounts.length === 0 ? [undefined] : accounts.map((a) => a.id);
+			const key = watched.join("\u0000");
 
 			react.useEffect(() => {
 				if (!open) return undefined;
-				const controller = new AbortController();
 				const force = forceNonce !== prevForce.current;
 				prevForce.current = forceNonce;
-				setState((prev) => ({ status: "loading", data: prev.data }));
-				const params = account === undefined ? [] : [`account=${encodeURIComponent(account)}`];
-				if (force) params.push("force=1");
-				const query = params.length === 0 ? "" : `?${params.join("&")}`;
-				fetchJson(BALANCE_PATH + query, controller.signal).then(
-					(data) => {
-						if (!controller.signal.aborted) setState({ status: "ready", data });
-					},
-					() => {
+				const controllers = [];
+				// Set before aborting, so a cancelled read's rejection cannot land
+				// as this account's balance.
+				let live = true;
+				for (const id of watched) {
+					const controller = new AbortController();
+					controllers.push(controller);
+					const params = id === undefined ? [] : [`account=${encodeURIComponent(id)}`];
+					if (force) params.push("force=1");
+					const query = params.length === 0 ? "" : `?${params.join("&")}`;
+					const land = (card) => {
+						if (live) setCards((prev) => ({ ...prev, [id ?? ""]: card }));
+					};
+					fetchJson(BALANCE_PATH + query, controller.signal).then(land, () => {
 						// A balance that cannot be read is not worth an error banner over
-						// a panel whose real subject is token usage.
-						if (!controller.signal.aborted) setState((prev) => ({ status: "off", data: prev.data }));
-					}
-				);
-				return () => controller.abort();
-			}, [open, account, nonce, forceNonce]);
+						// a panel whose real subject is token usage — but on a list of
+						// cards an account that simply vanished would be worse than a
+						// card that says what happened, so the failure keeps its seat.
+						land({ ok: false, supported: true, fetched: false, reason: "unreachable" });
+					});
+				}
+				return () => {
+					live = false;
+					for (const controller of controllers) controller.abort();
+				};
+			}, [open, key, nonce, forceNonce]);
 
-			return state;
+			return cards;
 		}
 
 		/**
@@ -1576,37 +1583,10 @@ window.__ModuleLoader__.load({
 			});
 		}
 
-		/**
-		 * DeepSeek official balance.
-		 *
-		 * A deployment with only relays renders one honest line rather than an
-		 * empty card: a relay has no balance endpoint of this shape, and nothing
-		 * is wrong when it says so.
-		 */
-		/**
-		 * Which account the balance card is showing.
-		 *
-		 * A picker rather than one card per account: a user with several relays
-		 * would otherwise get a stack of cards pushing the usage below the fold,
-		 * and only one of them is being looked at.
-		 */
-		function AccountPicker({ accounts, value, onChange, translate }) {
-			if (accounts.length <= 1) return null;
-			return jsxs("label", {
-				className: S.picker,
-				children: [
-					jsx("span", { className: S.pickerLabel, children: translate("balance.account") }),
-					jsx("select", {
-						className: S.select,
-						value: value ?? accounts[0].id,
-						onChange: (event) => onChange(event.target.value),
-						children: accounts.map((a) =>
-							jsx("option", { value: a.id, children: a.displayName }, a.id)
-						)
-					})
-				]
-			});
-		}
+		// 账户下拉（`AccountPicker`）原来在这里：一张卡加一个 `<select>` 选账户。
+		// 2026-10-04 用户定「用量账本点开显示全部余额，不要选择了」→ 余额一节改成
+		// 每个账户各一张卡，于是没有东西可选、没有原生下拉要配色。见
+		// `docs/FORK-VS-UPSTREAM.md` 第 ⑪ 条（**合上游时这一处要保留**）。
 
 		/**
 		 * What to call one window.
@@ -1763,12 +1743,21 @@ window.__ModuleLoader__.load({
 		 * after the balance amount, opening the dialog that stores the site's
 		 * console credentials. Shown on the failure states too — a site whose
 		 * per-key read failed is exactly the one that needs them.
+		 *
+		 * The section lists one card per account (用户 2026-10-04「不要选择了」),
+		 * so EVERY card has to say whose it is — the failure states included,
+		 * where the host's payload may carry no name of its own and the account
+		 * it was asked about is the only thing that can supply one. A card that
+		 * could not be read and does not say whose money it failed to read is a
+		 * card nobody can act on.
 		 */
-		function BalanceCard({ state, translate, onConfigure }) {
+		function BalanceCard({ state, account, translate, onConfigure }) {
 			if (state.status === "loading" && state.data === undefined) return jsx("div", { className: `${S.skel} ${S.skelStat}` });
 			if (state.status !== "ready" && state.status !== "loading") return null;
 			const balance = state.data;
 			if (balance === undefined) return null;
+			const who = [balance.displayName ?? account?.displayName, SCHEME_LABELS[balance.scheme]].filter(Boolean).join(" · ");
+			const whoLine = who === "" ? null : jsx("div", { className: S.balanceWho, children: who });
 			const setChip = () =>
 				(balance.scheme === "newapi" || balance.scheme === "mimo") && typeof onConfigure === "function"
 					? jsx(SetBalanceButton, { onConfigure, translate, label: balance.scheme === "mimo" ? "balance.setCookie" : undefined })
@@ -1783,7 +1772,7 @@ window.__ModuleLoader__.load({
 							: "balance.unavailable";
 				return jsxs("div", {
 					className: S.balance,
-					children: [jsx("p", { className: S.note, children: translate(key) }), setChip()]
+					children: [whoLine, jsx("p", { className: S.note, children: translate(key) }), setChip()]
 				});
 			}
 			if (balance.fetched !== true) {
@@ -1810,7 +1799,7 @@ window.__ModuleLoader__.load({
 						: translate(key, balance.reason === "rate-limited" ? { at: fmtClock(balance.retryAt) } : { reason });
 				return jsxs("div", {
 					className: S.balance,
-					children: [jsx("p", { className: S.note, children: text }), setChip()]
+					children: [whoLine, jsx("p", { className: S.note, children: text }), setChip()]
 				});
 			}
 
@@ -1879,12 +1868,9 @@ window.__ModuleLoader__.load({
 						className: S.balanceMain,
 						children: [
 							// The origin and the software name say WHERE this money
-							// lives; the username is dropped on purpose — 账号 stays
-							// out of a card the picker already attributes.
-							jsx("div", {
-								className: S.balanceWho,
-								children: [balance.displayName, SCHEME_LABELS[balance.scheme]].filter(Boolean).join(" · ")
-							}),
+							// lives; the username is dropped on purpose — the card's
+							// own name is what attributes it, never an account number.
+							whoLine,
 							jsxs("div", {
 								className: S.balanceAmount,
 								children: [
@@ -2610,8 +2596,16 @@ window.__ModuleLoader__.load({
 			});
 		}
 
+		/** The card's props for one account: the payload that landed, or a skeleton. */
+		function balanceStateOf(balances, account) {
+			const card = (balances ?? {})[account?.id ?? ""];
+			// Nothing landed yet is a card still loading, never a blank: the
+			// section's height would jump on every open otherwise.
+			return card === undefined ? { status: "loading" } : { status: "ready", data: card };
+		}
+
 		/** The panel body: every section, each complete. */
-		function Body({ state, balance, site, onSelect, range, onRange, account, onAccount, translate, onRetry, onConfigure }) {
+		function Body({ state, balances, site, onSelect, range, onRange, translate, onRetry, onConfigure }) {
 			if (state.status === "error") {
 				return jsxs("div", {
 					children: [
@@ -2625,28 +2619,34 @@ window.__ModuleLoader__.load({
 
 			const data = state.data;
 			const empty = (data.totals?.requests ?? 0) === 0;
-			// The account the balance card is showing — the host reads the first
-			// account when none is selected, and the dialog has to configure the
-			// SAME one the card names.
+			// One card per account, in the host's own order — the panel no longer
+			// asks which one to look at (用户 2026-10-04「显示全部余额，不要选择了」).
+			// With none listed (no provider directory yet) the single card is the
+			// old no-argument read, which the host answers for the first account.
 			const accounts = data.accounts ?? [];
-			const currentAccount = accounts.find((a) => a.id === (account ?? accounts[0]?.id));
+			const cards = accounts.length === 0 ? [undefined] : accounts;
 
 			return jsxs("div", {
 				children: [
 					jsx(Section, {
 						title: translate("section.balance"),
-						action: jsx(AccountPicker, {
-							accounts: data.accounts ?? [],
-							value: account,
-							onChange: onAccount,
-							translate
-						}),
-						children: jsx(BalanceCard, {
-							state: balance,
-							translate,
-							onConfigure: () => {
-								if (currentAccount?.origin !== undefined) onConfigure(currentAccount);
-							}
+						children: jsx("div", {
+							className: S.balances,
+							children: cards.map((account) =>
+								jsx(
+									BalanceCard,
+									{
+										state: balanceStateOf(balances, account),
+										account,
+										translate,
+										// Each card configures ITS own account: the dialog that
+										// stores a site's console credentials belongs beside the
+										// read that failed for that site, not beside a selection.
+										onConfigure: account === undefined ? undefined : () => onConfigure(account)
+									},
+									account?.id ?? ""
+								)
+							)
 						})
 					}),
 					jsx(Section, {
@@ -2713,7 +2713,6 @@ window.__ModuleLoader__.load({
 			const [open, setOpen] = react.useState(false);
 			const [range, setRange] = react.useState("all");
 			const [site, setSite] = react.useState(undefined);
-			const [account, setAccount] = react.useState(undefined);
 			const [nonce, setNonce] = react.useState(0);
 			// Moves only from the refresh button: a forced balance read skips the
 			// host's freshness window (never its rate-limit backoff). Every other
@@ -2728,7 +2727,12 @@ window.__ModuleLoader__.load({
 			}, []);
 			const days = (RANGES.find((r) => r.id === range) ?? RANGES[2]).days();
 			const state = useUsage(open, days, site, nonce, tick);
-			const balance = useBalance(open, account, nonce, forceNonce);
+			// Every account's card, read off the same usage payload that lists
+			// them: the two always agree on WHAT the accounts are, so a card can
+			// never name an account the panel is not showing usage for. Waiting
+			// for that payload is also what keeps an open from first asking for
+			// "the first account" and then asking again for each one by name.
+			const balances = useBalances(open && state.data !== undefined, state.data?.accounts ?? [], nonce, forceNonce);
 			// After every hook above, so their state cells keep their order.
 			const currentModel = useCurrentModel();
 			const routeBalance = useRouteBalance(currentModel?.provider, nonce, tick);
@@ -2859,13 +2863,11 @@ window.__ModuleLoader__.load({
 									className: S.body,
 									children: jsx(Body, {
 										state,
-										balance,
+										balances,
 										site,
 										onSelect: setSite,
 										range,
 										onRange: setRange,
-										account,
-										onAccount: setAccount,
 										translate,
 										onRetry: reload,
 										onConfigure: setDialogFor
@@ -2962,7 +2964,6 @@ window.__ModuleLoader__.load({
 			"table.output": "输出",
 			"table.cost": "估算",
 			"table.none": "没有模型记录。",
-			"balance.account": "账户",
 			"balance.plan": "套餐 {plan}",
 			"balance.declared": "自定义端点",
 			"balance.unlimited": "不限额度",
@@ -3112,7 +3113,6 @@ window.__ModuleLoader__.load({
 			"table.output": "Output",
 			"table.cost": "Est.",
 			"table.none": "No model records.",
-			"balance.account": "Account",
 			"balance.plan": "{plan} plan",
 			"balance.declared": "declared endpoint",
 			"balance.unlimited": "Unlimited",
@@ -3288,7 +3288,6 @@ window.__ModuleLoader__.load({
 		exports.UserAuthDialog = UserAuthDialog;
 		exports.CookieDialog = CookieDialog;
 		exports.QuotaWindows = QuotaWindows;
-		exports.AccountPicker = AccountPicker;
 		exports.Footer = Footer;
 		exports.agoLabel = agoLabel;
 		exports.fmtClock = fmtClock;

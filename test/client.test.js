@@ -236,7 +236,9 @@ test("everything that floats asks for the overlay ground, with the page ground a
 	// ground and must stay transparent, or they paint an opaque rectangle over
 	// a skin's own texture.
 	assert.match(css.match(/\.tkl_badge\{[^}]*\}/)[0], /background:0 0/, "the sidebar badge belongs to the sidebar");
-	assert.match(css.match(/\.tkl_select\{[^}]*\}/)[0], /background:0 0/, "the picker sits on the panel's ground");
+	// The balance stack is the section's ground, not a pane of its own: it must
+	// declare no background at all, or a skin's texture stops at the cards.
+	assert.equal(/background/.test(css.match(/\.tkl_balances\{[^}]*\}/)[0]), false, "a card inside the panel inherits its ground");
 });
 
 test("the activity ramp is defined for both themes and for an explicit choice", async () => {
@@ -248,47 +250,6 @@ test("the activity ramp is defined for both themes and for an explicit choice", 
 	assert.ok(css.includes("prefers-color-scheme:dark"));
 	assert.ok(css.includes("[data-theme='dark'] .tkl_panel"));
 	assert.ok(css.includes("[data-theme='light'] .tkl_panel"));
-});
-
-test("the account picker's dropdown states its own ground and label", async () => {
-	// The reported bug: the options came up grey-on-grey and unreadable. An
-	// `<option>` is drawn in a native popup OUTSIDE the panel, so it inherits
-	// the select's faint `label-secondary` but none of the panel's ground —
-	// leaving either half to the system menu colour is what produced it.
-	const { dom } = await loadBundle();
-	const css = dom.head.children[0].textContent;
-
-	const option = css.match(/\.tkl_select option\{[^}]*\}/);
-	assert.ok(option, "the popup is unstyled, so it keeps the system menu colour");
-	assert.match(option[0], /background-color:var\(--tkl-option-bg\)/, "an opaque ground of its own");
-	assert.match(option[0], /color:var\(--tkl-option-fg\)/, "and a label that reads on it");
-
-	// Scoped --tkl-* literals rather than --dsw-alias-*: a popup cannot be
-	// translucent, and a skin is free to set the alias grounds to transparent.
-	assert.equal(
-		/--tkl-option-(?:bg|fg):var\(--dsw-alias/.test(css),
-		false,
-		"a token a skin may set to transparent cannot be a popup's ground"
-	);
-
-	// The same blocks the ramp is stated in: a colour defined only inside the
-	// media query is wrong the moment a user picks the opposite theme.
-	for (const [scope, rule] of [
-		["the default", /\.tkl_panel\{[^}]*\}/],
-		["the system's dark", /@media \(prefers-color-scheme:dark\)\{\.tkl_panel\{[^}]*\}/],
-		["an explicit dark", /\[data-theme='dark'\] \.tkl_panel\{[^}]*\}/],
-		["an explicit light", /\[data-theme='light'\] \.tkl_panel\{[^}]*\}/]
-	]) {
-		const block = css.match(rule)[0];
-		for (const token of ["--tkl-option-bg", "--tkl-option-fg", "--tkl-scheme"]) {
-			assert.ok(block.includes(token), `${token} is undefined under ${scope} theme`);
-		}
-	}
-
-	// The popup's own frame — border, scrollbar, the highlighted row — is the
-	// browser's, and `color-scheme` is the only thing it consults for it.
-	const select = css.match(/\.tkl_select\{[^}]*\}/)[0];
-	assert.match(select, /color-scheme:var\(--tkl-scheme/, "or the popup's frame ignores the theme");
 });
 
 test("apply registers dictionaries and the footer seat", async () => {
@@ -406,6 +367,18 @@ function rowsOf(node, out = []) {
 	}
 	if (typeof node.type === "function") return rowsOf(node.type(node.props), out);
 	return rowsOf(node.props?.children, out);
+}
+
+/** Collect every element type in a recorded tree, in order. */
+function typesOf(node, out = []) {
+	if (node === null || node === undefined || typeof node !== "object") return out;
+	if (Array.isArray(node)) {
+		for (const child of node) typesOf(child, out);
+		return out;
+	}
+	out.push(node.type);
+	if (typeof node.type === "function") return typesOf(node.type(node.props), out);
+	return typesOf(node.props?.children, out);
 }
 
 /** Collect every node whose className matches. */
@@ -915,21 +888,42 @@ test("neither direct nor unrouted consumes a relay colour slot", async () => {
 	assert.equal(exports.colorOf("another.example", 1), "var(--tkl-series-1)");
 });
 
-test("the picker only appears when there is a choice to make", async () => {
+test("every account gets its own balance card, and there is nothing to select", async () => {
+	// 用户 2026-10-04：「用量账本点开显示全部余额，不要选择了」。The section used to
+	// render ONE card behind an `<AccountPicker>` dropdown; it now renders one
+	// card per account, so no control chooses between them any more.
 	const { exports, render } = await loadBundle();
-	assert.equal(render(exports.AccountPicker, { accounts: [], value: undefined, onChange() {}, translate: T }), null);
-	assert.equal(
-		render(exports.AccountPicker, { accounts: [{ id: "a", displayName: "A" }], value: "a", onChange() {}, translate: T }),
-		null,
-		"one account is not a choice"
-	);
-	const two = render(exports.AccountPicker, {
-		accounts: [{ id: "a", displayName: "DeepSeek" }, { id: "b", displayName: "api.relay-one.example" }],
-		value: "b",
-		onChange() {},
-		translate: T
+	const accounts = [
+		{ id: "deepseek-official", displayName: "DeepSeek", origin: "https://api.deepseek.com", scheme: "deepseek" },
+		{ id: "yos", displayName: "api2.yoshub.com", origin: "https://api2.yoshub.com", scheme: "newapi" }
+	];
+	const card = (over) => ({ ok: true, supported: true, fetched: true, isAvailable: true, ...over });
+	const body = (balances) =>
+		render(exports.Body, {
+			state: { status: "ready", data: payload({ accounts }) },
+			balances,
+			translate: T,
+			onSelect() {},
+			onRange() {},
+			onConfigure() {}
+		});
+
+	const both = body({
+		"deepseek-official": card({ scheme: "deepseek", displayName: "DeepSeek", currency: "CNY", total: 36.44 }),
+		yos: card({ scheme: "newapi", displayName: "api2.yoshub.com", currency: "USD", total: 5 })
 	});
-	assert.ok(textOf(two).includes("api.relay-one.example"));
+	assert.equal(findAll(both, "tkl_balance").length, 2, "one card per account, both at once");
+	const text = textOf(both);
+	for (const name of ["DeepSeek", "api2.yoshub.com"]) assert.ok(text.includes(name), `unnamed card: ${text}`);
+	assert.ok(text.includes("¥36.44") && text.includes("$5.00"), "both figures are on screen, not one of them");
+	assert.equal(typesOf(both).includes("select"), false, "nothing is left to choose with");
+	assert.equal(typesOf(both).includes("option"), false);
+
+	// A read that has not landed yet keeps its seat as a skeleton: dropping the
+	// card would move every figure below it on each open.
+	const pending = body({ "deepseek-official": card({ displayName: "DeepSeek", currency: "CNY", total: 36.44 }) });
+	assert.equal(findAll(pending, "tkl_balance").length, 1);
+	assert.equal(findAll(pending, "tkl_skel").length, 1, "the unread account is still on screen");
 });
 
 test("a balance that could not be read never becomes an error banner", async () => {
@@ -1166,7 +1160,7 @@ test("an empty range shows the sites list but not an empty chart and table", asy
 	const text = textOf(
 		render(exports.Body, {
 			state: { status: "ready", data: payload({ totals: { tokens: 0, requests: 0 }, days: [], models: [] }) },
-			balance: { status: "off" },
+			balances: {},
 			onSelect() {},
 			translate: T
 		})
@@ -1181,7 +1175,7 @@ test("an error offers a retry and shows what went wrong", async () => {
 	let retried = 0;
 	const tree = render(exports.Body, {
 		state: { status: "error", message: "HTTP 500" },
-		balance: { status: "off" },
+		balances: {},
 		translate: T,
 		onRetry: () => retried++
 	});
@@ -1194,7 +1188,7 @@ test("an error offers a retry and shows what went wrong", async () => {
 
 test("the first load shows a skeleton rather than an empty panel", async () => {
 	const { exports, render } = await loadBundle();
-	const tree = render(exports.Body, { state: { status: "loading" }, balance: { status: "loading" }, translate: T });
+	const tree = render(exports.Body, { state: { status: "loading" }, balances: {}, translate: T });
 	assert.ok(findAll(tree, "tkl_skel").length > 0);
 });
 
@@ -1442,7 +1436,7 @@ test("the activity header names the host's zone, not the browser's", async () =>
 	const text = textOf(
 		render(exports.Body, {
 			state: { status: "ready", data: payload({ timeZone: { name: "Asia/Shanghai", offset: "UTC+08:00" } }) },
-			balance: { status: "off" },
+			balances: {},
 			onSelect() {},
 			onRange() {},
 			translate: T
@@ -1516,8 +1510,8 @@ test("a press outside closes the panel; one inside does not", async () => {
 	globalThis.document.addEventListener = (type, fn, capture) => listeners.push({ type, fn, capture });
 	globalThis.document.removeEventListener = () => {};
 	try {
-		// [open, range, site, account, nonce]
-		harness.renderWithState(exports_of(harness).TokenLedgerPanel, { wide: true }, [true, "all", undefined, undefined, 0]);
+		// [open, range, site, nonce, forceNonce]
+		harness.renderWithState(exports_of(harness).TokenLedgerPanel, { wide: true }, [true, "all", undefined, 0, 0]);
 		harness.runEffects();
 
 		const onDown = listeners.find((l) => l.type === "pointerdown");
@@ -1568,6 +1562,83 @@ test("the badge reads today's figure with the panel shut, and keeps it current",
 		assert.ok(requested.some((path) => path.startsWith(exports_of(harness).USAGE_PATH)), `no usage read: ${requested}`);
 		assert.equal(requested.some((path) => path.startsWith("/api/tokenledger/balance?account")), false, "the balance card waits for the panel");
 		assert.ok(harness.intervals.some((t) => t.ms === 5 * 60_000), "and it is re-read on a timer");
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+test("opening the panel reads every account's balance, once each", async () => {
+	// 用户 2026-10-04：「用量账本点开显示全部余额，不要选择了」—— 一节里几张卡就是几次
+	// 读；没有下拉，所以没有「只读选中的那一个」。同一账户的卡不会读第二遍：读数在
+	// 账户名单从用量载荷里到齐之后才开始，之前那次「不点名」的读不会再发生。
+	const harness = await loadBundle();
+	const T_ = exports_of(harness);
+	const accounts = [
+		{ id: "deepseek-official", displayName: "DeepSeek", origin: "https://api.deepseek.com", scheme: "deepseek", routes: ["deepseek-official", "deepseek-account"] },
+		{ id: "xiaomi", displayName: "小米 MiMo", origin: "https://api.xiaomimimo.com", scheme: "mimo", routes: ["xiaomi"] },
+		{ id: "yos", displayName: "api2.yoshub.com", origin: "https://api2.yoshub.com", scheme: "newapi", routes: ["yos"] }
+	];
+	const requested = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async (path) => {
+		requested.push(path);
+		const body = path.startsWith(T_.USAGE_PATH)
+			? payload({ accounts })
+			: { ok: true, supported: true, fetched: true, isAvailable: true, currency: "CNY", total: 1, displayName: "x" };
+		return { ok: true, json: async () => body };
+	};
+	// Only the cells something actually wrote are carried over. A copy that is
+	// dense with `undefined` would be read as a hook's CURRENT value by the
+	// stub (`index in stateCells` is true for a slot that was written), so every
+	// component appearing for the first time on the second pass — the model
+	// table, the activity strip — would get `undefined` instead of its own
+	// initial value.
+	const cells = () => {
+		const out = [];
+		for (let i = 0; i < 32; i += 1) {
+			const value = harness.readState(i);
+			if (value !== undefined) out[i] = value;
+		}
+		return out;
+	};
+	const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+	// An OPEN panel listens for a press outside itself, which the stub document
+	// has to be able to take.
+	harness.dom.addEventListener = () => {};
+	harness.dom.removeEventListener = () => {};
+	try {
+		// [open, range, site, nonce, forceNonce]
+		harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, [true, "all", undefined, 0, 0]);
+		harness.runEffects();
+		await settle();
+		// The usage payload names the accounts; that pass reads them.
+		harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells());
+		harness.runEffects();
+		await settle();
+
+		const reads = requested.filter((path) => path.startsWith("/api/tokenledger/balance"));
+		for (const account of accounts) {
+			assert.ok(reads.includes(`/api/tokenledger/balance?account=${account.id}`), `${account.id} was not read: ${reads.join()}`);
+		}
+		assert.equal(reads.length, 3, `one read per account, nothing else: ${reads.join()}`);
+		assert.equal(requested.some((p) => p.includes("force=1")), false, "an open re-reads through the host's window, never forced");
+
+		// Every card is on screen, and the refresh button forces the lot.
+		const tree = harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells());
+		assert.equal(findAll(tree, "tkl_balance").length, 3, "one card per account");
+		assert.equal(typesOf(tree).includes("select"), false, "no dropdown to choose with");
+
+		const forced = cells();
+		forced[4] = 1;
+		harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, forced);
+		harness.runEffects();
+		await settle();
+		for (const account of accounts) {
+			assert.ok(
+				requested.includes(`/api/tokenledger/balance?account=${account.id}&force=1`),
+				`${account.id} was not refreshed: ${requested.join()}`
+			);
+		}
 	} finally {
 		globalThis.fetch = realFetch;
 	}
@@ -1859,12 +1930,11 @@ test("the panel orders 模型 above 活跃度 and puts the daily line last", asy
 	};
 	const tree = render(exports.Body, {
 		state: { status: "ready", data },
-		balance: { status: "idle" },
+		balances: {},
 		translate: (k) => k,
 		range: "all",
 		onRange: () => {},
 		onSelect: () => {},
-		onAccount: () => {},
 		onRetry: () => {},
 		onConfigure: () => {}
 	});
@@ -1928,8 +1998,8 @@ test("a Host whose account is signed out is told to sign in, and both dictionari
 test("the panel opens the cookie dialog for a console-read account, the wallet dialog otherwise", async () => {
 	const harness = await loadBundle();
 	const dialogOf = (account) => {
-		// [open, range, site, account, nonce, forceNonce, dialogFor]
-		const tree = harness.renderWithState(exports_of(harness).TokenLedgerPanel, { wide: true }, [false, "all", undefined, undefined, 0, 0, account]);
+		// [open, range, site, nonce, forceNonce, dialogFor]
+		const tree = harness.renderWithState(exports_of(harness).TokenLedgerPanel, { wide: true }, [false, "all", undefined, 0, 0, account]);
 		const found = [];
 		const walk = (node) => {
 			if (node === null || typeof node !== "object") return;

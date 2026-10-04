@@ -185,3 +185,17 @@
   解析不到报 `ERR_PACKAGE_PATH_NOT_EXPORTED` 就当没有、退回包名）。新增 `src/locale/{en,zh}.json`，`exports` 加
   `"./locale/*.json": "./src/locale/*.json"`（目标留在 `src/` 下，守上游「新导出只在 src/」的约束；文件名必须是语言 id，宿主会扫整个目录）。
   守卫测试 `test/packaging.test.js`「the plugin page's name and description resolve the way the host reads them」（变异验证）。
+- **面板「余额」一节列全部账户、去掉账户下拉**（2026-10-04，用户「用量账本点开显示全部余额，不要选择了」）：
+  - 浏览器：`client.js` 的 `useBalance(open, account, …)` 换成 `useBalances(open, accounts, …)` —— 每个账户各发一次
+    `/api/tokenledger/balance?account=<id>`（并行，各自落地，慢的只拖它自己那张卡）；结果按账户 id 存成表、跨重开保留，刷新时旧数字不消失。
+    依赖的是账户 id 串而不是数组引用，避免每次用量载荷重建账户列表都重读一遍。等用量载荷到了（知道有哪些账户）才开始读，
+    不再先发一次不点名的读；载荷里没有账户时退回旧的不带 `account` 的单次读。刷新按钮照旧对全部账户 `force=1`。
+  - `Body` 渲染 `.tkl_balances` 竖排卡片，一账户一张；还没读到的占骨架位、读失败的留一张「读取失败（unreachable）」卡（不再整张消失），
+    每张卡（含失败卡）都用 `whoLine` 标出是谁的；「设置查询API / Cookie」按钮配置的是**该卡自己的账户**。
+  - 删掉：`AccountPicker`（及其导出）、`.tkl_picker` / `.tkl_pickerLabel` / `.tkl_select` / `.tkl_select option` 样式、
+    `--tkl-scheme` / `--tkl-option-bg` / `--tkl-option-fg` 三组主题变量、`balance.account` 文案、面板的 `account` 状态格
+    （`TokenLedgerPanel` 的 state 顺序因此变成 `[open, range, site, nonce, forceNonce, dialogFor, …]`）。
+    09-14 那处「下拉灰底灰字」修复（PR #63）随下拉一起不复存在。
+  - 守卫测试：`test/client.test.js`「every account gets its own balance card, and there is nothing to select」
+    「opening the panel reads every account's balance, once each」（均变异验证：换回改动前的 `client.js` 两条都失败）。
+    **合上游时这一处要保留**（上游仍是下拉）。
