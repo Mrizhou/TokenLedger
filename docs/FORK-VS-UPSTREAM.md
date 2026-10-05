@@ -225,7 +225,7 @@
     官方 Base URL 页只列 `/compatible-mode/v1`、`/apps/anthropic`、`/api/v1`，没有余额接口（10-04 核）。此前这个账户答 `unknown-software`。
     钱在阿里云费用中心：BssOpenApi `2017-12-14` 的 `QueryAccountBalance`，用 AccessKey 签名（V3 `ACS3-HMAC-SHA256`），权限只要 `bss:DescribeAcccount`（官方拼写三个 c）。
   - 新增 `src/aliyun-bss.js`：V3 签名器照官方「V3 版本请求体&签名机制」页实现，**用该页的 RunInstances 示例逐字节核对过签名**（守卫测试原样用那组固定输入与期望值）；
-    `readAliyunBalance` 对 `https://bssopenapi.aliyuncs.com/` 发签名 POST（不跟跨源重定向、响应体有上限、15 s 超时），
+    `readAliyunBalance` 对 `https://business.aliyuncs.com/` 发签名 POST（不跟跨源重定向、响应体有上限、15 s 超时），
     `AvailableAmount` 作总额、`AvailableCashAmount` 与总额不同时作 `toppedUp`；`InvalidAccessKeyId*` / `SignatureDoesNotMatch` 给 hint `aliyun-ak-invalid`，
     `NoPermission` / `NotAuthorized` 给 `aliyun-ak-permission`，没存 key 给 `aliyun-ak-missing`。
   - `src/balance.js`：`vendorOf` 对百炼主机按模式认（`ALIYUN_VENDOR`，scheme `aliyun`、显示「阿里云百炼」）；`SCHEMES.aliyun` 只有 `credential: { kind: "aliyun-access-key" }`；
@@ -234,7 +234,8 @@
     免得哪次保存漏掉某张表。写口 `POST /api/tokenledger/userauth` `{ kind: "aliyun-access-key", accessKeyId, accessKeySecret | remove }`，同 ID 空 Secret 保留原 Secret；
     `GET` 多回一个 `aliyun: { accessKeyId: "LTAI…abcd", hasSecret }`，**Secret 和完整 ID 都不回显**。
   - 面板：百炼卡上「设置 AccessKey」按钮 → `AliyunAccessKeyDialog`（三步：RAM 建用户 → 只授权 `bss:DescribeAcccount` → 填 ID/Secret）。
-  - 已知局限：读到的是**整个阿里云账号**的可用余额（各产品共用），不是百炼单独的；百炼的免费额度读不到；只认中国站（`bssopenapi.aliyuncs.com`）。
+  - **10-05 修正域名**：首版写成 `bssopenapi.aliyuncs.com`（把产品代码当成了域名，出自一次未复核的文档摘要），DNS 根本解析不到，每次都答 `unreachable`。改为官方 SDK 端点表（`aliyun/alibabacloud-python-sdk` `bssopenapi-20171214` client 的 `_endpoint_map`：`cn-*` → `business.aliyuncs.com`）给的 `business.aliyuncs.com`；实测假 key 回 `InvalidAccessKeyId.NotFound`（证明域名与签名格式都对），用户的 key 读回 `Code 200`、各项 0.00。
+  - 已知局限：读到的是**整个阿里云账号**的可用余额（各产品共用），不是百炼单独的；百炼的免费额度读不到；只认中国站（`business.aliyuncs.com`）。
   守卫测试：`test/aliyun-bss.test.js` 五条（含「the signature matches Alibaba Cloud's own worked V3 example」）、
   `test/balance.test.js`「a 百炼 workspace route is the 阿里云 card, read with the stored AccessKey and never the route key」、
   `test/apply.test.js`「the 阿里云 AccessKey is stored once, shown masked, and signs the 百炼 card's read」、

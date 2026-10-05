@@ -497,7 +497,7 @@ test("the 阿里云 AccessKey is stored once, shown masked, and signs the 百炼
 		const card = (await call(balance, "GET", "/api/tokenledger/balance?account=ali")).body;
 		assert.equal(card.fetched, true);
 		assert.equal(card.total, 42);
-		assert.equal(new URL(asked.at(-1).url).host, "bssopenapi.aliyuncs.com");
+		assert.equal(new URL(asked.at(-1).url).host, "business.aliyuncs.com");
 
 		assert.equal((await call(auth, "POST", auth.path, { kind: "aliyun-access-key", remove: true })).status, 200);
 		assert.equal(JSON.parse(readFileSync(credentialsPath, "utf8")).aliyunAccessKey, undefined);

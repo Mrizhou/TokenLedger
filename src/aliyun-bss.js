@@ -25,8 +25,14 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 
 import { DEFAULT_MAX_BYTES, fetchNoCrossOriginRedirect, readCapped } from "./transport.js";
 
-/** The billing center's endpoint (China site). */
-export const BSS_HOST = "bssopenapi.aliyuncs.com";
+/**
+ * The billing center's endpoint (China site), from the official SDK's endpoint
+ * map (`alibabacloud-python-sdk` `bssopenapi-20171214` client: `cn-*` →
+ * `business.aliyuncs.com`). `bssopenapi.aliyuncs.com` — the product code
+ * dressed as a host — does not resolve; the first build shipped it and every
+ * read failed as `unreachable`.
+ */
+export const BSS_HOST = "business.aliyuncs.com";
 export const BSS_VERSION = "2017-12-14";
 
 const ALGORITHM = "ACS3-HMAC-SHA256";

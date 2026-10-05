@@ -1447,7 +1447,7 @@ test("a 百炼 workspace route is the 阿里云 card, read with the stored Acces
 	assert.equal(card.total, 88.8);
 	assert.equal(card.account, "ali");
 	assert.equal(seen.length, 1);
-	assert.equal(new URL(seen[0].url).host, "bssopenapi.aliyuncs.com", "the balance is asked of the billing center, not the workspace host");
+	assert.equal(new URL(seen[0].url).host, "business.aliyuncs.com", "the balance is asked of the billing center, not the workspace host");
 	assert.equal(JSON.stringify(seen[0].init).includes("sk-route-key"), false, "the inference key never leaves for the billing center");
 });
 
