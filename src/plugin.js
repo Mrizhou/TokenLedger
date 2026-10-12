@@ -52,9 +52,9 @@ import { LedgerStore } from "./store.js";
 import { DEEPSEEK_OFFICIAL_RATES, MIMO_OFFICIAL_RATES, RateTable, priceRows, round6 } from "./pricing.js";
 import { num, renderReport, table } from "./report.js";
 
-/** `YYYY-MM-DD` for N days before today, in local time. */
-function dayKeyDaysAgo(daysBack) {
-	return dayKey(Date.now() - daysBack * 86_400_000);
+/** `YYYY-MM-DD` for N days before today, cut on the ledger's days. */
+function dayKeyDaysAgo(daysBack, offsetMinutes = undefined) {
+	return dayKey(Date.now() - daysBack * 86_400_000, offsetMinutes);
 }
 
 /**
@@ -66,7 +66,14 @@ function dayKeyDaysAgo(daysBack) {
  * But the official route is the default install, and a report whose cost
  * column is all em dashes until the user writes a price table reads as
  * broken. The official list prices the deepseek models only; anything else
- * stays unpriced (`null`, never zero). A user-supplied `rates` always wins.
+ * stays unpriced (`null`, never zero). A user-supplied `rates` REPLACES the
+ * shipped list wholesale — it does not merge with it. Supplying one model's
+ * prices therefore unprices every official-route model not also listed, and
+ * the panel's 估算 column goes em dash for them. The manual-balance lookup
+ * (`manualRateLookup`) is the exception: it layers the user's table OVER the
+ * shipped one, so the two surfaces disagree by design — the panel prices
+ * strictly what the user wrote, the typed balance falls back to official
+ * prices for what they did not.
  */
 export function priceWithConfiguredRates(store, range, site, rates, provider = undefined, byRoute = false) {
 	try {
@@ -142,9 +149,26 @@ export function priceWithConfiguredRates(store, range, site, rates, provider = u
 		// scope `priceToday` has always applied to the badge. A user-supplied
 		// `rates` is the user's own pricing and prices every row, as before.
 		if (rates === undefined && provider !== undefined && provider !== "deepseek-official") {
-			return { rows: [], totals: {}, unpricedModels: [], partialTotals: {}, partialModels: [] };
+			return { rows: [], totals: {}, unpricedModels: [], partialTotals: {}, partialModels: [], warnings: [] };
 		}
-		return { rows: [...rowsByKey.values()], totals, unpricedModels, partialTotals, partialModels };
+		// Windowed (time-of-day) rates never win here: no pricing entry passes
+		// `timeMs`, so `rateFor` skips them. Name the affected models so the
+		// panel can say the peak/off-peak prices are configured but inert,
+		// instead of silently pricing everything at the general rate.
+		const warnings = table.windowedModels().map(
+			(model) => `windowed rates for ${model} are configured but never applied (this panel prices by day, not by time-of-day)`
+		);
+		// A user-supplied table replaces the shipped list wholesale: when it
+		// prices none of the official-route models, the 估算 column goes em
+		// dash everywhere and that reads as broken. Say why.
+		if (rates !== undefined) {
+			const officialModels = ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"];
+			const pricedOfficial = [...rowsByKey.values()].some((r) => officialModels.includes(r.model) && r.priced === true);
+			if (!pricedOfficial && rowsByKey.size > 0) {
+				warnings.push("custom rates replace the shipped DeepSeek list; none of the official-route models are priced, so the 估算 column is em dash");
+			}
+		}
+		return { rows: [...rowsByKey.values()], totals, unpricedModels, partialTotals, partialModels, warnings };
 	} catch {
 		// A malformed rate table costs the cost column, not the report.
 		return null;
@@ -446,10 +470,26 @@ export async function sweep(persistence, store, options = {}) {
 				// prefix; only a session's first read needs to start at the
 				// durable seed boundary.
 				state = store.loadState(sessionId);
-				const fromSeq = checkpoint === undefined
-					? (snapshot.header?.seedLength ?? 0)
-					: state.consumedSeq + 1;
+				const seedLength = snapshot.header?.seedLength ?? 0;
+				// A moved revision may mean renumbered seqs (the v1→v2
+				// migration): a checkpoint past the renumbered end reads an
+				// empty tail and the session silently stops counting. The
+				// handle branch heals this with a full re-read; this branch
+				// does the same — but only when the tail actually comes back
+				// empty, because a revision also moves on every plain append
+				// and re-folding from scratch there would re-read (and
+				// re-commit) the whole log on every sweep. An empty tail on
+				// a MOVED revision is the renumbering signature: the log
+				// changed yet nothing follows the checkpoint.
+				// (commitSession replaces the rows wholesale, so the re-fold
+				// cannot double count.)
+				let fromSeq = checkpoint === undefined ? seedLength : state.consumedSeq + 1;
 				({ events } = await persistence.readFrom(sessionId, fromSeq));
+				const moved = checkpoint !== undefined && revision !== undefined && checkpoint.logRevision !== undefined && checkpoint.logRevision !== revision;
+				if (moved && (events?.length ?? 0) === 0 && fromSeq > seedLength) {
+					state = createUsageState();
+					({ events } = await persistence.readFrom(sessionId, seedLength));
+				}
 			}
 			if ((events?.length ?? 0) === 0) {
 				stats.skipped++;
@@ -655,7 +695,7 @@ export async function runCommand(rawInput, deps) {
 		const rest = args.slice(args[1] === "csv" || args[1] === "json" ? 2 : 1);
 		const days = Number.parseInt(rest[0] ?? "", 10);
 		const site = rest.find((a) => !/^\d+$/.test(a));
-		const range = Number.isFinite(days) && days > 0 ? { from: dayKeyDaysAgo(days - 1) } : {};
+		const range = Number.isFinite(days) && days > 0 ? { from: dayKeyDaysAgo(days - 1, config.dayOffsetMinutes) } : {};
 		await doSweep?.();
 		return format === "csv"
 			? store.exportCsv(range, site)
@@ -674,7 +714,7 @@ export async function runCommand(rawInput, deps) {
 	const rest = args;
 	const days = Number.parseInt(rest[0] ?? "", 10);
 	const site = rest.find((a) => !/^\d+$/.test(a));
-	const range = Number.isFinite(days) && days > 0 ? { from: dayKeyDaysAgo(days - 1) } : {};
+	const range = Number.isFinite(days) && days > 0 ? { from: dayKeyDaysAgo(days - 1, config.dayOffsetMinutes) } : {};
 
 	// A word this command does not recognise used to become a site filter, so a
 	// typo — or a subcommand from a newer version than the one installed —
@@ -924,6 +964,13 @@ export function apply(ctx, userConfig = {}) {
 	// figures are perfectly current — reported as freshness that reads as a
 	// stuck panel.
 	let lastSweepAt;
+	// The last sweep's outcome, for the diagnostics surface. Sweep failures
+	// are silent by design (a failed collection must not break the panel),
+	// but "the panel is not growing and nothing says why" is the failure mode
+	// users actually report — so the fact of the last failure rides along
+	// where `/tokenledger diagnostics` can show it.
+	let lastSweepFailed = 0;
+	let lastSweepError;
 
 	// Workspace titles for the directories the index knows about, refreshed once
 	// per sweep. `resolveByPath` is async and the panel payload is assembled in
@@ -998,9 +1045,12 @@ export function apply(ctx, userConfig = {}) {
 			}
 			await refreshProjectTitles();
 			lastSweepAt = Date.now();
+			lastSweepFailed = stats.failed;
+			lastSweepError = stats.failed > 0 ? `${stats.failed} session(s) failed in the last sweep; see the host log for tokenledger warnings` : undefined;
 			return stats;
 		} catch (error) {
 			logger?.warn?.("tokenledger: sweep failed: %s", error?.message ?? error);
+			lastSweepError = error?.message ?? String(error);
 			return undefined;
 		} finally {
 			running = false;
@@ -1098,7 +1148,12 @@ export function apply(ctx, userConfig = {}) {
 		byModel: (range, site) => store.byModel(range, site),
 		bySite: (range) => store.bySite(range),
 		sites: () => directory.sites.map((site) => ({ ...site })),
-		diagnostics: () => store.diagnostics(),
+		diagnostics: () => ({
+			...store.diagnostics(),
+			...(lastSweepAt === undefined ? {} : { lastSweepAt }),
+			...(lastSweepFailed > 0 ? { lastSweepFailed } : {}),
+			...(lastSweepError === undefined ? {} : { lastSweepError })
+		}),
 		reindex: async () => {
 			store.reset();
 			return runSweep();
@@ -1352,6 +1407,11 @@ export function apply(ctx, userConfig = {}) {
 			manualBalance: (account) => {
 				const entry = config.manualBalances?.[account.id];
 				if (typeof entry?.amount !== "number" || typeof entry.currency !== "string") return undefined;
+				// A baseline that is not an array (hand-edited file, pre-baseline
+				// entry, emptied snapshot) would charge ALL history against the
+				// typed figure — the card would open deep negative. Treat it as
+				// unentered so the user retypes instead of seeing a fake deficit.
+				if (!Array.isArray(entry.baseline)) return undefined;
 				return manualBalanceCard(
 					entry,
 					usageSnapshot(store, account.routes ?? [account.id]),

@@ -328,3 +328,18 @@ test("the offset's sign is inverted from getTimezoneOffset, which counts west", 
 	assert.equal(hostTimeZone({ getTimezoneOffset: () => -345 }).offset, "UTC+05:45");
 	assert.equal(hostTimeZone({ getTimezoneOffset: () => 0 }).offset, "UTC+00:00");
 });
+
+test("a null usage sample counts the request and charges nothing instead of freezing the session", () => {
+	// One poison event (usage:null) used to throw inside bucketsOf, failing
+	// the whole session's fold — frozen at old totals, one warn per sweep.
+	const days = foldUsage([
+		header("deepseek", "v4"),
+		message(1, 1, "deepseek", "v4", usage(100, 50)),
+		message(2, 1, "deepseek", "v4", null),
+		message(3, 1, "deepseek", "v4", usage(200, 20))
+	]);
+	const entry = days.get("2026-08-14");
+	assert.equal(entry.totals.inputTokens, 300, "the poison sample charges zero, the neighbors still count");
+	assert.equal(entry.totals.outputTokens, 70);
+	assert.equal(entry.totals.requests, 3, "the poisoned turn still counts as a request");
+});

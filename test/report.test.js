@@ -239,6 +239,32 @@ test("the command sweeps before reporting so figures are not stale", async () =>
 	}
 });
 
+test("a day range is cut on the ledger's days, not the host's local calendar", async () => {
+	// 2026-10-12T17:00:00Z is 10-13 01:00 in Beijing but still 10-12 in UTC.
+	// With dayOffsetMinutes 480 the 1-day range must start 10-13; with 0 it
+	// must start 10-12. Before the fix the offset was ignored and both cut
+	// on the host's local calendar.
+	const realNow = Date.now;
+	Date.now = () => Date.parse("2026-10-12T17:00:00Z");
+	try {
+		const seen = [];
+		const store = {
+			byDay: (range) => (seen.push(range?.from), []),
+			byModel: () => [],
+			bySite: () => [],
+			byProvider: () => [],
+			byProject: () => [],
+			totals: () => ({ requests: 0, tokens: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 }),
+			diagnostics: () => ({})
+		};
+		await runCommand("1", { store, config: { dayOffsetMinutes: 480 } });
+		await runCommand("1", { store, config: { dayOffsetMinutes: 0 } });
+		assert.deepEqual(seen, ["2026-10-13", "2026-10-12"]);
+	} finally {
+		Date.now = realNow;
+	}
+});
+
 test("each model row carries its request count, so a percentage can be read", () => {
 	// Without n on the row, a single request reporting 11.7% cache hits invites
 	// the conclusion that a relay caches badly, when the only honest reading is

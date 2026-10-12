@@ -99,6 +99,21 @@ function state(overrides = {}) {
 	};
 }
 
+test("one model on two routes renders two route-qualified rows, not one merged row", () => {
+	// Web parity: the panel names a row `<provider>/<model>` because a model id
+	// alone does not say who served it. Blue used to read model-only rows and
+	// merge the two routes into one line.
+	const routes = [
+		{ provider: "commandcode", model: "deepseek/deepseek-v4.1-flash", tokens: 1000, requests: 5, inputTokens: 800, outputTokens: 200, cacheReadTokens: 0, cost: 1.5, currency: "CNY" },
+		{ provider: "deepseek-official", model: "deepseek-v4.1-flash", tokens: 2000, requests: 3, inputTokens: 1500, outputTokens: 500, cacheReadTokens: 0, cost: 2.5, currency: "CNY" }
+	];
+	const view = buildTokenLedgerView(state({ view: normalizeTokenLedgerView(usage({ modelRoutes: routes })) }));
+	const lists = collect(view, (value) => value.id === "tokenledger.models");
+	assert.equal(lists.length, 1);
+	const labels = lists[0].items.map((item) => item.label);
+	assert.deepEqual(labels, ["deepseek-official/deepseek-v4.1-flash", "commandcode/deepseek-v4.1-flash"], "sorted by tokens desc, named by route");
+});
+
 function collect(root, predicate) {
 	const found = [];
 	const seen = new WeakSet();

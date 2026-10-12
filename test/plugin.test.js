@@ -189,7 +189,12 @@ test("an unknown revision shape falls back to exact comparison", async () => {
 		await sweep(counting, store, {});
 		sessions.get("s1").revision = "memory:host:2";
 		await sweep(counting, store, {});
-		assert.equal(reads, 2, "an unrecognized shape must never be trusted as unchanged");
+		// A moved revision with an empty tail may mean renumbered seqs (the
+		// v1→v2 migration), so the tail is re-read from the seed boundary
+		// rather than trusted as "nothing new". The re-fold replaces the rows
+		// wholesale, so the totals stay exact either way.
+		assert.equal(reads, 3, "an unrecognized shape must never be trusted as unchanged");
+		assert.equal(store.totals().inputTokens, 100, "the re-fold does not double count");
 	});
 });
 
@@ -323,6 +328,33 @@ test("a listSnapshots failure degrades instead of throwing into DSH", async () =
 		const stats = await sweep(persistence, store, { logger: { warn() {} } });
 		assert.equal(stats.failed, 1);
 		assert.equal(stats.scanned, 0);
+	});
+});
+
+test("failure paths work with no logger at all, never throwing into DSH", async () => {
+	// Every warn/info call in the sweep path is optional-chained. If one is a
+	// bare call, a default-config sweep (no logger) throws instead of counting
+	// failed — violating "a failed collection must not break the panel".
+	await withStore(async (store) => {
+		const badList = {
+			async listSnapshots() {
+				throw new Error("backend down");
+			}
+		};
+		const listStats = await sweep(badList, store, {});
+		assert.equal(listStats.failed, 1);
+
+		const badSession = {
+			async listSnapshots() {
+				return [{ header: { id: "s1" }, revision: "r1" }];
+			},
+			async readFrom() {
+				throw new Error("corrupt log");
+			}
+		};
+		const sessionStats = await sweep(badSession, store, {});
+		assert.equal(sessionStats.failed, 1);
+		assert.equal(store.totals().requests, 0);
 	});
 });
 
@@ -507,6 +539,48 @@ test("a shipped provider default resolves as official even without a relay site"
 	assert.equal(resolveSite("removed-route"), undefined, "an absent route remains unknown");
 });
 
+test("a failed handle read still closes the handle", async () => {
+	// The handle branch opens per session; a read that throws must not leak
+	// the handle — the finally closes it, and the session counts failed.
+	await withStore(async (store) => {
+		let closed = false;
+		const persistence = {
+			async list() {
+				return [{ header: { version: 0, id: "s1", createdAt: DAY }, revision: "r1" }];
+			},
+			async open(id, mode) {
+				assert.equal(mode, "read");
+				return {
+					async read() {
+						throw new Error("torn log");
+					},
+					async close() {
+						closed = true;
+					}
+				};
+			}
+		};
+		const stats = await sweep(persistence, store, {});
+		assert.equal(stats.failed, 1);
+		assert.equal(closed, true, "the handle closes even when the read throws");
+		assert.equal(store.totals().requests, 0);
+	});
+});
+
+test("two concurrent sweeps of one store count every event exactly once", async () => {
+	// apply() guards overlap with `running`, but sweep() itself must also be
+	// safe: two sweeps racing the same session must not double-count or lose.
+	await withStore(async (store) => {
+		const sessions = new Map([
+			["s1", { revision: "r1", events: [header("p", "m"), message(1, 1, "p", "m", { inputTokens: 100, outputTokens: 10 })] }]
+		]);
+		const [a, b] = await Promise.all([sweep(fakePersistence(sessions), store, {}), sweep(fakePersistence(sessions), store, {})]);
+		assert.equal(a.updated + b.updated >= 1, true, "at least one sweep lands the session");
+		assert.equal(store.totals().inputTokens, 100, "commitSession replaces wholesale, so a race cannot double count");
+		assert.equal(store.totals().requests, 1);
+	});
+});
+
 test("a malformed relay entry is skipped rather than poisoning the map", async () => {
 	const { sites, providerBaseUrls } = normalizeRelayConfig({
 		relays: { good: "https://api.relay-one.example", bad: "", worse: null, alsoBad: {} }
@@ -608,4 +682,36 @@ test("a rebuild probes log readability first and keeps the old index when the ho
 	);
 	assert.equal(await canListSessions({}), false, "no seam at all is not listable");
 	assert.equal(await canListSessions(undefined), false);
+});
+
+test("the pre-handle seam re-folds a moved revision from the seed boundary", async () => {
+	// The legacy readFrom branch trusted consumedSeq+1 forever: after a seq
+	// renumbering the checkpoint pointed past the new end, every tail read
+	// came back empty, and the session silently stopped counting (the handle
+	// branch already healed this; this is the same fix for old hosts).
+	await withStore(async (store) => {
+		const reads = [];
+		const log = { revision: "r1", events: [headerAt(100), messageAt(101, 1, 200, 20)] };
+		const persistence = {
+			async listSnapshots() {
+				return [{ header: { version: 0, id: "s1", createdAt: DAY }, revision: log.revision }];
+			},
+			async readFrom(id, fromSeq) {
+				reads.push(fromSeq);
+				return { events: log.events.filter((e) => e.seq >= fromSeq) };
+			}
+		};
+		const first = await sweep(persistence, store, {});
+		assert.equal(first.updated, 1);
+		assert.equal(store.totals().inputTokens, 200);
+
+		// Migration: same conversation, renumbered from zero, one more turn.
+		log.revision = "r2";
+		log.events = [headerAt(0), messageAt(1, 1, 200, 20), messageAt(2, 2, 50, 5)];
+		const second = await sweep(persistence, store, {});
+		assert.equal(second.updated, 1, "a moved revision re-folds instead of reading an empty tail");
+		assert.ok(reads.includes(0), `the re-fold starts at the seed boundary, got reads at ${JSON.stringify(reads)}`);
+		assert.equal(store.totals().inputTokens, 250);
+		assert.equal(store.totals().requests, 2, "wholesale replace means no double count");
+	});
 });

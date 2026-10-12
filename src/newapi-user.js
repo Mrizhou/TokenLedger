@@ -131,6 +131,11 @@ export function createNewApiWalletReader() {
 	const cache = createCache();
 	let closed = false;
 	let generation = 0;
+	// Disposal aborts in-flight reads: without this a disposed reader's
+	// requests (carrying Authorization + New-Api-User headers) fly until
+	// their 10 s timeout after uninstall. The generation check already drops
+	// their results; this stops the requests themselves.
+	const lifetime = new AbortController();
 	const assertOpen = () => {
 		if (closed) throw Object.assign(new Error("disposed"), { kind: "aborted" });
 	};
@@ -142,8 +147,18 @@ export function createNewApiWalletReader() {
 		read: async (options) => {
 			assertOpen();
 			const captured = generation;
+			// The caller's signal and the reader's lifetime race: whichever
+			// aborts first wins. A per-read controller keeps the lifetime
+			// abort from leaking into the caller's signal.
+			const combined = new AbortController();
+			const onLifetimeAbort = () => combined.abort(lifetime.signal.reason);
+			const onCallerAbort = () => combined.abort(options?.signal?.reason);
+			if (lifetime.signal.aborted) combined.abort(lifetime.signal.reason);
+			else lifetime.signal.addEventListener("abort", onLifetimeAbort, { once: true });
+			if (options?.signal?.aborted === true) combined.abort(options.signal.reason);
+			else options?.signal?.addEventListener?.("abort", onCallerAbort, { once: true });
 			try {
-				const value = await readWallet(cache, options);
+				const value = await readWallet(cache, { ...options, signal: combined.signal });
 				if (closed || captured !== generation) {
 					clear();
 					throw Object.assign(new Error("disposed"), { kind: "aborted" });
@@ -155,6 +170,9 @@ export function createNewApiWalletReader() {
 					throw Object.assign(new Error("disposed"), { kind: "aborted", cause: error });
 				}
 				throw error;
+			} finally {
+				lifetime.signal.removeEventListener("abort", onLifetimeAbort);
+				options?.signal?.removeEventListener?.("abort", onCallerAbort);
 			}
 		},
 		forget: (origin) => cache.wallets.delete(origin),
@@ -163,6 +181,7 @@ export function createNewApiWalletReader() {
 		dispose: () => {
 			closed = true;
 			generation++;
+			lifetime.abort(new Error("disposed"));
 			clear();
 		}
 	});

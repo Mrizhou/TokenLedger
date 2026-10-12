@@ -290,10 +290,18 @@ export class LedgerStore {
 			for (const column of COLUMNS) entry.totals[column] += buckets[column];
 		}
 
-		const cursor = JSON.parse(checkpoint.cursor);
+		let cursor;
+		try {
+			cursor = JSON.parse(checkpoint.cursor);
+		} catch {
+			// A corrupted cursor must not freeze the session forever: the rows
+			// are still good, and consumedSeq alone suffices to keep reading
+			// the tail. Drop the sample/route hints and carry on.
+			cursor = null;
+		}
 		state.consumedSeq = Number(checkpoint.consumedSeq);
-		state.lastSample = cursor.lastSample ?? null;
-		state.currentRoute = cursor.currentRoute ?? null;
+		state.lastSample = cursor?.lastSample ?? null;
+		state.currentRoute = cursor?.currentRoute ?? null;
 		state.lastUsageAt = checkpoint.lastUsageAt === null ? undefined : Number(checkpoint.lastUsageAt);
 		return state;
 	}

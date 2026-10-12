@@ -230,3 +230,21 @@ test("effectiveDates names a model's rate-change dates, ascending and deduplicat
 	assert.deepEqual(table.effectiveDates("m"), ["2026-01-01", "2026-06-01"]);
 	assert.deepEqual(table.effectiveDates("unknown"), []);
 });
+
+test("windowedModels names models whose time-of-day rates can never win here", () => {
+	// No pricing entry passes timeMs, so a windowed rate is inert: rateFor
+	// skips it. Naming it lets the panel say so instead of silently pricing
+	// everything at the general rate.
+	const table = new RateTable([
+		{ model: "plain", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 4 } },
+		{
+			model: "peaky",
+			currency: "CNY",
+			effectiveFrom: "2026-01-01",
+			window: DEEPSEEK_OFF_PEAK,
+			perMillion: { inputTokens: 1 }
+		}
+	]);
+	assert.deepEqual(table.windowedModels(), ["peaky"]);
+	assert.deepEqual(new RateTable([]).windowedModels(), []);
+});

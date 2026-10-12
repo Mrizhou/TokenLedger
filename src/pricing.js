@@ -153,6 +153,24 @@ export class RateTable {
 	}
 
 	/**
+	 * Models carrying at least one windowed (time-of-day) rate.
+	 *
+	 * None of this plugin's pricing entries passes `timeMs`, so a windowed
+	 * rate can never win: `rateFor` skips it and falls back to the general
+	 * rate (or to unpriced when there is none). That is silent misconfiguration
+	 * — the user wrote peak/off-peak prices and the panel prices everything
+	 * at the general rate without saying so. Callers surface these names in
+	 * `warnings` so the panel can say it.
+	 */
+	windowedModels() {
+		const out = [];
+		for (const [model, list] of this.#byModel) {
+			if (list.some((rate) => rate.window !== undefined)) out.push(model);
+		}
+		return out;
+	}
+
+	/**
 	 * The dates a model's prices change on, ascending. For splitting a usage
 	 * delta that spans a rate change into per-generation segments: each
 	 * segment is priced at the rates in force inside it, instead of pricing

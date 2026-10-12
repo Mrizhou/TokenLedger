@@ -63,6 +63,7 @@ function createView(input) {
 		version: typeof source.version === "string" ? source.version : "unknown",
 		generatedAt: Number.isFinite(source.generatedAt) ? source.generatedAt : Date.now(),
 		timeZone: clone(source.timeZone, {}),
+		...(Number.isFinite(source.dayOffsetMinutes) ? { dayOffsetMinutes: source.dayOffsetMinutes } : {}),
 		range: clone(source.range, {}),
 		...(typeof source.site === "string" ? { site: source.site } : {}),
 		...(typeof source.provider === "string" ? { provider: source.provider } : {}),
@@ -96,6 +97,7 @@ function createSummary(input, revision) {
 		capturedAt: view.generatedAt,
 		version: view.version,
 		timeZone: view.timeZone,
+		...(view.dayOffsetMinutes === undefined ? {} : { dayOffsetMinutes: view.dayOffsetMinutes }),
 		totals: {
 			selected: view.totals,
 			today: view.windows.today ?? {},

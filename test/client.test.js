@@ -487,6 +487,33 @@ test("an unpriced range says so with an em dash, never a zero", async () => {
 	assert.ok(priced.includes("+"), "separate currencies stay separate");
 });
 
+test("a range with rows but no prices shows an em dash cost line, not silence", async () => {
+	// Rows exist but nothing priced: omitting the cost section reads as a
+	// missing column. The line must still print, with —.
+	const { exports, render } = await loadBundle();
+	const text = textOf(
+		render(
+			exports.StatCaption,
+			{ data: payload({ priced: { totals: {}, rows: [{ model: "m", cost: null }] } }), translate: T }
+		)
+	);
+	assert.ok(text.includes("caption.cost"), "the cost line prints even when nothing priced");
+});
+
+test("a nonzero cost below display precision prints as below-precision, never zero", async () => {
+	// ¥0.00002 of cache-hit tokens is real money that adds up. Printing it
+	// as ¥0.0000 reads as free.
+	const { exports, render } = await loadBundle();
+	const text = textOf(
+		render(
+			exports.StatCaption,
+			{ data: payload({ priced: { totals: { CNY: 0.00002 } } }), translate: T }
+		)
+	);
+	assert.ok(text.includes("<0.0001"), `below-precision marker, got ${text}`);
+	assert.ok(!text.includes("0.0000"), "never a rounded zero");
+});
+
 test("the site breakdown lists every site even while one is selected", async () => {
 	// It is how you CHANGE the selection; hiding the others strands you on
 	// whatever you last clicked.
@@ -699,6 +726,26 @@ test("two routes on one model are two rows with distinct keys", async () => {
 		.filter((key) => key !== undefined);
 	assert.equal(keys.length, 2, "both rows render");
 	assert.equal(new Set(keys).size, 2, "and they are addressed as two rows, not one");
+});
+
+test("a route row without its own cost stays costless, never the model total", async () => {
+	// Pasting the model-wide total onto every costless route would print the
+	// same total N times and sum to N× spent. Only model-only hosts use the
+	// model-wide fallback.
+	const { exports, render } = await loadBundle();
+	const text = textOf(
+		render(exports.ModelTable, {
+			data: payload({
+				modelRoutes: [
+					{ provider: "a", model: "m", requests: 1, inputTokens: 100 },
+					{ provider: "b", model: "m", requests: 1, inputTokens: 100 }
+				],
+				priced: { rows: [{ model: "m", cost: 9, currency: "CNY", priced: true, unpricedBuckets: [] }], totals: { CNY: 9 } }
+			}),
+			translate: T
+		})
+	);
+	assert.ok(!text.includes("9"), `no route may print the model-wide total, got ${text}`);
 });
 
 test("a route row keeps its own figures, even when the host also sends model-wide priced rows", async () => {

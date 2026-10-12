@@ -312,3 +312,32 @@ test("a 429 carrying retry-after backs off for exactly that long, not the doubli
 		forgetWallet(origin);
 	}
 });
+
+test("disposing the reader aborts in-flight requests instead of letting them fly", async () => {
+	// Uninstall with a wallet read in flight: the request carries Authorization
+	// + New-Api-User headers and must not outlive the plugin by up to 10 s.
+	const origin = "https://dispose-race.example";
+	let released;
+	const gate = new Promise((resolve) => {
+		released = resolve;
+	});
+	try {
+		const reader = createNewApiWalletReader();
+		const { fetch } = recorder([
+			[
+				"/api/user/self",
+				async () => {
+					await gate;
+					return okJson(selfBody);
+				}
+			],
+			["/api/status", okJson(statusBody)]
+		]);
+		const pending = reader.read({ origin, userId: 42, token: "tok", fetch, now: 0 });
+		reader.dispose();
+		released();
+		await assert.rejects(pending, (error) => error.kind === "aborted");
+	} finally {
+		forgetWallet(origin);
+	}
+});

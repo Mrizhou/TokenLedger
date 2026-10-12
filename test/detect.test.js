@@ -177,3 +177,20 @@ test("an origin with a port survives normalization", async () => {
 	});
 	assert.ok(asked.every((u) => u.startsWith("http://127.0.0.1:3000/")), asked.join(" "));
 });
+
+test("an aborted probe stops waiting instead of flying six orphaned requests", async () => {
+	// The panel closed mid-probe: without the signal the six 10-second
+	// requests fly on after nobody is listening.
+	const controller = new AbortController();
+	controller.abort();
+	const seen = [];
+	const result = await detectRelaySoftware("https://relay.example", {
+		fetch: async (url, init) => {
+			seen.push({ url: String(url), signaled: init?.signal?.aborted });
+			return { status: 200 };
+		},
+		signal: controller.signal
+	});
+	assert.equal(seen.length, 0, "no request goes out once aborted");
+	assert.ok(result !== undefined, "an aborted probe still answers, scored from zeros");
+});

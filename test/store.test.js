@@ -346,3 +346,40 @@ test("one model served by two routes is one row by model and two rows by route",
 		);
 	});
 });
+
+test("a corrupted checkpoint cursor does not freeze the session", () => {
+	// The cursor is JSON; a torn write or a hand edit can leave it unparsable.
+	// loadState used to throw, which the sweep caught per-session forever —
+	// the session froze at its old totals with one warn per sweep. Now the
+	// rows stand and the tail continues from consumedSeq.
+	const dir = mkdtempSync(join(tmpdir(), "tokenledger-cursor-"));
+	const path = join(dir, "ledger.sqlite");
+	try {
+		const store = LedgerStore.open(path);
+		try {
+			const state = applyUsageDelta(store.loadState("s1"), [
+				header("deepseek", "v4"),
+				message(1, 1, "deepseek", "v4", usage(100, 50))
+			]);
+			store.commitSession("s1", state);
+			assert.equal(store.totals().inputTokens, 100);
+			const seq = state.consumedSeq;
+
+			// Corrupt the cursor directly, the way a torn write would.
+			const raw = new DatabaseSync(path);
+			raw.prepare("UPDATE checkpoints SET cursor = 'not-json{{' WHERE sessionId = 's1'").run();
+			raw.close();
+
+			const reloaded = store.loadState("s1");
+			assert.equal(reloaded.consumedSeq, seq, "the tail continues from the stored seq");
+			assert.equal(reloaded.lastSample, null);
+			assert.equal(reloaded.currentRoute, null);
+			// The rows survived: totals still read.
+			assert.equal(store.totals().inputTokens, 100);
+		} finally {
+			store.close();
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

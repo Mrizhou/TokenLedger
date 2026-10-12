@@ -94,6 +94,22 @@ test("a model with no price is named, not charged as free", () => {
 	assert.deepEqual(card.unpricedModels, ["mimo-v9-unknown"]);
 });
 
+test("a row missing buckets charges zero for them, and a foreign currency never converts", () => {
+	// Old rollups may lack cacheWriteTokens; `?? 0` must hold or NaN spreads.
+	const thin = [{ provider: "xiaomi", model: "mimo-v2.6-flash" }];
+	const spent = spentBetween([], thin, official, "2026-10-04", "CNY");
+	assert.equal(spent.cost, 0);
+
+	// A USD-priced row against a CNY balance: named, not converted, not added.
+	const usdTable = new RateTable([{ model: "usd-m", currency: "USD", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 10 } }]);
+	const usdFor = Object.assign((model, day) => usdTable.rateFor(model, day), {
+		effectiveDates: (model) => usdTable.effectiveDates(model)
+	});
+	const mixed = spentBetween([], [row("usd-m", { inputTokens: 1_000_000 }, "r")], usdFor, "2026-10-04", "CNY");
+	assert.equal(mixed.cost, 0);
+	assert.deepEqual(mixed.unpricedModels, ["usd-m"]);
+});
+
 test("the user's own rates win; the shipped list covers what they leave out", () => {
 	const rateFor = manualRateLookup(
 		[{ model: "mimo-v2.6-pro", currency: "CNY", effectiveFrom: "2026-08-01", perMillion: { inputTokens: 10, cacheReadTokens: 0, outputTokens: 0 } }],
@@ -115,7 +131,9 @@ test("the snapshot reads every route folded into the account", () => {
 	};
 	const snap = usageSnapshot(store, ["xiaomi", "xiaomi-tp", "xiaomi"]);
 	assert.deepEqual(asked, ["xiaomi", "xiaomi-tp"]);
+	assert.deepEqual(snap.length, 2, "one entry per route, none lost or doubled");
 	assert.deepEqual(snap[0], { provider: "xiaomi", model: "mimo-v2.6-flash", inputTokens: 1, cacheReadTokens: 2, cacheWriteTokens: 0, outputTokens: 3 });
+	assert.equal(snap[1].provider, "xiaomi-tp");
 });
 
 test("a delta spanning a rate change is split at the change dates, not priced whole at today's rates", () => {

@@ -156,12 +156,38 @@ function localDayKey(date) {
 	return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function rangeFor(id) {
+/**
+ * `YYYY-MM-DD` on the ledger's calendar, not the local one. The server cuts
+ * days at `dayOffsetMinutes` east of UTC when configured (480 for Beijing);
+ * without it the host's local calendar applies. Blue must cut its own range
+ * endpoints on the same calendar, or "this month" starts a day off from the
+ * card it sits beside whenever the two zones disagree.
+ */
+function ledgerDayKey(timeMs, offsetMinutes) {
+	if (!Number.isFinite(offsetMinutes)) return localDayKey(new Date(timeMs));
+	const date = new Date(timeMs + offsetMinutes * 60_000);
+	const pad = (n) => String(n).padStart(2, "0");
+	return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+
+/**
+ * The ledger's day-cut offset, when the server sent one. Blue cuts its own
+ * range endpoints on the server's calendar; without it the local one applies,
+ * exactly as the server does when unconfigured.
+ */
+function offsetOf(snapshot) {
+	const value = snapshot?.dayOffsetMinutes;
+	return Number.isFinite(value) ? value : undefined;
+}
+
+function rangeFor(id, offsetMinutes = undefined) {
 	if (id === "all") return {};
-	const now = new Date();
-	now.setHours(0, 0, 0, 0);
-	if (id === "month") now.setDate(1);
-	return { from: localDayKey(now) };
+	if (id === "month") {
+		// First of the month on the ledger's calendar.
+		const today = ledgerDayKey(Date.now(), offsetMinutes);
+		return { from: `${today.slice(0, 7)}-01` };
+	}
+	return { from: ledgerDayKey(Date.now(), offsetMinutes) };
 }
 
 function eventOf(value) {
@@ -413,7 +439,7 @@ export function mountTokenLedgerBlue(ctx, controller, lifecycle = {}) {
 				try {
 					raw = await controller.queryUsage({
 						requestId,
-						range: rangeFor(state.range),
+						range: rangeFor(state.range, offsetOf(state.snapshot)),
 						...(state.site === undefined ? {} : { site: state.site }),
 						...(provider === undefined ? {} : { provider })
 					}, { signal: operation.controller.signal });
@@ -484,7 +510,7 @@ export function mountTokenLedgerBlue(ctx, controller, lifecycle = {}) {
 				offset: page * TOKEN_LEDGER_BLUE_MODEL.pageSize,
 				limit: TOKEN_LEDGER_BLUE_MODEL.pageSize,
 				...(sortBy === undefined ? {} : { sortBy, direction }),
-				range: rangeFor(state.range),
+				range: rangeFor(state.range, offsetOf(state.snapshot)),
 				...(state.site === undefined ? {} : { site: state.site }),
 				...(provider === undefined ? {} : { provider })
 			}, { signal: operation.controller.signal });

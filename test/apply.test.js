@@ -444,6 +444,47 @@ test("on a host with no settings namespace, panel credentials land in a file and
 	}
 });
 
+test("a typed balance with a damaged baseline reads unfilled, not deeply negative", async () => {
+	// A hand-edited credentials file (or a pre-baseline entry) can leave a
+	// baseline that is not an array. Charging all history against the typed
+	// figure would open deep negative; the card must ask for a retype instead.
+	const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const { PassThrough } = await import("node:stream");
+	const dir = mkdtempSync(join(tmpdir(), "tokenledger-badbase-"));
+	const credentialsPath = join(dir, "tokenledger-credentials.json");
+	writeFileSync(credentialsPath, JSON.stringify({ userAuth: {}, manualBalances: { xiaomi: { amount: 10, currency: "CNY", at: 1, baseline: "oops" } } }));
+	const xiaomi = {
+		providers: [{ provider: "xiaomi", settingsNs: "llm-pi-ai", settingsPath: ["providers", "xiaomi"], declared: false }],
+		section: { providers: { xiaomi: { apiKeyEnv: "XIAOMI_API_KEY" } } }
+	};
+	const call = async (route, method, url, body) => {
+		const sent = [];
+		const stream = new PassThrough();
+		stream.end(body === undefined ? "" : JSON.stringify(body));
+		await route.handler(
+			Object.assign(stream, { method, url, headers: { host: "127.0.0.1", "x-tokenledger": "1" }, socket: { remoteAddress: "127.0.0.1" } }),
+			{ writeHead: (s) => sent.push(s), end: (b) => sent.push(b) }
+		);
+		return { status: sent[0], body: JSON.parse(sent[1]) };
+	};
+	try {
+		const routes = [];
+		const httpServer = { register: (spec) => (routes.push(spec), () => {}) };
+		const { ctx, dispose } = fakeContext({ ...xiaomi, services: { httpServer } });
+		apply(ctx, { database: ":memory:", credentialsPath, sweepIntervalMs: 0, sweepOnStart: false });
+		await settle();
+		const balance = routes.find((r) => r.path === "/api/tokenledger/balance");
+		const card = (await call(balance, "GET", "/api/tokenledger/balance?account=xiaomi")).body;
+		assert.equal(card.fetched, false, "a damaged baseline is unentered, not a deficit");
+		assert.equal(card.reason, "no-manual-balance");
+		await dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("the 阿里云 AccessKey is stored once, shown masked, and signs the 百炼 card's read", async () => {
 	const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
 	const { tmpdir } = await import("node:os");
@@ -574,4 +615,30 @@ test("a rebuild that cannot list the logs keeps the old index instead of blankin
 		} catch {}
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("a failed sweep is visible in diagnostics instead of vanishing into the log", async () => {
+	// Sweep failures are silent by design (a failed collection must not break
+	// the panel), but "the panel is not growing and nothing says why" needs
+	// an answer somewhere `/tokenledger diagnostics` can show.
+	const { ctx, dispose } = fakeContext({
+		events: [turn(1, "deepseek")],
+		persistence: {
+			listSnapshots: async () => [{ header: { id: "s1" }, revision: "r1" }],
+			readFrom: async () => {
+				throw new Error("log unreadable");
+			}
+		}
+	});
+	const services = captureServices(ctx);
+	apply(ctx, { database: ":memory:", sweepIntervalMs: 0, sweepOnStart: false, detect: async () => ({ billingAvailable: false }) });
+	await settle();
+	const api = services.get("tokenLedger");
+	const stats = await api.sweep();
+	assert.equal(stats.failed, 1);
+	const d = api.diagnostics();
+	assert.equal(d.lastSweepFailed, 1);
+	assert.ok(typeof d.lastSweepError === "string" && d.lastSweepError.length > 0);
+	assert.ok(typeof d.lastSweepAt === "number");
+	await dispose();
 });

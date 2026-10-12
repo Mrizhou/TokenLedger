@@ -83,6 +83,16 @@ test("a response with no recognisable windows says which fields were missing", a
 	assert.match(result.reason, /rolling/);
 });
 
+test("a counts-shaped window that is spent reads unavailable, not green", async () => {
+	// isAvailable used to look only at usedPercent: a counts window at its
+	// limit has no usedPercent, defaulted to 0%, and the card said usable.
+	// The user started work and the upstream refused.
+	const spent = await read("opencode-go", "https://opencode.ai", serve({ usage: { monthly: { used: 1000, limit: 1000 } } }));
+	assert.equal(spent.isAvailable, false);
+	const fresh = await read("opencode-go", "https://opencode.ai", serve({ usage: { monthly: { used: 10, limit: 1000 } } }));
+	assert.equal(fresh.isAvailable, true);
+});
+
 test("the local OpenCode key is used only when the route carries none", async () => {
 	const auth = JSON.stringify({ "opencode-go": { type: "api", key: "  local-key  " } });
 	const deps = { readFile: async () => auth, homedir: () => "/home/someone" };
@@ -189,6 +199,27 @@ test("minimax keeps a window whose status is exhausted or unlimited", async () =
 		serve({ model_remains: [remains({ current_weekly_status: 3, current_weekly_remaining_percent: undefined })] })
 	);
 	assert.deepEqual(unmetered.windows.at(-1), { kind: "weekly", unlimited: true });
+});
+
+test("a spent remaining-percent window reads unavailable, not green", async () => {
+	// isAvailable used to look only at usedPercent: a remainingPercent window
+	// at 0% remaining has no usedPercent, defaulted to 0%, and the card said
+	// usable while the quota was gone.
+	const spent = await read(
+		"minimax",
+		"https://api.minimax.io",
+		serve({
+			model_remains: [
+				remains({
+					current_interval_status: 1,
+					current_interval_remaining_percent: 0,
+					current_weekly_status: 1,
+					current_weekly_remaining_percent: 0
+				})
+			]
+		})
+	);
+	assert.equal(spent.isAvailable, false);
 });
 
 test("minimax reads camelCase payloads as well as snake_case ones", async () => {

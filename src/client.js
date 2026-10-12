@@ -634,6 +634,11 @@ window.__ModuleLoader__.load({
 		function fmtMoney(amount, currency) {
 			if (typeof amount !== "number" || !Number.isFinite(amount)) return "—";
 			const symbol = currency === "CNY" ? "¥" : currency === "USD" ? "$" : "";
+			// A nonzero figure below display precision is not free: print it as
+			// below-precision rather than rounding it to a zero that reads free.
+			if (amount !== 0 && Math.abs(amount) < 0.00005) {
+				return symbol === "" ? `<0.0001 ${currency ?? ""}`.trim() : `${symbol}<0.0001`;
+			}
 			const text = amount.toFixed(amount < 1 ? 4 : 2);
 			return symbol === "" ? `${text} ${currency ?? ""}`.trim() : `${symbol}${text}`;
 		}
@@ -1026,6 +1031,10 @@ window.__ModuleLoader__.load({
 			];
 			if (currencies.length > 0) {
 				parts.push(translate("caption.cost", { cost: currencies.map(([c, v]) => fmtMoney(v, c)).join(" + ") }));
+			} else if ((data.priced?.rows ?? []).length > 0) {
+				// Rows exist but none priced: the cost section must still say
+				// something, or "no cost shown" reads as a missing column.
+				parts.push(translate("caption.cost", { cost: "—" }));
 			}
 			if (partials.length > 0) {
 				parts.push(translate("caption.partial", { cost: partials.map(([c, v]) => `~${fmtMoney(v, c)}`).join(" + ") }));
@@ -1527,6 +1536,11 @@ window.__ModuleLoader__.load({
 			// model-only rows, where the scopes match.
 			const rows = source.map((m) => {
 				if (m.cost !== undefined) return m;
+				// The model-wide fallback is only for hosts that send model-only
+				// rows, where the scopes match. A route row without its own cost
+				// must stay costless: pasting the model-wide total onto every
+				// route would print the same total N times and sum to N× spent.
+				if (routes.length > 0) return m;
 				const money = priced.get(m.model);
 				if (money === undefined) return m;
 				return { ...m, cost: money.cost, currency: money.currency, priced: money.priced, unpricedBuckets: money.unpricedBuckets, partial: money.partial };
@@ -2604,7 +2618,11 @@ window.__ModuleLoader__.load({
 			for (const date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
 				const key = localDayKey(date);
 				const row = byDay.get(key);
-				const value = metric === "cost" ? (row?.cost ?? 0) : (row?.tokens ?? 0);
+				// An idle day (no row at all) is a zero for both metrics: nothing
+				// ran, so nothing is unknown. An unpriced day (a row without a
+				// cost) stays valueless on the cost metric only — drawing
+				// unknown as 0 would read as "that day was free".
+				const value = row === undefined ? 0 : metric === "cost" ? (typeof row.cost === "number" ? row.cost : undefined) : (row.tokens ?? 0);
 				points.push({ day: key, value, row });
 			}
 			return points;
@@ -2612,6 +2630,7 @@ window.__ModuleLoader__.load({
 
 		/** One value as the axis and the tooltip print it. */
 		function trendValue(value, metric, currency) {
+			if (value === undefined) return "—";
 			return metric === "cost" ? fmtMoney(value, currency) : fmtCompact(value);
 		}
 
@@ -2639,11 +2658,25 @@ window.__ModuleLoader__.load({
 			const B = TREND_BOX;
 			const plotW = B.width - B.left - B.right;
 			const plotH = B.height - B.top - B.bottom;
-			const max = niceCeil(Math.max(0, ...points.map((p) => p.value)));
+			const max = niceCeil(Math.max(0, ...points.map((p) => p.value ?? 0)));
 			const xAt = (i) => B.left + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
-			const yAt = (v) => B.top + plotH - (v / max) * plotH;
-			const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(1)},${yAt(p.value).toFixed(1)}`).join("");
-			const total = points.reduce((sum, p) => sum + p.value, 0);
+			const yAt = (v) => B.top + plotH - ((v ?? 0) / max) * plotH;
+			// The line breaks over unpriced days: consecutive valued points
+			// form one subpath each, so unknown never draws as zero.
+			const path = (() => {
+				let d = "";
+				let pen = false;
+				points.forEach((p, i) => {
+					if (p.value === undefined) {
+						pen = false;
+						return;
+					}
+					d += `${pen ? "L" : "M"}${xAt(i).toFixed(1)},${yAt(p.value).toFixed(1)}`;
+					pen = true;
+				});
+				return d;
+			})();
+			const total = points.reduce((sum, p) => sum + (p.value ?? 0), 0);
 
 			// The crosshair snaps to the nearest DAY under the pointer; nobody has
 			// to land on a 2px line to read it.
@@ -3029,7 +3062,9 @@ window.__ModuleLoader__.load({
 			const badgeTokens = state.data === undefined ? "" : fmtCompact(todayWindow?.tokens);
 			const badgeCost = todayCostAmount === null || todayCostAmount === undefined
 				? ""
-				: fmtMoney(todayCostAmount.cost, todayCostAmount.currency);
+				: todayCostAmount.costs !== undefined
+					? Object.entries(todayCostAmount.costs).map(([c, v]) => fmtMoney(v, c)).join(" + ")
+					: fmtMoney(todayCostAmount.cost, todayCostAmount.currency);
 			const totalLabel = [badgeTokens, badgeCost].filter(Boolean).join(" · ");
 			// The second line: what is left behind the model the open session is
 			// set to. The hover names that route and model, since the line itself

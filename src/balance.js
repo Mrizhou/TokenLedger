@@ -492,7 +492,9 @@ export const SCHEMES = {
 				quota === undefined || scale === undefined ? undefined : Math.round(quota * scale * 1e6) / 1e6;
 			const unlimited = data.unlimited_quota === true;
 			return {
-				isAvailable: unlimited || (available ?? 0) > 0,
+				// Unknown is not empty: an unreadable quota must not render as
+				// "no money". Only a read zero counts as spent.
+				isAvailable: unlimited ? true : available === undefined ? undefined : available > 0,
 				unlimited,
 				currency: scale === undefined ? undefined : unitCurrency,
 				// An unlimited key has no remaining quota to report, and New API
@@ -1221,7 +1223,8 @@ export function createBalanceReader(ctx, options = {}) {
 		if (scheme === undefined && (request.force === true || retryAt === undefined || now() >= retryAt)) {
 			try {
 				const detect = options.detect ?? detectRelaySoftware;
-				const result = await detect(account.origin);
+				const result = await detect(account.origin, { signal });
+				if (signal?.aborted === true) return { ok: true, account: account.id, supported: true, fetched: false, reason: "aborted" };
 				if (result.billingAvailable) {
 					scheme = result.software;
 					misses.delete(account.origin);

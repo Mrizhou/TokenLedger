@@ -140,7 +140,7 @@ export const OPENCODE_GO = {
 		].filter(Boolean);
 		return {
 			plan: label(pick(usage, "plan", "planName")) ?? "Go",
-			isAvailable: windows.length === 0 ? undefined : windows.every((w) => (w.usedPercent ?? 0) < 100),
+			isAvailable: windows.length === 0 ? undefined : windows.every((w) => windowHasRoom(w) !== false),
 			windows,
 			...(windows.length === 0 ? { reason: "no rolling/weekly/monthly usage in the response" } : {})
 		};
@@ -196,6 +196,36 @@ const MINIMAX_SIBLING = new Map([
  * silently, because an empty list is not an error.
  */
 const MINIMAX_CHAT_MODEL = /^(minimax|abab|coding-plan)/i;
+
+/**
+ * A window's used percentage, whatever shape it arrived in. Percent fields
+ * win; counts and remaining-percent fall back in that order. Undefined when
+ * the window carries no usable quota figure at all — which is "unknown", not
+ * "empty": defaulting it to 0% would paint an exhausted allowance green.
+ */
+function windowUsedPercent(w) {
+	if (w === null || typeof w !== "object") return undefined;
+	const percent = toNumber(pick(w, "percent", "usedPercent", "percentUsed"));
+	if (percent !== undefined) return percent;
+	if (typeof w.used === "number" && typeof w.limit === "number" && w.limit > 0) {
+		return (w.used / w.limit) * 100;
+	}
+	const remaining = toNumber(pick(w, "remainingPercent", "remaining_percent"));
+	if (remaining !== undefined) return 100 - remaining;
+	return undefined;
+}
+
+/**
+ * Whether a window still has room. Unlimited is room; a window with no usable
+ * figure abstains (undefined) instead of voting "available" — unknown is not
+ * empty, and defaulting it to 0% used painted exhausted allowances green.
+ */
+function windowHasRoom(w) {
+	if (w === null || typeof w !== "object") return undefined;
+	if (w.unlimited === true) return true;
+	const used = windowUsedPercent(w);
+	return used === undefined ? undefined : used < 100;
+}
 
 /**
  * The window status codes, as far as they can be told apart.
@@ -259,7 +289,7 @@ export const MINIMAX = {
 
 		return {
 			plan: "MiniMax Coding Plan",
-			isAvailable: windows.length === 0 ? undefined : windows.some((w) => w.unlimited === true || (w.usedPercent ?? 0) < 100),
+			isAvailable: windows.length === 0 ? undefined : windows.some((w) => windowHasRoom(w) === true),
 			windows,
 			...(windows.length === 0 ? { reason: "the chat-model entry carries no usable quota fields" } : {})
 		};

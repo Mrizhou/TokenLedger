@@ -171,6 +171,24 @@ test("csv export neutralises spreadsheet formula cells", () => {
 	}
 });
 
+test("csv export neither over-escapes plain names nor skips comma cells", () => {
+	// The reverse direction of the formula guard: a blanket apostrophe on
+	// every cell would corrupt plain names, and a column that skips csvCell
+	// would break the parse on commas and quotes.
+	const csv = withStore((store) => {
+		const state = createUsageState();
+		applyUsageDelta(state, [
+			message(1, 1, "p", "plain-model", { inputTokens: 10, outputTokens: 1 }),
+			message(2, 1, "p", 'comma,"quoted"', { inputTokens: 20, outputTokens: 2 })
+		]);
+		store.commitSession("s1", state);
+		return store.exportCsv();
+	});
+	assert.ok(csv.includes("plain-model"), "a plain name prints bare");
+	assert.ok(!csv.includes("'plain-model"), "no apostrophe where none is needed");
+	assert.ok(csv.includes('"comma,""quoted"""'), `comma/quote cell quoted per RFC 4180, got ${JSON.stringify(csv)}`);
+});
+
 // --- discovery: the blank/junk baseURL family --------------------------------
 
 test("a blank or junk base URL is read as absent, so the built-in table still speaks", () => {
@@ -333,7 +351,7 @@ test("the shipped DeepSeek prices never price another route's rows", () => {
 		const scoped = priceWithConfiguredRates(store, {}, undefined, undefined);
 		assert.equal(scoped.rows.length, 1, "the shipped list prices the official ROUTE's rows and nothing else");
 
-		assert.deepEqual(priceWithConfiguredRates(store, {}, undefined, undefined, "ali"), { rows: [], totals: {}, unpricedModels: [], partialTotals: {}, partialModels: [] });
+		assert.deepEqual(priceWithConfiguredRates(store, {}, undefined, undefined, "ali"), { rows: [], totals: {}, unpricedModels: [], partialTotals: {}, partialModels: [], warnings: [] });
 
 		// A user-supplied `rates` is the user's own pricing and prices every row.
 		assert.equal(priceWithConfiguredRates(store, {}, undefined, DEEPSEEK_OFFICIAL_RATES, "ali").rows.length, 1);
@@ -356,6 +374,27 @@ test("a range straddling a rate change prices each day at its own rates", () => 
 		];
 		const got = priceWithConfiguredRates(store, { from: "2026-05-31", to: "2026-06-01" }, undefined, rates);
 		assert.equal(got.totals.CNY, 6, "¥4 for the old day + ¥2 for the new day, not ¥8 or ¥4 for both");
+	});
+});
+
+test("a custom rates table that prices no official model warns why the 估算 column is em dash", () => {
+	withStore((store) => {
+		const state = createUsageState();
+		applyUsageDelta(state, [
+			message(1, 1, "deepseek-official", "deepseek-v4-flash", { inputTokens: 1_000_000 })
+		]);
+		store.commitSession("s1", state);
+		// The user's table prices only their relay model: the shipped list is
+		// replaced wholesale, so the official row goes unpriced.
+		const rates = [
+			{ model: "my-relay-model", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 1 } }
+		];
+		const got = priceWithConfiguredRates(store, {}, undefined, rates);
+		assert.deepEqual(got.unpricedModels, ["deepseek-v4-flash"]);
+		assert.ok(
+			got.warnings.some((w) => w.includes("replace the shipped DeepSeek list")),
+			`the panel must say why, got ${JSON.stringify(got.warnings)}`
+		);
 	});
 });
 

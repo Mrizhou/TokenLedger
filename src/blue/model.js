@@ -608,12 +608,20 @@ function siteDashboard(state, source) {
 function modelCost(source, model) {
 	const direct = optionalNumber(record(model.pricing).cost);
 	if (direct !== undefined) return direct;
+	// Route rows carry their own cost (attached by the server per route+model).
+	const own = optionalNumber(record(model).cost);
+	if (own !== undefined) return own;
 	const priced = array(record(source.priced).rows).find((value) => text(record(value).model) === text(model.model));
 	return priced === undefined ? undefined : optionalNumber(record(priced).cost);
 }
 
 function modelDashboard(state, source) {
-	const values = array(source.models).map((value) => record(value));
+	// Route-qualified rows first: one model served by two routes is two rows
+	// here, named `<provider>/<model>` like the Web panel (one slash: the
+	// route segment replaces the vendor segment). Falls back to model-only
+	// rows for hosts that send no modelRoutes.
+	const routeRows = array(source.modelRoutes).map((value) => record(value));
+	const values = (routeRows.length > 0 ? routeRows : array(source.models)).map((value) => record(value));
 	const sortKey = MODEL_SORTS.some((item) => item.id === state.modelSort) ? state.modelSort : "tokens";
 	const direction = state.modelSortDirection === "asc" ? 1 : -1;
 	const sorted = values.map((value) => ({ value, cost: modelCost(source, value) })).sort((left, right) => {
@@ -621,12 +629,13 @@ function modelDashboard(state, source) {
 		const rightValue = sortKey === "cost" ? right.cost ?? -1 : number(right.value[sortKey]);
 		return direction * (leftValue - rightValue) || text(left.value.model).localeCompare(text(right.value.model));
 	});
-	const window = collectionWindow("models", state, source, sorted.map((entry) => entry.value));
+	const collection = routeRows.length > 0 ? "modelRoutes" : "models";
+	const window = collectionWindow(collection, state, source, sorted.map((entry) => entry.value));
 	const { page } = window;
 	const pageEntries = window.values.map((value) => ({ value: record(value), cost: modelCost(source, record(value)) }));
 	const rows = pageEntries.map((entry, offset) => ({
 		id: `model:${String(page.start + offset)}`,
-		label: text(entry.value.model) || "未知模型",
+		label: routeLabel(entry.value),
 		detail: `${fmt(entry.value.requests)} 次请求 · 总量 ${fmt(entry.value.tokens)} · 输入 ${fmt(entry.value.inputTokens)} · 缓存 ${fmt(entry.value.cacheReadTokens)} · 输出 ${fmt(entry.value.outputTokens)}`,
 		...(entry.cost === undefined ? {} : { badge: money(entry.cost, record(entry.value.pricing).currency || record(source.priced).currency) })
 	}));
@@ -643,6 +652,21 @@ function modelDashboard(state, source) {
 		page.pages > 1 ? message(`第 ${String(page.page + 1)} / ${String(page.pages)} 页 · 共 ${String(window.total)} 个模型`, "muted") : undefined,
 		page.pages > 1 ? page.node : undefined
 	]);
+}
+
+/**
+ * Route-qualified display name: `<provider>/<model>`, one slash. A bare
+ * model id (no route) renders as itself. Mirrors the Web panel's convention
+ * without importing its code (Blue stays isolated from the renderer half).
+ */
+function routeLabel(value) {
+	const model = text(value.model) || "未知模型";
+	const provider = text(value.provider);
+	if (provider === "") return model;
+	// Command Code namespaces ids by model vendor (`deepseek/...`): the route
+	// segment replaces the vendor segment so the label keeps one slash.
+	const short = model.includes("/") ? model.slice(model.indexOf("/") + 1) : model;
+	return `${provider}/${short}`;
 }
 
 function projectDashboard(state, source) {

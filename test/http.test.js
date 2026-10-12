@@ -611,7 +611,7 @@ test("priceToday prices only the official route's rows at today's rates", () => 
 	const store = { byRoute: () => rows };
 	const rates = [{ model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 2 } }];
 	const got = priceToday(store, undefined, rates);
-	assert.deepEqual(got, { cost: 2, currency: "CNY" }, "the relay's 99M tokens must not leak into the badge");
+	assert.deepEqual(got, { cost: 2, currency: "CNY", costs: { CNY: 2 } }, "the relay's 99M tokens must not leak into the badge");
 });
 
 test("priceToday with no official rows today is null, not zero", () => {
@@ -626,4 +626,60 @@ test("priceToday survives a malformed rate table instead of throwing the payload
 	const store = { byRoute: () => rows };
 	// Missing effectiveFrom: RateTable's constructor throws.
 	assert.equal(priceToday(store, undefined, [{ model: "m", currency: "CNY", perMillion: { inputTokens: 2 } }]), null);
+});
+
+test("priceToday carries every currency, so none silently vanishes from the badge", () => {
+	// Two models priced in different currencies on the same day: the badge's
+	// compact figure reads the largest, but `costs` must carry both.
+	const store = {
+		byRoute: () => [
+			{ provider: "deepseek-official", model: "cny-m", inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+			{ provider: "deepseek-official", model: "usd-m", inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+		]
+	};
+	const rates = [
+		{ model: "cny-m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 2 } },
+		{ model: "usd-m", currency: "USD", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 10 } }
+	];
+	const got = priceToday(store, undefined, rates);
+	assert.deepEqual(got.costs, { CNY: 2, USD: 10 });
+	assert.ok(got.cost !== undefined && got.currency !== undefined, "the compact figure stays for the badge");
+});
+
+test("an unpriced day is omitted from the trend line, never drawn as zero", () => {
+	// Unknown is not free: filling cost:0 would draw the line into the axis
+	// and sum the unknown into the total. With the shipped list only the
+	// official route prices, so a relay-only day stays costless.
+	const store = {
+		byDay: () => [
+			{ day: "2026-09-12", tokens: 1_000_000, requests: 1 },
+			{ day: "2026-09-13", tokens: 500_000, requests: 1 }
+		],
+		byRoute: (range, site, provider) => {
+			const rows = [
+				{ day: "2026-09-12", site: "a", provider: "deepseek-official", model: "deepseek-flash", inputTokens: 1_000_000, tokens: 1_000_000, requests: 1 },
+				{ day: "2026-09-13", site: "a", provider: "relay", model: "deepseek-flash", inputTokens: 500_000, tokens: 500_000, requests: 1 }
+			];
+			return rows.filter((r) => provider === undefined || r.provider === provider);
+		}
+	};
+	const series = dailySeries(store, undefined, undefined, undefined);
+	assert.equal(series[0].cost, 2);
+	assert.equal(series[0].currency, "CNY");
+	assert.equal("cost" in series[1], false, "the relay-only day carries no cost key at all");
+	assert.equal(series[1].tokens, 500_000, "tokens still stand without a price");
+});
+
+test("the payload carries the ledger's day-cut offset for out-of-process renderers", () => {
+	// Blue cuts its own range endpoints; without the offset it uses the local
+	// calendar and "this month" starts a day off whenever zones disagree.
+	const store = seeded();
+	try {
+		const withOffset = usagePayload({ store, sites: () => [], dayOffsetMinutes: 480 }, { range: {} });
+		assert.equal(withOffset.dayOffsetMinutes, 480);
+		const without = usagePayload({ store, sites: () => [] }, { range: {} });
+		assert.equal("dayOffsetMinutes" in without, false, "absent when unconfigured, not zero");
+	} finally {
+		store.close();
+	}
 });

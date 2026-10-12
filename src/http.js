@@ -285,7 +285,11 @@ export function priceToday(store, site = undefined, rates = undefined, dayOffset
 	}
 	const entries = Object.entries(priced.totals);
 	if (entries.length === 0) return null;
-	return { cost: entries[0][1], currency: entries[0][0] };
+	// The badge reads `cost`/`currency` (the largest currency, for one compact
+	// figure); `costs` carries every currency so no denomination silently
+	// vanishes when a day mixes them. Previously only entries[0] shipped and
+	// the rest were dropped, the pick depending on row order.
+	return { cost: entries[0][1], currency: entries[0][0], costs: priced.totals };
 }
 
 /**
@@ -337,7 +341,10 @@ export function dailySeries(store, site = undefined, provider = undefined, rates
 			day: d.day,
 			tokens: d.tokens,
 			requests: d.requests,
-			...(currency === undefined ? {} : { cost: cost ?? 0, currency })
+			// An unpriced day stays costless, never zero: drawing unknown as 0
+			// would read as "that day was free" and sum the unknown into the
+			// line's total. The chart breaks the line and the tooltip shows —.
+			...(currency === undefined || cost === undefined ? {} : { cost, currency })
 		};
 	});
 }
@@ -373,6 +380,9 @@ export function usagePayload(deps, query) {
 		// from a browser in UTC+8 has its days cut at a boundary the reader does
 		// not share. Labelling the browser's zone would be confidently wrong.
 		timeZone: hostTimeZone(),
+		// The ledger's day-cut offset, so out-of-process renderers (Blue) cut
+		// their own ranges on the same calendar instead of the local one.
+		...(deps.dayOffsetMinutes === undefined ? {} : { dayOffsetMinutes: deps.dayOffsetMinutes }),
 		range,
 		site,
 		...(provider === undefined ? {} : { provider }),

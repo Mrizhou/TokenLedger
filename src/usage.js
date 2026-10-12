@@ -244,6 +244,12 @@ function sampleOf(event) {
 				? event.data.usage
 				: undefined;
 	if (usage === undefined) return undefined;
+	// A null (or otherwise non-object) usage is a poison sample: bucketsOf
+	// would throw reading its fields, and the throw would fail the whole
+	// session's fold — freezing it at old totals with one warn per sweep.
+	// An empty object folds to zero tokens with requests:1: the request
+	// counts, nothing is charged, and the session keeps moving.
+	if (usage === null || typeof usage !== "object") return { key: undefined, usage: {} };
 	// Re-reports are identified by `(turn, step)`. When either is missing there
 	// is NOTHING to identify a re-report by, and a shared fallback key made
 	// every such sample silently replace the last one (three samples counted

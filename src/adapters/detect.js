@@ -164,7 +164,9 @@ export function scoreFingerprint(statuses) {
  * only which routes exist, never for data.
  *
  * @param origin - `scheme://host[:port]`.
- * @param options - `{ fetch?, timeoutMs?, paths? }`.
+ * @param options - `{ fetch?, timeoutMs?, paths?, signal? }`. An aborted
+ *   signal stops waiting for the probes: the caller went away, and six
+ *   orphaned 10-second requests are not worth finishing.
  */
 export async function detectRelaySoftware(origin, options = {}) {
 	const doFetch = options.fetch ?? globalThis.fetch;
@@ -181,9 +183,15 @@ export async function detectRelaySoftware(origin, options = {}) {
 
 	await Promise.all(
 		paths.map(async (path) => {
+			if (options.signal?.aborted === true) {
+				statuses[path] = 0;
+				return;
+			}
 			try {
 				const controller = new AbortController();
 				const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000);
+				const onAbort = () => controller.abort();
+				options.signal?.addEventListener?.("abort", onAbort, { once: true });
 				try {
 					const response = await doFetch(base + path, {
 						headers: { accept: "application/json" },
@@ -192,6 +200,7 @@ export async function detectRelaySoftware(origin, options = {}) {
 					statuses[path] = response.status;
 				} finally {
 					clearTimeout(timer);
+					options.signal?.removeEventListener?.("abort", onAbort);
 				}
 			} catch {
 				// A transport failure is not evidence of absence, and must not be
