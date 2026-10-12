@@ -145,6 +145,11 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
   所以**路由段取代厂商段**显示成 `commandcode/deepseek-v4.1-flash`，完整 id 留在悬停 `title`，同一路由下撞名时不折叠；文字报表 `/tokenledger` 仍印裸 id。
   ② **粒度改细要同时改三处**：数据分组（`store.byProviderModel`）、行上的派生值（计价走 `priceWithConfiguredRates(..., byRoute=true)`，报表仍按模型）、
   **列表 key**（`rowKey(m)` = 路由+模型）。漏掉第三处的症状不报错 —— 表格里某一行要等下次重渲染才出现/数字不对。
+- **给新模型配价时，`effectiveFrom` 要填区间起点，不是配价当天**（2026-10-12 踩过）：`priceWithConfiguredRates` 用
+  `day = range.to ?? range.from ?? dayKey(Date.now())` **一个日期**解析整个区间的费率，而三个窗口的 range 形状不同 ——
+  今日 `{from: 今天}`、本月 `{from: 10-01}`（**没有 to**）、累计 `{}`（回落到今天）。
+  所以把当月新模型的 `effectiveFrom` 填成「今天」，结果是**今日和累计有估算、本月没有**，且不报错。
+  凡是账本里已有用量的模型，`effectiveFrom` 一律填「最早有用量那天」或「本月 1 号」，不要填配价日期。
 - **账本被手工归并过**（2026-10-03，用户指定）：`bd` → `google-antigravity`、`modlens-ali` → 官方、`deepseek-official` → `deepseek-account`（官方合一）、
   反代时代的 `gemini-3.8-flash-high` → `antigravity-gemini-3.8-flash`。**这不是永久的**：全量重折叠（改 `relays`/`officialOrigins`、`/tokenledger reindex`、换 schema）
   会按老日志把它们长回来，届时重跑 `D:\Workspace\plugin-compare\{merge-ledger,rename-model}.py`（都默认 dry-run、`--apply` 写库并先备份）。

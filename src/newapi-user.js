@@ -359,7 +359,7 @@ async function readWallet(cache, options = {}) {
 	// not the cache's business and just fails this read.
 	if (body?.success === false || response.ok !== true) {
 		const message = label(body?.message) ?? "";
-		if (response.status === 429 || isLimitMessage(message)) return limitOrStale(cache, origin, entry, now, message);
+		if (response.status === 429 || isLimitMessage(message)) return limitOrStale(cache, origin, entry, now, message, response);
 		if (body?.success === false) {
 			throw Object.assign(new Error(message || "upstream-error"), { kind: "upstream-auth" });
 		}

@@ -292,3 +292,23 @@ test("shouldUseWallet: credentials decide, known non-New-API vendors keep their 
 	assert.equal(shouldUseWallet({ origin: "" }, { userId: 1, token: "tok" }), false);
 	assert.equal(shouldUseWallet(account, undefined), false);
 });
+
+test("a 429 carrying retry-after backs off for exactly that long, not the doubling fallback", async () => {
+	// Regression lock for the dropped 6th argument: limitOrStale used to be
+	// called without `response`, so throttleHeaders saw undefined and every
+	// throttle fell back to 4min doubling even when the server said "30s".
+	const origin = "https://retry-after.example";
+	const headers = { get: (name) => (name === "retry-after" ? "30" : null) };
+	try {
+		const { fetch } = recorder([
+			["/api/user/self", { ok: false, status: 429, headers, json: async () => ({}) }],
+			["/api/status", okJson(statusBody)]
+		]);
+		await assert.rejects(
+			readNewApiWallet({ origin, userId: 42, token: "tok", fetch, now: 0 }),
+			(error) => error.kind === "rate-limited" && error.retryAt === 30_000
+		);
+	} finally {
+		forgetWallet(origin);
+	}
+});

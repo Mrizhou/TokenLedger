@@ -272,8 +272,17 @@ export function priceToday(store, site = undefined, rates = undefined, dayOffset
 	const day = dayKey(Date.now(), dayOffsetMinutes);
 	const rows = store.byRoute({ from: day }, site).filter((row) => row.provider === "deepseek-official");
 	if (rows.length === 0) return null;
-	const table = rates === undefined ? new RateTable(DEEPSEEK_OFFICIAL_RATES) : new RateTable(rates);
-	const priced = priceRows(rows, table, day);
+	let priced;
+	try {
+		const table = rates === undefined ? new RateTable(DEEPSEEK_OFFICIAL_RATES) : new RateTable(rates);
+		priced = priceRows(rows, table, day);
+	} catch {
+		// A malformed rate table costs the badge, not the panel: dailySeries
+		// already degrades this way, and an uncaught throw here used to turn
+		// the whole usage payload into a 500 (one typo in rates blanked the
+		// panel instead of just the cost column).
+		return null;
+	}
 	const entries = Object.entries(priced.totals);
 	if (entries.length === 0) return null;
 	return { cost: entries[0][1], currency: entries[0][0] };

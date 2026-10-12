@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BALANCE_PATH, BASE_PATH, USAGE_PATH, USERAUTH_PATH, accountOf, dailySeries, forceOf, hostNameOf, isLoopbackAddress, originOf, parseQuery, readJsonBody, registerRoutes, screenRequest, usagePayload } from "../src/http.js";
+import { BALANCE_PATH, BASE_PATH, USAGE_PATH, USERAUTH_PATH, accountOf, dailySeries, forceOf, hostNameOf, isLoopbackAddress, originOf, parseQuery, priceToday, readJsonBody, registerRoutes, screenRequest, usagePayload } from "../src/http.js";
 import { dailyModels, hostTimeZone } from "../src/usage.js";
 import { LedgerStore } from "../src/store.js";
 import { applyUsageDelta } from "../src/usage.js";
@@ -595,4 +595,35 @@ test("the credentials route owns its path: GET shows state, POST writes, the tok
 		res2
 	);
 	assert.equal(failSent[0], 500);
+});
+
+// --- priceToday ---------------------------------------------------------------
+//
+// The sidebar badge's figure had zero coverage: a broken filter, a wrong
+// currency pick, or a throw on a malformed table would all have stayed green.
+// These lock the three behaviors the badge depends on.
+
+test("priceToday prices only the official route's rows at today's rates", () => {
+	const rows = [
+		{ provider: "deepseek-official", model: "m", inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+		{ provider: "relay", model: "m", inputTokens: 99_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+	];
+	const store = { byRoute: () => rows };
+	const rates = [{ model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 2 } }];
+	const got = priceToday(store, undefined, rates);
+	assert.deepEqual(got, { cost: 2, currency: "CNY" }, "the relay's 99M tokens must not leak into the badge");
+});
+
+test("priceToday with no official rows today is null, not zero", () => {
+	const store = { byRoute: () => [{ provider: "relay", model: "m", inputTokens: 5 }] };
+	const rates = [{ model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 2 } }];
+	assert.equal(priceToday(store, undefined, rates), null);
+	assert.equal(priceToday({ byRoute: () => [] }, undefined, rates), null);
+});
+
+test("priceToday survives a malformed rate table instead of throwing the payload into a 500", () => {
+	const rows = [{ provider: "deepseek-official", model: "m", inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }];
+	const store = { byRoute: () => rows };
+	// Missing effectiveFrom: RateTable's constructor throws.
+	assert.equal(priceToday(store, undefined, [{ model: "m", currency: "CNY", perMillion: { inputTokens: 2 } }]), null);
 });
