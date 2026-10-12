@@ -19,7 +19,7 @@
 - [x] 2. H1+H2+H3 计价语义重构组（用户已批方案）：H1 partial 行单列 partialTotals/partialModels（选 b）；H2 按日计价后汇总；H3 按 effectiveDates 切点分段+卡上披露；渲染侧（report/client/blue/http/余额卡）同步；各加测试+变异验证；跑全量+pack；提交。(67f5741, 610/610)
 - [x] 3. H5+H6 账本组：reset 前加 canListSessions 可读性探测（list 失败不丢库）；referenceFor 按请求 id 优先找 key；H5 集成测试（apply 双代 relay 变化+坏 persistence，修 EBUSY flaky）+ canListSessions 四断言；H6 双 key 测试；变异验证通过；跑全量+pack；提交。(07331db, 613/613)
 - [x] 4+5. 其余 medium/low + 测试缺口组：一批提交（acb5a28, 637/637）。含 M1-M11/M13-M15/lows 全修 + 路由回退修正 + 测试缺口回填；变异验证逐项通过。
-- [ ] 6. 收尾：按新 SHA 重装（已派出，待确认）；核对装机（package.json 行、bundles、src 内容一致）；验证账本（schemaVersion、行数/总数只增不丢；基线：v4/428行/23076请求/5009181230tokens）；清 TEMP 残留；确认工作区干净；AGENTS.md 钉换新 SHA 后提交+push；向用户报告。
+- [x] 6. 收尾：push（44dbf4a..c0fe384）；按新 SHA acb5a28 重装（package.json+lockfile 一致，无市场回滚）；装机 src 与仓库一致（CRLF/LF 外）；账本 v4/431行/23117请求/5026157367tokens（只增不丢）；TEMP 清空；工作区干净；AGENTS.md 钉换新 SHA 后提交+push（c0fe384）。
 
 ## Progress log
 - 2026-10-12: 计划落盘。工作区已收拾（删 3 探针）。AGENTS.md 5 行未提交留待步骤 1-6 随附提交。
