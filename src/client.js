@@ -1019,12 +1019,16 @@ window.__ModuleLoader__.load({
 		function StatCaption({ data, translate }) {
 			const totals = data.totals ?? {};
 			const currencies = Object.entries(data.priced?.totals ?? {});
+			const partials = Object.entries(data.priced?.partialTotals ?? {});
 			const parts = [
 				translate("caption.requests", { n: fmt(totals.requests) }),
 				translate("caption.hit", { rate: fmtHit(totals.cacheHitRate) || "—" })
 			];
 			if (currencies.length > 0) {
 				parts.push(translate("caption.cost", { cost: currencies.map(([c, v]) => fmtMoney(v, c)).join(" + ") }));
+			}
+			if (partials.length > 0) {
+				parts.push(translate("caption.partial", { cost: partials.map(([c, v]) => `~${fmtMoney(v, c)}`).join(" + ") }));
 			}
 			return jsx("p", { className: S.caption, children: parts.join(" · ") });
 		}
@@ -1525,7 +1529,7 @@ window.__ModuleLoader__.load({
 				if (m.cost !== undefined) return m;
 				const money = priced.get(m.model);
 				if (money === undefined) return m;
-				return { ...m, cost: money.cost, currency: money.currency, priced: money.priced, unpricedBuckets: money.unpricedBuckets };
+				return { ...m, cost: money.cost, currency: money.currency, priced: money.priced, unpricedBuckets: money.unpricedBuckets, partial: money.partial };
 			});
 			if (rows.length === 0) return jsx("p", { className: S.note, children: translate("table.none") });
 			// Named as a set: a label may only drop a vendor segment while it stays
@@ -1587,7 +1591,7 @@ window.__ModuleLoader__.load({
 											]
 										}),
 										jsx("td", { children: fmtCompact(m.outputTokens) }),
-										jsx("td", { children: m.cost === null || m.cost === undefined ? "—" : fmtMoney(m.cost, m.currency) })
+										jsx("td", { children: m.cost === null || m.cost === undefined ? "—" : m.partial === true ? `~${fmtMoney(m.cost, m.currency)}` : fmtMoney(m.cost, m.currency) })
 									]
 								},
 								rowKey(m)
@@ -1859,6 +1863,9 @@ window.__ModuleLoader__.load({
 				notes.push(translate("balance.manualSpent", { amount: fmtMoney(balance.spentSince ?? 0, balance.currency) }));
 				if (Array.isArray(balance.unpricedModels) && balance.unpricedModels.length > 0) {
 					notes.push(translate("balance.manualUnpriced", { models: balance.unpricedModels.join("、") }));
+				}
+				if (Array.isArray(balance.partialModels) && balance.partialModels.length > 0) {
+					notes.push(translate("balance.manualPartial", { models: balance.partialModels.join("、") }));
 				}
 			}
 			if (balance.unlimited === true) notes.push(translate("balance.unlimited"));
@@ -3165,6 +3172,7 @@ window.__ModuleLoader__.load({
 			"caption.requests": "{n} 请求",
 			"caption.hit": "缓存命中 {rate}",
 			"caption.cost": "估算 {cost}",
+			"caption.partial": "部分定价 {cost}",
 			"sites.direct": "直连/官方",
 			"sites.unrouted": "未知路由",
 			"sites.none": "没有发现中转站——直连的话这就是全部。",
@@ -3253,6 +3261,7 @@ window.__ModuleLoader__.load({
 			"balance.manualFrom": "手填 {amount}（{ago}）",
 			"balance.manualSpent": "之后估算花费 {amount}",
 			"balance.manualUnpriced": "未计价：{models}",
+			"balance.manualPartial": "部分定价（未扣减）：{models}",
 			"balance.row.unfilled": "未填写",
 			"balance.hint.manual-missing": "这个账户的 API key 查不了余额。点「填写余额」，把控制台显示的余额填进来，之后按账本用量自动扣减。",
 			"manual.title": "填写余额",
@@ -3333,6 +3342,7 @@ window.__ModuleLoader__.load({
 			"caption.requests": "{n} requests",
 			"caption.hit": "{rate} cached",
 			"caption.cost": "est. {cost}",
+			"caption.partial": "partially priced {cost}",
 			"sites.direct": "Direct",
 			"sites.unrouted": "Unrecognised route",
 			"sites.none": "No relay sites found — if you go direct, this is all of it.",
@@ -3421,6 +3431,7 @@ window.__ModuleLoader__.load({
 			"balance.manualFrom": "Entered {amount} ({ago})",
 			"balance.manualSpent": "estimated spend since {amount}",
 			"balance.manualUnpriced": "Unpriced: {models}",
+			"balance.manualPartial": "Partially priced (not deducted): {models}",
 			"balance.row.unfilled": "not entered",
 			"balance.hint.manual-missing": "This account's API key cannot read a balance. Use \"Enter balance\" to type in what the console shows; the ledger's usage is deducted from then on.",
 			"manual.title": "Enter balance",

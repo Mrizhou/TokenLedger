@@ -413,7 +413,7 @@ export function usagePayload(deps, query) {
 			const cost = routeCosts.get(`${row.provider}\u0000${row.model}`);
 			return cost === undefined
 				? row
-				: { ...row, cost: cost.cost, currency: cost.currency, priced: cost.priced, unpricedBuckets: cost.unpricedBuckets };
+				: { ...row, cost: cost.cost, currency: cost.currency, priced: cost.priced, unpricedBuckets: cost.unpricedBuckets, partial: cost.partial };
 		}),
 		// Site rows are never filtered by the current selection: the breakdown is
 		// how you CHANGE that selection, so hiding the others would strand you.

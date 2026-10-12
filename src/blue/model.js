@@ -444,7 +444,12 @@ function activityHeatmap(source) {
 
 function pricedRows(priced) {
 	const totals = record(record(priced).totals);
-	return Object.entries(totals).slice(0, 12).map(([currency, value]) => row(`预估费用 ${text(currency, 12)}`, money(value, currency)));
+	const partials = record(record(priced).partialTotals);
+	const rows = Object.entries(totals).slice(0, 12).map(([currency, value]) => row(`预估费用 ${text(currency, 12)}`, money(value, currency)));
+	for (const [currency, value] of Object.entries(partials).slice(0, 12)) {
+		rows.push(row(`部分定价 ${text(currency, 12)}`, `~${money(value, currency)}`));
+	}
+	return rows;
 }
 
 function pagination(key, state, total) {

@@ -15,7 +15,7 @@ import {
 	spentBetween,
 	usageSnapshot
 } from "../src/manual-balance.js";
-import { MIMO_OFFICIAL_RATES } from "../src/pricing.js";
+import { MIMO_OFFICIAL_RATES, RateTable } from "../src/pricing.js";
 
 const row = (model, buckets, provider = "xiaomi") => ({
 	provider,
@@ -116,4 +116,38 @@ test("the snapshot reads every route folded into the account", () => {
 	const snap = usageSnapshot(store, ["xiaomi", "xiaomi-tp", "xiaomi"]);
 	assert.deepEqual(asked, ["xiaomi", "xiaomi-tp"]);
 	assert.deepEqual(snap[0], { provider: "xiaomi", model: "mimo-v2.6-flash", inputTokens: 1, cacheReadTokens: 2, cacheWriteTokens: 0, outputTokens: 3 });
+});
+
+test("a delta spanning a rate change is split at the change dates, not priced whole at today's rates", () => {
+	// The model repriced mid-span: ¥4/M before 2026-06-01, ¥2/M from it.
+	// 2M input used across the change must cost more than 2M at ¥2 and less
+	// than 2M at ¥4 — pricing it whole at today's rates would say ¥4 flat.
+	const table = new RateTable([
+		{ model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 4 } },
+		{ model: "m", currency: "CNY", effectiveFrom: "2026-06-01", perMillion: { inputTokens: 2 } }
+	]);
+	const rateFor = Object.assign((model, day) => table.rateFor(model, day), {
+		effectiveDates: (model) => table.effectiveDates(model)
+	});
+	const spent = spentBetween([], [row("m", { inputTokens: 2_000_000 }, "r")], rateFor, "2026-12-31", "CNY");
+	assert.ok(spent.cost > 4 && spent.cost < 8, `split cost ${spent.cost} must sit between the two generations' prices`);
+	assert.deepEqual(spent.unpricedModels, []);
+});
+
+test("a partially priced row is named and not deducted from the typed balance", () => {
+	// The rate misses cacheReadTokens, which carried tokens: deducting the
+	// known part would overstate the remainder, so the row is held out.
+	const table = new RateTable([{ model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 2 } }]);
+	const rateFor = Object.assign((model, day) => table.rateFor(model, day), {
+		effectiveDates: (model) => table.effectiveDates(model)
+	});
+	const card = manualBalanceCard(
+		{ amount: 10, currency: "CNY", at: 1, baseline: [] },
+		[row("m", { inputTokens: 1_000_000, cacheReadTokens: 500_000 }, "r")],
+		rateFor,
+		"2026-01-01"
+	);
+	assert.equal(card.total, 10, "the partial row's known part is not deducted");
+	assert.equal(card.spentSince, 0);
+	assert.deepEqual(card.partialModels, ["m"]);
 });

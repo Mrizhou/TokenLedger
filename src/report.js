@@ -140,13 +140,16 @@ export function renderReport(input) {
 	const modelRows = models.map((m) => {
 		const p = priced?.rows?.find((r) => r.model === m.model);
 		const hit = m.cacheHitRate === null ? "" : `(${m.cacheHitRate}%)`;
+		// A partial row's cost understates the truth (some bucket had no rate):
+		// mark it with ~ so it cannot be read as exact.
+		const estimate = p === undefined || p.cost === null ? DASH : p.partial === true ? `~${money(p.cost, p.currency)}` : money(p.cost, p.currency);
 		return [
 			m.model,
 			num(m.requests),
 			num(m.inputTokens),
 			`${num(m.cacheReadTokens)}${hit}`,
 			num(m.outputTokens),
-			p === undefined || p.cost === null ? DASH : money(p.cost, p.currency)
+			estimate
 		];
 	});
 	out.push(
@@ -169,6 +172,9 @@ export function renderReport(input) {
 
 	if (priced?.unpricedModels?.length) {
 		out.push(`  ${DASH} 表示该模型没有配置费率，不是没花钱。未定价：${priced.unpricedModels.join("、")}`);
+	}
+	if (priced?.partialModels?.length) {
+		out.push(`  ~ 表示该模型部分用量没有费率，估算偏小。部分定价：${priced.partialModels.join("、")}`);
 	}
 
 	// Attribution has two levels. Provider routes are free — the name rides every

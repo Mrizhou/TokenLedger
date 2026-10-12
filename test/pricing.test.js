@@ -197,3 +197,36 @@ test("priceRows prices the official route through the shipped schedule", () => {
 	assert.deepEqual(totals, { CNY: 19 });
 	assert.deepEqual(unpricedModels, []);
 });
+
+test("a partially priced row stays out of the totals and is named separately", () => {
+	// The rate misses cacheReadTokens, which carried tokens: the row's cost
+	// understates the truth, so it must not join the totals silently.
+	const table = new RateTable([
+		{ model: "full", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 2 } },
+		{ model: "part", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 2 } }
+	]);
+	const result = priceRows(
+		[
+			{ model: "full", ...buckets({ inputTokens: 1_000_000 }) },
+			{ model: "part", ...buckets({ inputTokens: 1_000_000, cacheReadTokens: 500_000 }) }
+		],
+		table,
+		"2026-01-01"
+	);
+	assert.deepEqual(result.totals, { CNY: 2 }, "only the fully priced row joins the totals");
+	assert.deepEqual(result.partialTotals, { CNY: 2 }, "the partial row's known part is kept visible, not dropped");
+	assert.deepEqual(result.partialModels, ["part"]);
+	assert.deepEqual(result.unpricedModels, [], "partial is not unpriced");
+	assert.equal(result.rows.find((r) => r.model === "part").partial, true);
+	assert.equal(result.rows.find((r) => r.model === "full").partial, false);
+});
+
+test("effectiveDates names a model's rate-change dates, ascending and deduplicated", () => {
+	const table = new RateTable([
+		{ model: "m", currency: "CNY", effectiveFrom: "2026-06-01", perMillion: { inputTokens: 2 } },
+		{ model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 4 } },
+		{ model: "m", currency: "CNY", effectiveFrom: "2026-06-01", perMillion: { inputTokens: 2 } }
+	]);
+	assert.deepEqual(table.effectiveDates("m"), ["2026-01-01", "2026-06-01"]);
+	assert.deepEqual(table.effectiveDates("unknown"), []);
+});

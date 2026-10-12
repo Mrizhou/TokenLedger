@@ -49,7 +49,7 @@ import { DashboardController, DashboardControllerError } from "./dashboard-contr
 import { mountTokenLedgerBlue } from "./blue/index.js";
 
 import { LedgerStore } from "./store.js";
-import { DEEPSEEK_OFFICIAL_RATES, MIMO_OFFICIAL_RATES, RateTable, priceRows } from "./pricing.js";
+import { DEEPSEEK_OFFICIAL_RATES, MIMO_OFFICIAL_RATES, RateTable, priceRows, round6 } from "./pricing.js";
 import { num, renderReport, table } from "./report.js";
 
 /** `YYYY-MM-DD` for N days before today, in local time. */
@@ -71,26 +71,80 @@ function dayKeyDaysAgo(daysBack) {
 export function priceWithConfiguredRates(store, range, site, rates, provider = undefined, byRoute = false) {
 	try {
 		const table = new RateTable(rates === undefined ? DEEPSEEK_OFFICIAL_RATES : rates);
-		const day = range.to ?? range.from ?? dayKey(Date.now());
 		// Two groupings of the same traffic. The report prints a model once, so it
 		// reads model-wide rows; the panel names a row `<provider>/<model>` and a
 		// model reached through two routes is two rows there — one model-wide
 		// figure would print identically on both of them, and the cost column would
 		// then sum to double what was spent.
 		const source = byRoute ? store.byProviderModel.bind(store) : store.byModel.bind(store);
+		// Each day is priced at ITS OWN date's rates, then summed: rates are a
+		// schedule (effectiveFrom per generation), and pricing a multi-day range
+		// at one date's rates prices every other day wrong. `dailySeries` in
+		// http.js already works this way; the range-wide 估算 used to pick a
+		// single day (`range.to ?? range.from ?? today`), which priced a range
+		// straddling a rate change entirely at one end's prices — or left a new
+		// model unpriced for a whole month when its effectiveFrom fell inside
+		// the range but after the range's start.
+		const days = store.byDay(range, site, provider).map((d) => d.day);
+		const totals = {};
+		const partialTotals = {};
+		const unpricedModels = [];
+		const partialModels = [];
+		const rowsByKey = new Map();
+		const keyOf = byRoute ? (r) => `${r.provider}\0${r.model}` : (r) => r.model;
+		for (const day of days) {
+			const dayRange = { ...range, from: day, to: day };
+			const scoped = rates === undefined && provider === undefined ? "deepseek-official" : provider;
+			const priced = priceRows(source(dayRange, site, scoped), table, day);
+			for (const [currency, amount] of Object.entries(priced.totals)) {
+				totals[currency] = round6((totals[currency] ?? 0) + amount);
+			}
+			for (const [currency, amount] of Object.entries(priced.partialTotals)) {
+				partialTotals[currency] = round6((partialTotals[currency] ?? 0) + amount);
+			}
+			for (const model of priced.unpricedModels) {
+				if (!unpricedModels.includes(model)) unpricedModels.push(model);
+			}
+			for (const model of priced.partialModels) {
+				if (!partialModels.includes(model)) partialModels.push(model);
+			}
+			// Rows carry per-day costs now; merge them back so the panel still
+			// gets one row per model (or per route+model). Costs add; buckets
+			// add; a row is partial if ANY of its days was.
+			for (const row of priced.rows) {
+				const key = keyOf(row);
+				const prev = rowsByKey.get(key);
+				if (prev === undefined) {
+					rowsByKey.set(key, { ...row });
+				} else {
+					for (const bucket of ["inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens", "requests", "tokens"]) {
+						if (typeof row[bucket] === "number" && typeof prev[bucket] === "number") prev[bucket] = prev[bucket] + row[bucket];
+					}
+					if (typeof row.cost === "number" && typeof prev.cost === "number") {
+						prev.cost = round6(prev.cost + row.cost);
+					} else {
+						prev.cost = row.cost ?? prev.cost;
+						prev.currency = row.currency ?? prev.currency;
+						prev.priced = row.priced ?? prev.priced;
+					}
+					if (row.partial === true) prev.partial = true;
+					if (Array.isArray(row.unpricedBuckets)) {
+						const merged = new Set([...(prev.unpricedBuckets ?? []), ...row.unpricedBuckets]);
+						prev.unpricedBuckets = [...merged];
+					}
+				}
+			}
+		}
 		// The shipped list is DeepSeek OFFICIAL prices, so it prices the
 		// official ROUTE's rows and nothing else: `deepseek-v4-flash` served
 		// through Ali or a relay is billed at that site's prices, and printing
 		// DeepSeek's numbers for it was a confidently wrong figure — the same
 		// scope `priceToday` has always applied to the badge. A user-supplied
 		// `rates` is the user's own pricing and prices every row, as before.
-		if (rates === undefined) {
-			if (provider !== undefined && provider !== "deepseek-official") {
-				return { rows: [], totals: {}, unpricedModels: [] };
-			}
-			return priceRows(source(range, site, "deepseek-official"), table, day);
+		if (rates === undefined && provider !== undefined && provider !== "deepseek-official") {
+			return { rows: [], totals: {}, unpricedModels: [], partialTotals: {}, partialModels: [] };
 		}
-		return priceRows(source(range, site, provider), table, day);
+		return { rows: [...rowsByKey.values()], totals, unpricedModels, partialTotals, partialModels };
 	} catch {
 		// A malformed rate table costs the cost column, not the report.
 		return null;

@@ -333,10 +333,29 @@ test("the shipped DeepSeek prices never price another route's rows", () => {
 		const scoped = priceWithConfiguredRates(store, {}, undefined, undefined);
 		assert.equal(scoped.rows.length, 1, "the shipped list prices the official ROUTE's rows and nothing else");
 
-		assert.deepEqual(priceWithConfiguredRates(store, {}, undefined, undefined, "ali"), { rows: [], totals: {}, unpricedModels: [] });
+		assert.deepEqual(priceWithConfiguredRates(store, {}, undefined, undefined, "ali"), { rows: [], totals: {}, unpricedModels: [], partialTotals: {}, partialModels: [] });
 
 		// A user-supplied `rates` is the user's own pricing and prices every row.
 		assert.equal(priceWithConfiguredRates(store, {}, undefined, DEEPSEEK_OFFICIAL_RATES, "ali").rows.length, 1);
+	});
+});
+
+test("a range straddling a rate change prices each day at its own rates", () => {
+	// The model repriced on 2026-06-01 (¥4/M before, ¥2/M from it). A range
+	// covering both generations must not price the whole span at one end.
+	withStore((store) => {
+		const state = createUsageState();
+		applyUsageDelta(state, [
+			message(1, 1, "deepseek-official", "m", { inputTokens: 1_000_000 }, Date.parse("2026-05-31T10:00:00Z")),
+			message(2, 1, "deepseek-official", "m", { inputTokens: 1_000_000 }, Date.parse("2026-06-01T10:00:00Z"))
+		]);
+		store.commitSession("s1", state);
+		const rates = [
+			{ model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 4 } },
+			{ model: "m", currency: "CNY", effectiveFrom: "2026-06-01", perMillion: { inputTokens: 2 } }
+		];
+		const got = priceWithConfiguredRates(store, { from: "2026-05-31", to: "2026-06-01" }, undefined, rates);
+		assert.equal(got.totals.CNY, 6, "¥4 for the old day + ¥2 for the new day, not ¥8 or ¥4 for both");
 	});
 });
 

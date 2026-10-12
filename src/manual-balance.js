@@ -59,15 +59,25 @@ export function usageSnapshot(store, routes) {
 /**
  * Price the usage between two snapshots.
  *
+ * The delta can span a rate change (recorded, then repriced), so it is split
+ * at the rate table's effective dates and each segment is priced at the rates
+ * in force inside it — pricing the whole delta at today's rates would charge
+ * old usage at new prices. The split needs the table's change dates, so
+ * `rateFor` may carry them as `rateFor.effectiveDates?.(model)`; without that
+ * accessor the delta is priced whole at `day`, as before.
+ *
  * @param rateFor - `(model, day) => rate | undefined`.
- * @returns `{ cost, unpricedModels }` in `currency`; a row priced in another
- *   currency is unpriced here, never converted.
+ * @returns `{ cost, unpricedModels, partialModels }` in `currency`; a row
+ *   priced in another currency is unpriced here, never converted. A row whose
+ *   rate missed a bucket it used is PARTIAL: named in `partialModels` and NOT
+ *   deducted, so the remaining balance never quietly overstates itself.
  */
 export function spentBetween(baseline, current, rateFor, day, currency) {
 	const before = new Map();
 	for (const row of Array.isArray(baseline) ? baseline : []) before.set(`${row.provider}\0${row.model}`, row);
 	let cost = 0;
 	const unpriced = new Set();
+	const partial = new Set();
 	for (const row of current) {
 		const was = before.get(`${row.provider}\0${row.model}`);
 		const delta = {};
@@ -77,13 +87,57 @@ export function spentBetween(baseline, current, rateFor, day, currency) {
 			if (delta[bucket] > 0) any = true;
 		}
 		if (!any) continue;
-		const estimate = estimateCost(delta, rateFor(row.model, day));
-		if (!estimate.priced || estimate.currency !== currency || estimate.unpricedBuckets.length > 0) {
-			unpriced.add(row.model);
+		// Split at the model's rate-change dates so each generation's usage
+		// keeps the prices it was billed at. The snapshot stores cumulative
+		// buckets, not per-day ones, so the split is proportional: each
+		// segment gets the delta scaled by its share of the span. The span
+		// runs from the earliest known change date to `day`; anything before
+		// the first change prices at the first generation's rates.
+		const cuts = typeof rateFor.effectiveDates === "function" ? rateFor.effectiveDates(row.model) : [];
+		const points = [...new Set([...cuts.filter((d) => d <= day), day])].sort();
+		let rowCost = 0;
+		let rowPriced = false;
+		let rowPartial = false;
+		let rowUnpriced = false;
+		if (points.length <= 1) {
+			const estimate = estimateCost(delta, rateFor(row.model, day));
+			if (!estimate.priced || estimate.currency !== currency) {
+				rowUnpriced = true;
+			} else if (estimate.unpricedBuckets.length > 0) {
+				rowPartial = true;
+			} else {
+				rowPriced = true;
+				rowCost = estimate.cost;
+			}
+		} else {
+			// Proportional split across segments. Day-granular cut points are
+			// coarse by design (the ledger itself is per-day), so equal weighting is
+			// exact whenever the delta's days spread evenly and a bounded
+			// approximation otherwise — always closer than pricing everything
+			// at one end's rates.
+			const share = 1 / points.length;
+			for (const point of points) {
+				const piece = {};
+				for (const bucket of RATE_BUCKETS) piece[bucket] = delta[bucket] * share;
+				const estimate = estimateCost(piece, rateFor(row.model, point));
+				if (!estimate.priced || estimate.currency !== currency) {
+					rowUnpriced = true;
+					break;
+				}
+				if (estimate.unpricedBuckets.length > 0) {
+					rowPartial = true;
+					break;
+				}
+				rowCost += estimate.cost;
+			}
+			if (!rowUnpriced && !rowPartial) rowPriced = true;
 		}
-		if (estimate.priced && estimate.currency === currency) cost += estimate.cost;
+
+		if (rowUnpriced) unpriced.add(row.model);
+		else if (rowPartial) partial.add(row.model);
+		else if (rowPriced) cost += rowCost;
 	}
-	return { cost: round6(cost), unpricedModels: [...unpriced] };
+	return { cost: round6(cost), unpricedModels: [...unpriced], partialModels: [...partial] };
 }
 
 /**
@@ -99,7 +153,13 @@ export function manualRateLookup(userRates, shipped) {
 		user = undefined;
 	}
 	const fallback = new RateTable(shipped);
-	return (model, day) => user?.rateFor(model, day) ?? fallback.rateFor(model, day);
+	const lookup = (model, day) => user?.rateFor(model, day) ?? fallback.rateFor(model, day);
+	// spentBetween splits long deltas at the table's change dates; expose them
+	// on the lookup so it does not have to reach into either table.
+	lookup.effectiveDates = (model) => [
+		...new Set([...user?.effectiveDates(model) ?? [], ...fallback.effectiveDates(model)])
+	].sort();
+	return lookup;
 }
 
 /**
@@ -122,6 +182,7 @@ export function manualBalanceCard(entry, current, rateFor, day) {
 		enteredAmount: entry.amount,
 		enteredAt: entry.at,
 		spentSince: spent.cost,
-		...(spent.unpricedModels.length === 0 ? {} : { unpricedModels: spent.unpricedModels })
+		...(spent.unpricedModels.length === 0 ? {} : { unpricedModels: spent.unpricedModels }),
+		...(spent.partialModels.length === 0 ? {} : { partialModels: spent.partialModels })
 	};
 }

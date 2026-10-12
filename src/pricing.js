@@ -151,6 +151,18 @@ export class RateTable {
 	models() {
 		return [...this.#byModel.keys()];
 	}
+
+	/**
+	 * The dates a model's prices change on, ascending. For splitting a usage
+	 * delta that spans a rate change into per-generation segments: each
+	 * segment is priced at the rates in force inside it, instead of pricing
+	 * the whole delta at today's rates.
+	 */
+	effectiveDates(model) {
+		const list = this.#byModel.get(model);
+		if (list === undefined) return [];
+		return [...new Set(list.map((rate) => rate.effectiveFrom))].sort();
+	}
 }
 
 /**
@@ -212,23 +224,42 @@ export function round6(value) {
  * @param rows - rows carrying `model` and token buckets.
  * @param table - the rate table.
  * @param day - `YYYY-MM-DD` used to select the effective rate.
- * @returns `{ rows, totals, unpricedModels }` where `totals` maps currency to
- *   summed cost and `unpricedModels` lists models that produced no estimate.
+ * @returns `{ rows, totals, unpricedModels, partialTotals, partialModels }`
+ *   where `totals` maps currency to summed cost and `unpricedModels` lists
+ *   models that produced no estimate. A row whose rate missed a bucket that
+ *   carried tokens is PARTIAL: its cost understates the truth, so it is kept
+ *   out of `totals` and summed into `partialTotals` instead, with the model
+ *   named in `partialModels`. Each such row also carries `partial: true`
+ *   (alongside the estimate fields) so renderers can mark it. A partial cost
+ *   in `totals` would be a confidently low figure with no trace of what was
+ *   left out; a partial cost dropped entirely would read as free. Neither is
+ *   acceptable, so the two sums stay separate and the UI prints both.
  */
 export function priceRows(rows, table, day) {
 	const totals = new Map();
+	const partialTotals = new Map();
 	const unpricedModels = [];
+	const partialModels = [];
 	const priced = rows.map((row) => {
 		const rate = table.rateFor(row.model, day);
 		const estimate = estimateCost(row, rate);
 		if (!estimate.priced) {
 			unpricedModels.push(row.model);
+		} else if (estimate.unpricedBuckets.length > 0) {
+			partialModels.push(row.model);
+			partialTotals.set(estimate.currency, round6((partialTotals.get(estimate.currency) ?? 0) + estimate.cost));
 		} else {
 			totals.set(estimate.currency, round6((totals.get(estimate.currency) ?? 0) + estimate.cost));
 		}
-		return { ...row, ...estimate };
+		return { ...row, ...estimate, partial: estimate.priced && estimate.unpricedBuckets.length > 0 };
 	});
-	return { rows: priced, totals: Object.fromEntries(totals), unpricedModels };
+	return {
+		rows: priced,
+		totals: Object.fromEntries(totals),
+		unpricedModels,
+		partialTotals: Object.fromEntries(partialTotals),
+		partialModels
+	};
 }
 
 /**
