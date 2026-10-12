@@ -257,11 +257,12 @@ export const DEEPSEEK_OFF_PEAK = definePeriod({
  *
  * The table is a SCHEDULE, not a snapshot: DeepSeek renamed and repriced its
  * models on 2026-09-10 (`deepseek-flash`, i.e. V4.1 Flash, at ¥0.04/¥2/¥8
- * peak, down from ¥0.10/¥3/¥9) and retires V4 Pro on 2026-09-14. Pricing a day
- * with the wrong generation's rates is a wrong number, so each generation
- * keeps its own `effectiveFrom` and history keeps the prices it was billed at.
- * `RateTable.rateFor` picks the newest rate whose `effectiveFrom` is on or
- * before the day being priced.
+ * peak, down from ¥0.10/¥3/¥9) and announced the retirement of V4 Pro. The
+ * retirement was reversed a day later, so `deepseek-v4-pro` carries its own
+ * prices again from 2026-09-14. Pricing a day with the wrong generation's
+ * rates is a wrong number, so each generation keeps its own `effectiveFrom`
+ * and history keeps the prices it was billed at. `RateTable.rateFor` picks the
+ * newest rate whose `effectiveFrom` is on or before the day being priced.
  *
  * Token-bucket mapping follows the DeepSeek usage report: `cacheReadTokens` is
  * the cache-hit prompt, `inputTokens` the cache-miss prompt, and `outputTokens`
@@ -319,15 +320,20 @@ export const DEEPSEEK_OFFICIAL_RATES = Object.freeze([
 		effectiveFrom: "2026-09-10",
 		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 }
 	}),
-	// V4 Pro retires: from 2026-09-14 its requests route to V4.1 Flash and are
-	// billed at Flash prices. The schedule is day-granular, so the few hours of
-	// 09-14 before 12:00 Beijing are priced at Flash as well — an undercount on
-	// a retiring model, never an overcount.
+	// V4 Pro was scheduled to retire: the 2026-09-10 announcement said all
+	// `deepseek-v4-pro` requests would route to V4.1 Flash from 2026-09-14
+	// 12:00 Beijing and be billed at Flash prices. DeepSeek reversed that the
+	// next day — the 2026-09-10 changelog entry reads 「我们决定在 2026 年 9 月 14 日
+	// 之后继续提供 DeepSeek V4 Pro 的 API 调用服务，计费方式保持不变」 ("we will
+	// continue to offer DeepSeek V4 Pro API calls after 2026-09-14, with billing
+	// unchanged") — and the pricing page still lists it at ¥0.30/¥9/¥27. So the
+	// retirement never took effect: 09-14 restores V4 Pro's own prices rather
+	// than extending Flash's.
 	defineRate({
 		model: "deepseek-v4-pro",
 		currency: "CNY",
 		effectiveFrom: "2026-09-14",
-		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 }
+		perMillion: { cacheReadTokens: 0.3, inputTokens: 9.0, outputTokens: 27.0 }
 	})
 ]);
 

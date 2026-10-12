@@ -162,9 +162,10 @@ test("costs are rounded to six decimals, not float noise", () => {
 });
 
 test("the shipped official schedule prices each day with its own generation's rates", () => {
-	// DeepSeek renamed and repriced on 2026-09-10 and retired V4 Pro on
-	// 2026-09-14; a day is priced with the schedule in force that day, so
-	// history keeps the prices it was billed at.
+	// DeepSeek renamed and repriced on 2026-09-10 and announced V4 Pro's
+	// retirement; the retirement was reversed the next day, so 2026-09-14
+	// restores V4 Pro's own prices. A day is priced with the schedule in
+	// force that day, so history keeps the prices it was billed at.
 	const table = new RateTable(DEEPSEEK_OFFICIAL_RATES);
 
 	// V4 prices before the switch, V4.1 Flash prices from it.
@@ -173,9 +174,11 @@ test("the shipped official schedule prices each day with its own generation's ra
 	// The rename's new id prices from its first day.
 	assert.equal(table.rateFor("deepseek-flash", "2026-09-10").perMillion.inputTokens, 2.0);
 	assert.equal(table.rateFor("deepseek-flash", "2026-09-09"), undefined);
-	// V4 Pro keeps its prices to its retirement day, then rides V4.1 Flash's.
+	// V4 Pro's announced retirement never took effect: its prices resume on
+	// 09-14 instead of collapsing onto V4.1 Flash's.
 	assert.equal(table.rateFor("deepseek-v4-pro", "2026-09-13").perMillion.inputTokens, 9.0);
-	assert.equal(table.rateFor("deepseek-v4-pro", "2026-09-14").perMillion.inputTokens, 2.0);
+	assert.equal(table.rateFor("deepseek-v4-pro", "2026-09-14").perMillion.inputTokens, 9.0);
+	assert.equal(table.rateFor("deepseek-v4-pro", "2026-10-12").perMillion.inputTokens, 9.0);
 	// Non-DeepSeek models stay unpriced.
 	assert.equal(table.rateFor("gpt-5.6-sol", "2026-09-10"), undefined);
 });
@@ -190,7 +193,7 @@ test("priceRows prices the official route through the shipped schedule", () => {
 		table,
 		"2026-09-12"
 	);
-	// flash: ¥2/M in + ¥8/M out on 1M each = 10; pro (pre-retirement): ¥9/M in.
+	// flash: ¥2/M in + ¥8/M out on 1M each = 10; pro (pre-reversal): ¥9/M in.
 	assert.deepEqual(totals, { CNY: 19 });
 	assert.deepEqual(unpricedModels, []);
 });
