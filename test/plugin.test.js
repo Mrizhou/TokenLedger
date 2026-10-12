@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildResolver, normalizeRelayConfig, staleAttributions, sweep } from "../src/plugin.js";
+import { buildResolver, canListSessions, normalizeRelayConfig, staleAttributions, sweep } from "../src/plugin.js";
 import { LedgerStore } from "../src/store.js";
 import { RelaySiteRegistry, createSiteResolver } from "../src/relay-sites.js";
 import { DIRECT } from "../src/usage.js";
@@ -589,4 +589,23 @@ test("a renumbered log is re-folded rather than skipped, so a migrated session k
 		assert.equal(store.totals().outputTokens, 25);
 		assert.equal(store.totals().requests, 2, "the wholesale rollup replace means no double count");
 	});
+});
+
+test("a rebuild probes log readability first and keeps the old index when the host cannot list", async () => {
+	// canListSessions shares sweep's seam handling: new list() preferred, old
+	// listSnapshots() as fallback. A host that cannot be listed must not lose
+	// its index to a blind reset.
+	assert.equal(await canListSessions({ async list() { return []; } }), true);
+	assert.equal(await canListSessions({ async listSnapshots() { return []; } }), true, "old hosts answer the old name");
+	assert.equal(
+		await canListSessions({
+			async list() {
+				throw new Error("locked");
+			}
+		}),
+		false,
+		"an unreadable host keeps its old index"
+	);
+	assert.equal(await canListSessions({}), false, "no seam at all is not listable");
+	assert.equal(await canListSessions(undefined), false);
 });

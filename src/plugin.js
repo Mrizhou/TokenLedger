@@ -307,6 +307,30 @@ function revisionUnchanged(stored, current) {
 }
 
 /**
+ * Whether the session logs can be listed right now.
+ *
+ * A rebuild starts by discarding the good index, so it must not start blind:
+ * when the host cannot even list its sessions, the sweep that follows is
+ * guaranteed to find nothing, and the reset that preceded it has destroyed
+ * rows (and checkpoints) no rerun can rebuild for sessions whose logs are
+ * already gone. This probe costs one listing and shares `sweep`'s seam
+ * handling (new `list()` preferred, old `listSnapshots()` as fallback).
+ *
+ * @returns true when a listing succeeded, false otherwise (logged).
+ */
+export async function canListSessions(persistence, logger = undefined) {
+	try {
+		const listSessions = persistence?.list ?? persistence?.listSnapshots;
+		if (typeof listSessions !== "function") return false;
+		await listSessions.call(persistence);
+		return true;
+	} catch (error) {
+		logger?.warn?.("tokenledger: could not list sessions before rebuilding: %s", error?.message ?? error);
+		return false;
+	}
+}
+
+/**
  * Sweep every session once.
  *
  * @returns `{ scanned, updated, skipped, failed, events }` — counts only. No
@@ -945,7 +969,17 @@ export function apply(ctx, userConfig = {}) {
 						stale.map((r) => `${r.provider}: ${r.site} -> ${r.expected}`).join(", ")
 					);
 				}
-				store.reset();
+				// The reset discards the good index AND the checkpoints, so it
+				// must not run when the logs cannot even be listed: a failed
+				// rebuild after a blind reset leaves the panel empty, and any
+				// session whose logs were deleted since is gone for good (the
+				// reset is irreversible). Probe readability first; a host that
+				// cannot be listed keeps its old index until it can.
+				if (await canListSessions(ctx.sessionPersistence, logger)) {
+					store.reset();
+				} else {
+					logger?.warn?.("tokenledger: keeping the old index; the session logs are not listable right now");
+				}
 			}
 			const stats = await sweep(ctx.sessionPersistence, store, {
 				resolveSite: directory.resolveSite,

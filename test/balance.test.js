@@ -1802,3 +1802,43 @@ test("the account call carries a client identity of its own", () => {
 	assert.equal(typeof fallback.locale, "string");
 	assert.equal(typeof fallback.timezoneOffsetSeconds, "number");
 });
+
+test("two keys on one vendor origin read their own wallets, not the first route's", async () => {
+	// Two DeepSeek keys pointing at the same origin are two quotas. The
+	// account folds them into one card, but the credential lookup must use
+	// the requested route's key — always reading the first route's key bills
+	// the second account's wallet to the first.
+	const directory = [
+		{ provider: "official", settingsNs: "llm-deepseek", settingsPath: [] },
+		{ provider: "official2", settingsNs: "llm-deepseek2", settingsPath: [] }
+	];
+	const forms = [
+		{ ns: "llm-deepseek", value: { baseURL: "https://api.deepseek.com", apiKeyEnv: "FIRST_KEY" } },
+		{ ns: "llm-deepseek2", value: { baseURL: "https://api.deepseek.com", apiKeyEnv: "SECOND_KEY" } }
+	];
+	const settings = { describe: () => forms };
+	const resolved = [];
+	const credentials = { resolve: async (ref) => (resolved.push(ref), { value: `${ref}-value` }) };
+	const seenKeys = [];
+	const ctx = {
+		get: (name) =>
+			name === "llm"
+				? { listConfigurableProviders: () => directory }
+				: name === "settings"
+					? settings
+					: name === "credentials"
+						? credentials
+						: undefined
+	};
+	const reader = createBalanceReader(ctx, {
+		softwareOf: new Map([["https://api.deepseek.com", "deepseek"]]),
+		fetch: async (url, init) => {
+			seenKeys.push(init?.headers?.authorization);
+			return { ok: true, status: 200, json: async () => ({ code: 200, data: { is_available: true, balance_infos: [] } }) };
+		}
+	});
+	// Request the SECOND route by id: its own key must serve the read.
+	await reader("official2");
+	assert.ok(resolved.includes("SECOND_KEY"), `the second route's key must be resolved, got ${JSON.stringify(resolved)}`);
+	assert.ok(!resolved.includes("FIRST_KEY"), `the first route's key must not serve the second route, got ${JSON.stringify(resolved)}`);
+});

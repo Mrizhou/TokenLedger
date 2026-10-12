@@ -16,9 +16,9 @@
 ## Steps
 - [x] 0. 收拾工作区：删 3 个一次性探针（tkl-probe-b/c、收件箱 cost-probe）。AGENTS.md 5 行坑记录留待随修复提交。
 - [x] 1. H4+M12 单行修复组：http.js priceToday 加 try/catch；newapi-user.js:362 补 response 参数；各加测试+变异验证；跑全量+pack；提交。(d5c52a4, 605/605)
-- [ ] 2. H1+H2+H3 计价语义重构组（等用户批设计方案，见本文件末尾「步骤 2 设计方案」）：
+- [x] 2. H1+H2+H3 计价语义重构组（用户已批方案）：H1 partial 行单列 partialTotals/partialModels（选 b）；H2 按日计价后汇总；H3 按 effectiveDates 切点分段+卡上披露；渲染侧（report/client/blue/http/余额卡）同步；各加测试+变异验证；跑全量+pack；提交。(67f5741, 610/610)
 - [ ] 2. H1+H2+H3 计价语义重构组：先出设计方案给用户看（priceRows partial 行处理、按日计价、快照按日存三选的取舍），用户点头再动手；动手后加测试+变异验证；跑全量+pack；提交。
-- [ ] 3. H5+H6 账本组：reset 推迟到首次成功读日志之后；referenceFor 按请求 id 找 key；加测试+变异验证；跑全量+pack；提交。
+- [x] 3. H5+H6 账本组：reset 前加 canListSessions 可读性探测（list 失败不丢库）；referenceFor 按请求 id 优先找 key；H5 集成测试（apply 双代 relay 变化+坏 persistence）+ canListSessions 四断言；H6 双 key 测试；变异验证通过；跑全量+pack；提交。(待提交)
 - [ ] 4. 其余 medium/low 组：M1 window 拒绝、M2 priceToday 多货币、M3 rates 替换语义文档+告警、M4 sweep 失败可见性、M5 cursor 腐坏自愈、M6 usage:null 守卫、M7 legacy 重编号自愈、M8/M9 dayOffsetMinutes 口径统一、M10/M11 趋势线 null 与 Blue 路由拆行、M13/M14/M15 订阅与余额校验、low 组（caption 破折号、极小金额、未知余额态、负余额钳位、探测 abort、dispose 中断在飞请求）；逐个加测试+变异验证；跑全量+pack；提交（可分 2-3 个提交）。
 - [ ] 5. 测试缺口组（测试组 11 条）：priceToday 零覆盖、跨代际区间计价、路由行 cost 回退、無 logger 失败路径、句柄 close 保证、并发 sweep、余额缺桶/跨币/超支、弱断言补强、unmount 迟到回包、offset 两套时钟、CSV 双向断言；逐个补测试；跑全量+pack；提交。
 - [ ] 6. 收尾：全量最后跑一次 + pack；push；按新 SHA 重装；核对装机（package.json 行、bundles、src 内容一致）；验证账本（schemaVersion、行数/总数只增不丢）；清 TEMP 残留；确认工作区干净；AGENTS.md 钉换新 SHA 后提交+push；向用户报告。

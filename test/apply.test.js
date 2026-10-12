@@ -42,7 +42,8 @@ function fakeContext(options = {}) {
 		events = [],
 		settings = undefined,
 		settingsReadyAfter = 0,
-		services = {}
+		services = {},
+		persistence = undefined
 	} = options;
 	const disposers = [];
 	const getCalls = [];
@@ -90,7 +91,7 @@ function fakeContext(options = {}) {
 			if (event === "dispose") disposers.push(handler);
 		},
 		reflect: { provide() {} },
-		sessionPersistence: {
+		sessionPersistence: persistence ?? {
 			listSnapshots: async () => [{ header: { id: "s1" }, revision: `r${ticks}` }],
 			readFrom: async (_id, from) => ({ events: from === 0 ? events : [] })
 		}
@@ -505,6 +506,72 @@ test("the 阿里云 AccessKey is stored once, shown masked, and signs the 百炼
 		await dispose();
 	} finally {
 		globalThis.fetch = realFetch;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a rebuild that cannot list the logs keeps the old index instead of blanking the panel", async () => {
+	// The reset discards the good index AND the checkpoints, so it must not
+	// run blind: when the host cannot list its sessions, the sweep that
+	// follows finds nothing, and any session whose logs are already gone is
+	// lost for good. A host that cannot be listed keeps its old index.
+	const { mkdtempSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const dir = mkdtempSync(join(tmpdir(), "tokenledger-rebuild-"));
+	const database = join(dir, "ledger.sqlite");
+	let api;
+	let api2;
+	try {
+		// First generation: a healthy host folds one turn.
+		const first = fakeContext({ events: [turn(1, "deepseek")] });
+		const firstServices = captureServices(first.ctx);
+		apply(first.ctx, { database, sweepIntervalMs: 0, sweepOnStart: false, detect: async () => ({ billingAvailable: false }) });
+		await settle();
+		api = firstServices.get("tokenLedger");
+		await api.sweep();
+		assert.equal(api.totals({}).inputTokens, 1000, "the first sweep lands rows");
+		await first.dispose();
+
+		// Second generation: the relay set moved (a relay appears), but the
+		// host cannot list its sessions anymore. The rebuild must not run.
+		const broken = {
+			listSnapshots: async () => {
+				throw new Error("locked");
+			},
+			readFrom: async () => ({ events: [] })
+		};
+		const second = fakeContext({
+			providers: [piAi("api99")],
+			section: { providers: { api99: { baseURL: "https://api.relay-one.example/v1" } } },
+			persistence: broken
+		});
+		const secondServices = captureServices(second.ctx);
+		apply(second.ctx, {
+			database,
+			sweepIntervalMs: 0,
+			sweepOnStart: false,
+			detect: async () => ({ billingAvailable: false }),
+			relays: { api99: "https://api.relay-one.example/v1" }
+		});
+		await settle();
+		api2 = secondServices.get("tokenLedger");
+		await api2.sweep();
+		assert.equal(
+			api2.totals({}).inputTokens,
+			1000,
+			"the unreadable host keeps the old index; a blind reset would have blanked it"
+		);
+		await second.dispose();
+	} finally {
+		// Close both stores before removing the directory: Windows locks the
+		// sqlite file while a connection is open and rmSync would hit EBUSY.
+		try {
+			api?.store?.close();
+		} catch {}
+		try {
+			api2?.store?.close();
+		} catch {}
 		rmSync(dir, { recursive: true, force: true });
 	}
 });

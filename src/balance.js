@@ -1265,7 +1265,7 @@ export function createBalanceReader(ctx, options = {}) {
 		}
 
 		const credentials = typeof ctx.get === "function" ? ctx.get("credentials") : undefined;
-		const reference = referenceFor(ctx, account, options);
+		const reference = referenceFor(ctx, account, options, id);
 		const apiKey =
 			reference === undefined || credentials === undefined
 				? undefined
@@ -1293,12 +1293,31 @@ export function createBalanceReader(ctx, options = {}) {
 	};
 }
 
-/** The credential reference on the route that serves this account. */
-function referenceFor(ctx, account, options) {
+/**
+ * The credential reference on the route that serves this account.
+ *
+ * The request's own id wins when it names a route folded into the account:
+ * two keys on one vendor origin are two quotas, and always reading the first
+ * route's key would bill the second key's wallet to the first account. Falls
+ * back to the account id for callers that only know the folded name.
+ */
+function referenceFor(ctx, account, options, id = undefined) {
 	const settings = typeof ctx.get === "function" ? ctx.get("settings") : undefined;
 	const llm = typeof ctx.get === "function" ? ctx.get("llm") : undefined;
 	if (settings === undefined || llm === undefined) return undefined;
 	const readSection = options.readSection ?? sectionReader(settings);
+	const want = new Set([account.id]);
+	// `id` may be a route folded into this account (findAccount resolves both
+	// shapes); prefer its own key when it names a provider directly.
+	if (typeof id === "string" && id !== account.id) want.add(id);
+	for (const entry of llm.listConfigurableProviders?.() ?? []) {
+		if (!want.has(entry.provider)) continue;
+		// The request's route first: it is the key that actually serves it.
+		if (entry.provider === id) {
+			const profile = readAt(readSection(entry.settingsNs), entry.settingsPath ?? []);
+			if (typeof profile?.apiKeyEnv === "string") return profile.apiKeyEnv;
+		}
+	}
 	for (const entry of llm.listConfigurableProviders?.() ?? []) {
 		if (entry.provider !== account.id) continue;
 		const profile = readAt(readSection(entry.settingsNs), entry.settingsPath ?? []);
