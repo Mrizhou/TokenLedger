@@ -2213,3 +2213,113 @@ test("the balance dialog sends the typed figure for its account", async () => {
 function exports_of(harness) {
 	return harness.exports;
 }
+
+// --- peak / off-peak ----------------------------------------------------------
+
+/** A `peak` payload as the host sends it, anchored at `now`. */
+function peakPayload(now, overrides = {}) {
+	return {
+		phase: "peak",
+		holiday: false,
+		changes: [
+			{ at: now + 4 * 60_000, phase: "off" },
+			{ at: now + 15 * 3_600_000, phase: "peak" }
+		],
+		alert: { enabled: true, aheadMinutes: 5, target: "both" },
+		holidaysUntil: "2026-12-31",
+		...overrides
+	};
+}
+
+test("the peak line counts down to the next change in the host's terms", async () => {
+	const { exports } = await loadBundle();
+	const t = exports.translateWith(undefined);
+	const now = Date.parse("2026-10-14T11:56:00+08:00");
+	assert.equal(exports.peakLineText(peakPayload(now), now, t), "高峰 · 4 分钟后空闲");
+	assert.equal(exports.peakLineText(peakPayload(now), now + 5 * 60_000, t), "空闲 · 14 小时 55 分后高峰", "walks past a change on the local clock");
+	assert.equal(
+		exports.peakLineText({ phase: "off", holiday: true, changes: [{ at: now + 90 * 60_000, phase: "peak" }] }, now, t),
+		"节假日空闲 · 1 小时 30 分后高峰"
+	);
+	assert.match(exports.peakLineText({ phase: "off", changes: [{ at: now + 3 * 86_400_000, phase: "peak" }] }, now, t), /^空闲 · .+ 高峰$/);
+	assert.equal(exports.peakLineText(undefined, now, t), undefined, "an older host sends no peak; no line");
+});
+
+test("the switch toast shows inside the lead time, once per change", async () => {
+	const harness = await loadBundle();
+	const { exports } = harness;
+	const t = exports.translateWith(undefined);
+	const now = Date.parse("2026-10-14T11:56:00+08:00");
+	const props = { peak: peakPayload(now), now, translate: t };
+
+	assert.equal(harness.render(exports.PeakToast, props), null, "nothing before the effect decides");
+	harness.runEffects();
+	const shown = harness.renderWithState(exports.PeakToast, props, [harness.readState(0)]);
+	assert.equal(shown.props["data-phase"], "off");
+	assert.match(textOf(shown), /4 分钟后进入空闲时段/);
+	assert.match(textOf(shown), /切回 DeepSeek/);
+
+	// A remount (or a payload refresh) must not alert the same switch again.
+	harness.render(exports.PeakToast, props);
+	harness.runEffects();
+	assert.equal(harness.readState(0), undefined);
+
+	// Outside the lead time, or a direction not asked for: nothing.
+	const early = { ...props, peak: peakPayload(now, { changes: [{ at: now + 30 * 60_000, phase: "off" }] }) };
+	harness.render(exports.PeakToast, early);
+	harness.runEffects();
+	assert.equal(harness.readState(0), undefined, "30 minutes out with a 5-minute lead");
+	const unwanted = { ...props, peak: peakPayload(now, { changes: [{ at: now + 60_000, phase: "peak" }], alert: { enabled: true, aheadMinutes: 5, target: "offpeak" } }) };
+	harness.render(exports.PeakToast, unwanted);
+	harness.runEffects();
+	assert.equal(harness.readState(0), undefined, "only entering off-peak was asked for");
+	const off = { ...props, peak: peakPayload(now, { changes: [{ at: now + 60_000, phase: "peak" }], alert: { enabled: false, aheadMinutes: 5, target: "both" } }) };
+	harness.render(exports.PeakToast, off);
+	harness.runEffects();
+	assert.equal(harness.readState(0), undefined, "alert switched off");
+
+	// Gone on its own two minutes after the switch.
+	const late = harness.renderWithState(exports.PeakToast, { ...props, now: now + 7 * 60_000 }, [{ at: now + 4 * 60_000, phase: "off" }]);
+	assert.equal(late, null);
+});
+
+test("the holiday-list notice shows once per launch", async () => {
+	const harness = await loadBundle();
+	const { exports } = harness;
+	const t = exports.translateWith(undefined);
+	const first = harness.render(exports.HolidayNotice, { notice: { until: "2026-12-31", daysLeft: 9 }, translate: t });
+	assert.match(textOf(first), /只配到 2026-12-31（还剩 9 天）/);
+	assert.match(textOf(first), /peak\.holidays/);
+	harness.runEffects();
+	assert.equal(harness.render(exports.HolidayNotice, { notice: { until: "2026-12-31", daysLeft: 9 }, translate: t }), null, "already shown this launch");
+
+	const fresh = await loadBundle();
+	const expired = fresh.render(fresh.exports.HolidayNotice, { notice: { until: "2026-12-31", daysLeft: -3 }, translate: fresh.exports.translateWith(undefined) });
+	assert.match(textOf(expired), /已经过期 3 天/);
+});
+
+test("the badge carries the peak line and mounts the toast and the notice", async () => {
+	const harness = await loadBundle();
+	const T_ = harness.exports;
+	harness.render(T_.TokenLedgerPanel, { wide: true });
+	const cells = Array.from({ length: 40 }, (_, i) => harness.readState(i));
+	const usageCell = cells.findIndex((c) => c !== null && typeof c === "object" && c.status === "idle");
+	assert.ok(usageCell > 0, "found the usage state cell");
+	const nowCell = cells.findIndex((c) => typeof c === "number" && Math.abs(c - Date.now()) < 60_000);
+	assert.ok(nowCell > 0, "found the clock cell");
+	const now = Date.parse("2026-10-14T11:56:00+08:00");
+	cells[nowCell] = now;
+	cells[usageCell] = { status: "ready", data: { windows: { today: { tokens: 1 } }, peak: peakPayload(now, { holidayNotice: { until: "2026-12-31", daysLeft: 9 } }) } };
+	const tree = harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells);
+	const line = findAll(tree, "tkl_badgeSub").find((n) => n.props["data-peak"] !== undefined);
+	assert.equal(line.props["data-peak"], "peak");
+	assert.equal(line.props.children, "高峰 · 4 分钟后空闲");
+	assert.match(line.props.title, /法定节假日/);
+	const types = tree.props.children.filter(Boolean).map((c) => c.type);
+	assert.ok(types.includes(T_.PeakToast), "toast mounted");
+	assert.ok(types.includes(T_.HolidayNotice), "notice mounted when due");
+
+	cells[usageCell] = { status: "ready", data: { windows: { today: { tokens: 1 } } } };
+	const bare = harness.renderWithState(T_.TokenLedgerPanel, { wide: true }, cells);
+	assert.equal(findAll(bare, "tkl_badgeSub").find((n) => n.props["data-peak"] !== undefined), undefined, "no peak payload, no line");
+});

@@ -301,15 +301,26 @@ function cleanName(value) {
 	return String(value).replaceAll(SEP, "�").slice(0, MAX_NAME);
 }
 
-/** Stable key for a `(site, provider, model)` route. */
-export function routeKey(site, provider, model) {
-	return `${cleanName(site)}${SEP}${cleanName(provider)}${SEP}${cleanName(model)}`;
+/**
+ * Stable key for a `(site, provider, model)` route, optionally split by the
+ * peak/off-peak phase of the moment it was used (see `peak.js`).
+ *
+ * An empty phase writes the old three-part key, so keys stored before phases
+ * existed — rollup rows and checkpoint cursors alike — still parse and still
+ * match.
+ */
+export function routeKey(site, provider, model, phase = "") {
+	const base = `${cleanName(site)}${SEP}${cleanName(provider)}${SEP}${cleanName(model)}`;
+	return phase === "" || phase === undefined || phase === null ? base : `${base}${SEP}${cleanName(phase)}`;
 }
 
-/** Split a route key back into its components. */
+/**
+ * Split a route key back into its components. `phase` is present only on a
+ * phased key, so a three-part key parses to exactly the shape it always had.
+ */
 export function parseRouteKey(key) {
-	const [site, provider, model] = key.split(SEP);
-	return { site, provider, model };
+	const [site, provider, model, phase] = key.split(SEP);
+	return phase === undefined ? { site, provider, model } : { site, provider, model, phase };
 }
 
 function entryOf(byDay, day) {
@@ -349,11 +360,13 @@ export function createUsageState() {
  * @param events - new events in `seq` order, starting after `state.consumedSeq`.
  * @param options - `resolveSite(provider)` returns the configured relay site id
  *   for a DSH provider route, or a falsy value for a direct/official call.
- *   Omitting it attributes everything to {@link DIRECT}.
+ *   Omitting it attributes everything to {@link DIRECT}. `phaseOf(timeMs)`
+ *   returns the peak/off-peak phase to split rows by (`""` for none).
  */
 export function applyUsageDelta(state, events, options = {}) {
 	const resolveSite = options.resolveSite ?? (() => DIRECT);
 	const dayOffset = options.dayOffsetMinutes;
+	const phaseOf = typeof options.phaseOf === "function" ? options.phaseOf : undefined;
 	let last = state.lastSample;
 	let currentRoute = state.currentRoute;
 	// Re-report replacement is looked up across the WHOLE pass, not just
@@ -386,7 +399,11 @@ export function applyUsageDelta(state, events, options = {}) {
 		// is absent from the directory — which is not the same as a route that
 		// is present and points at no relay.
 		const site = provider === UNKNOWN ? DIRECT : (resolveSite(provider) ?? UNROUTED);
-		const key = routeKey(site, provider, model);
+		// The phase of the moment the usage was reported, so a peak-priced and
+		// an off-peak-priced call land in different rows. An untimed event has
+		// no moment, and gets no phase.
+		const phase = timed && phaseOf !== undefined ? (phaseOf(event.time) ?? "") : "";
+		const key = routeKey(site, provider, model, phase);
 
 		// An event without a usable timestamp joins the last day it saw rather
 		// than inventing `"NaN-NaN-NaN"` — a day key nothing could query.

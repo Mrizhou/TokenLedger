@@ -30,7 +30,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { createUsageState, totalTokens, cacheHitRate, parseRouteKey, routeKey, zeroBuckets } from "./usage.js";
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const COLUMNS = [
 	"inputTokens",
@@ -59,7 +59,10 @@ CREATE TABLE IF NOT EXISTS session_rollups (
   cacheWriteTokens INTEGER NOT NULL DEFAULT 0,
   reasoningTokens  INTEGER NOT NULL DEFAULT 0,
   requests         INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (sessionId, day, site, provider, model)
+  -- Peak/off-peak phase of the usage (peak.js): 'peak', 'off', 'holiday', or
+  -- '' for usage recorded before phases existed, which keeps its old price.
+  phase            TEXT    NOT NULL DEFAULT '',
+  PRIMARY KEY (sessionId, day, site, provider, model, phase)
 ) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_rollups_day  ON session_rollups (day);
@@ -169,10 +172,19 @@ export class LedgerStore {
 	#migrate() {
 		this.#db.exec("PRAGMA journal_mode = WAL");
 		this.#db.exec("PRAGMA foreign_keys = ON");
+		const hasMeta = this.#db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get() !== undefined;
+		const before = hasMeta ? this.#db.prepare("SELECT value FROM meta WHERE key = 'schemaVersion'").get() : undefined;
+		// v4 -> v5 only adds the phase column, and is done IN PLACE: every row
+		// keeps its numbers under phase '' (priced as before). Dropping and
+		// re-folding instead would lose every session whose log has since been
+		// deleted, and undo the hand-merged attributions (AGENTS.md 已知的坑).
+		// Runs before SCHEMA so the v5 indexes land on the v5 table.
+		if (before !== undefined && Number(before.value) === 4) this.#migrateV4();
 		this.#db.exec(SCHEMA);
 		const found = this.#db.prepare("SELECT value FROM meta WHERE key = 'schemaVersion'").get();
 		if (found === undefined) {
 			this.#db.prepare("INSERT INTO meta (key, value) VALUES ('schemaVersion', ?)").run(String(SCHEMA_VERSION));
+			this.#markPhaseSince();
 			return;
 		}
 		const version = Number(found.value);
@@ -193,14 +205,59 @@ export class LedgerStore {
 			this.#db.exec(SCHEMA);
 			this.#db.prepare("UPDATE meta SET value = ? WHERE key = 'schemaVersion'").run(String(SCHEMA_VERSION));
 		}
+		this.#markPhaseSince();
+	}
+
+	#migrateV4() {
+		const cols = ["sessionId", "day", "site", "provider", "model", ...COLUMNS].join(", ");
+		this.#transaction(() => {
+			this.#db.exec(`
+				CREATE TABLE session_rollups_v5 (
+				  sessionId        TEXT    NOT NULL,
+				  day              TEXT    NOT NULL,
+				  site             TEXT    NOT NULL,
+				  provider         TEXT    NOT NULL,
+				  model            TEXT    NOT NULL,
+				  inputTokens      INTEGER NOT NULL DEFAULT 0,
+				  outputTokens     INTEGER NOT NULL DEFAULT 0,
+				  cacheReadTokens  INTEGER NOT NULL DEFAULT 0,
+				  cacheWriteTokens INTEGER NOT NULL DEFAULT 0,
+				  reasoningTokens  INTEGER NOT NULL DEFAULT 0,
+				  requests         INTEGER NOT NULL DEFAULT 0,
+				  phase            TEXT    NOT NULL DEFAULT '',
+				  PRIMARY KEY (sessionId, day, site, provider, model, phase)
+				) WITHOUT ROWID;
+				INSERT INTO session_rollups_v5 (${cols}, phase) SELECT ${cols}, '' FROM session_rollups;
+				DROP TABLE session_rollups;
+				ALTER TABLE session_rollups_v5 RENAME TO session_rollups;
+			`);
+			this.#db.prepare("UPDATE meta SET value = ? WHERE key = 'schemaVersion'").run(String(SCHEMA_VERSION));
+		});
+	}
+
+	/**
+	 * Record, once, the moment phases start being kept. Usage before it folds
+	 * with phase '' — on every later re-fold too, so a rebuild cannot re-price
+	 * history that was deliberately left alone (用户 2026-10-14：「以前的不算了，
+	 * 以后的要算」). `reset()` keeps it: it clears rows, not meta.
+	 */
+	#markPhaseSince() {
+		this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('phaseSince', ?)").run(String(Date.now()));
+	}
+
+	/** Epoch ms from which usage is split by peak/off-peak phase. */
+	phaseSince() {
+		const row = this.#db.prepare("SELECT value FROM meta WHERE key = 'phaseSince'").get();
+		const value = Number(row?.value);
+		return Number.isFinite(value) ? value : undefined;
 	}
 
 	#prepare() {
 		const cols = COLUMNS.join(", ");
 		const marks = COLUMNS.map(() => "?").join(", ");
 		this.#stmt.insertRollup = this.#db.prepare(
-			`INSERT INTO session_rollups (sessionId, day, site, provider, model, ${cols})
-			 VALUES (?, ?, ?, ?, ?, ${marks})`
+			`INSERT INTO session_rollups (sessionId, day, site, provider, model, phase, ${cols})
+			 VALUES (?, ?, ?, ?, ?, ?, ${marks})`
 		);
 		this.#stmt.deleteRollups = this.#db.prepare("DELETE FROM session_rollups WHERE sessionId = ?");
 		this.#stmt.upsertSession = this.#db.prepare(
@@ -286,7 +343,7 @@ export class LedgerStore {
 			}
 			const buckets = zeroBuckets();
 			for (const column of COLUMNS) buckets[column] = Number(row[column]);
-			entry.routes.set(routeKey(row.site, row.provider, row.model), buckets);
+			entry.routes.set(routeKey(row.site, row.provider, row.model, row.phase), buckets);
 			for (const column of COLUMNS) entry.totals[column] += buckets[column];
 		}
 
@@ -325,13 +382,14 @@ export class LedgerStore {
 			for (const [day, entry] of state.days) {
 				for (const [key, buckets] of entry.routes) {
 					if (COLUMNS.every((column) => buckets[column] === 0)) continue;
-					const { site, provider, model } = parseRouteKey(key);
+					const { site, provider, model, phase = "" } = parseRouteKey(key);
 					this.#stmt.insertRollup.run(
 						sessionId,
 						day,
 						site,
 						provider,
 						model,
+						phase,
 						...COLUMNS.map((column) => buckets[column])
 					);
 				}
@@ -385,11 +443,16 @@ export class LedgerStore {
 			.map(decorate);
 	}
 
-	/** Per-model totals, descending by billed tokens. Site and provider are filters. */
-	byModel(range = {}, site = undefined, provider = undefined) {
+	/**
+	 * Per-model totals, descending by billed tokens. Site and provider are filters.
+	 * `{ phase: true }` splits each row by peak/off-peak phase — for pricing
+	 * only; every display reads the merged rows.
+	 */
+	byModel(range = {}, site = undefined, provider = undefined, options = {}) {
 		const { sql, params } = rangeClause(range, site, "", provider);
+		const group = options.phase === true ? "model, phase" : "model";
 		return this.#db
-			.prepare(`SELECT model, ${SUMS} FROM session_rollups ${sql} GROUP BY model`)
+			.prepare(`SELECT ${group}, ${SUMS} FROM session_rollups ${sql} GROUP BY ${group}`)
 			.all(...params)
 			.map(decorate)
 			.sort((a, b) => b.tokens - a.tokens);
@@ -404,10 +467,11 @@ export class LedgerStore {
 	 * MODEL vendor (`deepseek/deepseek-v4.1-flash` on Command Code) — which reads
 	 * like a provider prefix but is not one.
 	 */
-	byProviderModel(range = {}, site = undefined, provider = undefined) {
+	byProviderModel(range = {}, site = undefined, provider = undefined, options = {}) {
 		const { sql, params } = rangeClause(range, site, "", provider);
+		const group = options.phase === true ? "provider, model, phase" : "provider, model";
 		return this.#db
-			.prepare(`SELECT provider, model, ${SUMS} FROM session_rollups ${sql} GROUP BY provider, model`)
+			.prepare(`SELECT ${group}, ${SUMS} FROM session_rollups ${sql} GROUP BY ${group}`)
 			.all(...params)
 			.map(decorate)
 			.sort((a, b) => b.tokens - a.tokens);
@@ -463,13 +527,14 @@ export class LedgerStore {
 			.sort((a, b) => b.tokens - a.tokens);
 	}
 
-	/** Full route breakdown, for export and drill-down. */
-	byRoute(range = {}, site = undefined, provider = undefined) {
+	/** Full route breakdown, for export and drill-down; `{ phase: true }` as in `byModel`. */
+	byRoute(range = {}, site = undefined, provider = undefined, options = {}) {
 		const { sql, params } = rangeClause(range, site, "", provider);
+		const group = options.phase === true ? "day, site, provider, model, phase" : "day, site, provider, model";
 		return this.#db
 			.prepare(
-				`SELECT day, site, provider, model, ${SUMS} FROM session_rollups ${sql}
-				 GROUP BY day, site, provider, model ORDER BY day, site, provider, model`
+				`SELECT ${group}, ${SUMS} FROM session_rollups ${sql}
+				 GROUP BY ${group} ORDER BY ${group}`
 			)
 			.all(...params)
 			.map(decorate);

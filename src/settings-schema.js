@@ -154,6 +154,23 @@ export function buildSchema(z) {
 		 * route's deepseek models; other models stay unpriced. A table here
 		 * always wins.
 		 */
+		/**
+		 * DeepSeek peak/off-peak reminder (peak.js). `holidays` adds Beijing
+		 * dates to the shipped list — next year's 放假 days, once the State
+		 * Council publishes them; `holidaysUntil` overrides the date the list
+		 * is trusted until (default: Dec 31 of its last year), and the panel
+		 * reminds from `remindDays` before it.
+		 */
+		peak: z.object({
+			alert: z.boolean().default(true).description("切换前提醒"),
+			aheadMinutes: z.number().step(1).min(1).max(60).default(5).description("提前分钟数"),
+			target: z.union([z.const("both"), z.const("peak"), z.const("offpeak")]).default("both").description("提醒哪种切换"),
+			holidays: z.array(z.string()).description("追加节假日（北京日期 YYYY-MM-DD）"),
+			holidaysUntil: z.string().description("节假日表有效期至（YYYY-MM-DD）"),
+			remindDays: z.number().step(1).min(1).max(60).default(10).description("到期前几天开始提醒")
+		})
+			.description("峰谷提醒")
+			.comment("DeepSeek 峰谷时段提醒；节假日表到期前每次打开都会提醒补下一年"),
 		rates: z.any()
 			.description("价格表")
 			.comment("用于成本估算的模型费率 JSON；不配时按 DeepSeek 官方价（峰时）估算官方路由")

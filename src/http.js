@@ -270,7 +270,8 @@ export function parseQuery(url, options = {}) {
  */
 export function priceToday(store, site = undefined, rates = undefined, dayOffsetMinutes = undefined) {
 	const day = dayKey(Date.now(), dayOffsetMinutes);
-	const rows = store.byRoute({ from: day }, site).filter((row) => row.provider === "deepseek-official");
+	// Split by phase: an `offPeak` rate prices off-peak rows at its discount.
+	const rows = store.byRoute({ from: day }, site, undefined, { phase: true }).filter((row) => row.provider === "deepseek-official");
 	if (rows.length === 0) return null;
 	let priced;
 	try {
@@ -315,9 +316,9 @@ export function dailySeries(store, site = undefined, provider = undefined, rates
 		const table = new RateTable(rates === undefined ? DEEPSEEK_OFFICIAL_RATES : rates);
 		const rows =
 			rates !== undefined
-				? store.byRoute({}, site, provider)
+				? store.byRoute({}, site, provider, { phase: true })
 				: provider === undefined || provider === "deepseek-official"
-					? store.byRoute({}, site, "deepseek-official")
+					? store.byRoute({}, site, "deepseek-official", { phase: true })
 					: [];
 		const byDay = new Map();
 		for (const row of rows) {
@@ -401,6 +402,9 @@ export function usagePayload(deps, query) {
 		// selected range, like `windows.today` — the badge answers "today" even
 		// when the panel is looking at last month.
 		todayCost: deps.todayPriced?.(site) ?? null,
+		// DeepSeek peak/off-peak: the phase now, the next changes, the alert
+		// settings, and the holiday-list reminder when it is due (peak.js).
+		...(deps.peak === undefined ? {} : { peak: deps.peak() }),
 		// The activity strip has its OWN window, deliberately. Tied to the
 		// selected range it collapsed to a single cell whenever "today" was
 		// picked — a heatmap of one day is not a heatmap, and it read as broken.

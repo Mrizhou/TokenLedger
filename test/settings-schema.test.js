@@ -24,8 +24,10 @@ test("the settings schema exposes Chinese labels without changing resolved defau
 		fingerprint: false,
 		database: "tokenledger.sqlite",
 		sweepIntervalMs: 60_000,
-		sweepOnStart: true
+		sweepOnStart: true,
+		peak: { alert: true, aheadMinutes: 5, target: "both", holidays: [], remindDays: 10 }
 	});
+	assert.equal(schema.dict.peak.meta.description, "峰谷提醒");
 });
 
 test("wallet tokens are schema-declared write-only secrets", () => {

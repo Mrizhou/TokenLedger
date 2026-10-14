@@ -49,6 +49,7 @@ import { DashboardController, DashboardControllerError } from "./dashboard-contr
 import { mountTokenLedgerBlue } from "./blue/index.js";
 
 import { LedgerStore } from "./store.js";
+import { holidaySet, normalizePeakConfig, peakView, phaseClassifier } from "./peak.js";
 import { DEEPSEEK_OFFICIAL_RATES, MIMO_OFFICIAL_RATES, RateTable, priceRows, round6 } from "./pricing.js";
 import { num, renderReport, table } from "./report.js";
 
@@ -83,7 +84,12 @@ export function priceWithConfiguredRates(store, range, site, rates, provider = u
 		// model reached through two routes is two rows there — one model-wide
 		// figure would print identically on both of them, and the cost column would
 		// then sum to double what was spent.
-		const source = byRoute ? store.byProviderModel.bind(store) : store.byModel.bind(store);
+		// Rows come split by peak/off-peak phase, because a rate with `offPeak`
+		// prices the two at different prices; the merge below folds them back
+		// into one row per model (or route+model) for display.
+		const source = byRoute
+			? (r, s, p) => store.byProviderModel(r, s, p, { phase: true })
+			: (r, s, p) => store.byModel(r, s, p, { phase: true });
 		// Each day is priced at ITS OWN date's rates, then summed: rates are a
 		// schedule (effectiveFrom per generation), and pricing a multi-day range
 		// at one date's rates prices every other day wrong. `dailySeries` in
@@ -122,7 +128,8 @@ export function priceWithConfiguredRates(store, range, site, rates, provider = u
 				const key = keyOf(row);
 				const prev = rowsByKey.get(key);
 				if (prev === undefined) {
-					rowsByKey.set(key, { ...row });
+					const { phase: _phase, ...merged } = row;
+					rowsByKey.set(key, merged);
 				} else {
 					for (const bucket of ["inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens", "requests", "tokens"]) {
 						if (typeof row[bucket] === "number" && typeof prev[bucket] === "number") prev[bucket] = prev[bucket] + row[bucket];
@@ -363,6 +370,9 @@ export async function canListSessions(persistence, logger = undefined) {
 export async function sweep(persistence, store, options = {}) {
 	const resolveSite = options.resolveSite;
 	const logger = options.logger;
+	// Usage is split by peak/off-peak phase from the moment the store started
+	// keeping phases; a caller without holiday config gets the shipped list.
+	const phaseOf = options.phaseOf ?? phaseClassifier({ since: store.phaseSince?.(), holidays: holidaySet() });
 	const stats = { scanned: 0, updated: 0, skipped: 0, failed: 0, events: 0 };
 
 	let snapshots;
@@ -496,7 +506,7 @@ export async function sweep(persistence, store, options = {}) {
 				continue;
 			}
 
-			applyUsageDelta(state, events, { resolveSite, dayOffsetMinutes: options.dayOffsetMinutes });
+			applyUsageDelta(state, events, { resolveSite, dayOffsetMinutes: options.dayOffsetMinutes, phaseOf });
 			store.commitSession(sessionId, state, {
 				logRevision: revision,
 				dshVersion: options.dshVersion,
@@ -1032,7 +1042,10 @@ export function apply(ctx, userConfig = {}) {
 				resolveSite: directory.resolveSite,
 				logger,
 				dshVersion: config.dshVersion,
-				dayOffsetMinutes: config.dayOffsetMinutes
+				dayOffsetMinutes: config.dayOffsetMinutes,
+				// Read per sweep, so a holiday added in settings applies from the
+				// next fold on (already-folded usage keeps the phase it got).
+				phaseOf: phaseClassifier({ since: store.phaseSince(), holidays: holidaySet(normalizePeakConfig(config.peak).holidays) })
 			});
 			if (stats.updated > 0 || stats.failed > 0) {
 				logger?.info?.(
@@ -1508,6 +1521,9 @@ export function apply(ctx, userConfig = {}) {
 			// The badge's "today" figure, same rate default as `priced`.
 			todayPriced: (site) => priceToday(store, site, config.rates, config.dayOffsetMinutes),
 			daily: (site, provider) => dailySeries(store, site, provider, config.rates),
+			// The sidebar's peak/off-peak line, alert and holiday-list reminder.
+			// A function so a settings edit shows up on the next read.
+			peak: () => peakView(config.peak),
 			accounts: () => listAccounts(ctx, { softwareOf: fingerprints.software }),
 			projectTitles: () => projectTitles,
 			lastSweepAt: () => lastSweepAt,

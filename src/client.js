@@ -394,6 +394,14 @@ window.__ModuleLoader__.load({
 			// On a failed read there is no amount to follow, so the chip hangs
 			// under the note instead.
 			".tkl_balance > .tkl_setBtn{margin-top:8px;align-self:flex-start}",
+			// Peak/off-peak: the badge line takes the warn colour during peak, and
+			// the switch toast is a corner card whose left edge says which way.
+			".tkl_badgeSub[data-peak='peak']{color:var(--dsw-alias-state-warn-primary)}",
+			".tkl_toast{position:fixed;right:16px;bottom:16px;z-index:70;width:300px;max-width:calc(100vw - 32px);box-sizing:border-box;display:flex;gap:8px;align-items:flex-start;padding:10px 10px 10px 12px;background:color-mix(in srgb,var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base)) var(--dsw-alias-glass-opacity,90%),transparent);border:1px solid var(--dsw-alias-border-l1);border-left:3px solid var(--dsw-alias-state-success-primary);border-radius:var(--tkl-radius);box-shadow:var(--dsw-shadow-lv2)}",
+			".tkl_toast[data-phase='peak']{border-left-color:var(--dsw-alias-state-warn-primary)}",
+			".tkl_toastText{flex:1;min-width:0}",
+			".tkl_toastTitle{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:20px}",
+			".tkl_toastBody{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;margin-top:2px}",
 			".tkl_dlgOverlay{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.32);display:flex;align-items:center;justify-content:center}",
 			".tkl_dlg{width:420px;max-width:calc(100vw - 32px);max-height:80vh;overflow-y:auto;box-sizing:border-box;background:color-mix(in srgb,var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-base)) var(--dsw-alias-glass-opacity,90%),transparent);border:1px solid var(--dsw-alias-border-l1);border-radius:var(--tkl-radius);box-shadow:var(--dsw-shadow-lv2);padding:14px 16px}",
 			".tkl_dlgHead{display:flex;align-items:center;gap:8px;margin-bottom:8px}",
@@ -547,6 +555,10 @@ window.__ModuleLoader__.load({
 			balanceAmount: "tkl_balanceAmount",
 			balanceMeta: "tkl_balanceMeta",
 			setBtn: "tkl_setBtn",
+			toast: "tkl_toast",
+			toastText: "tkl_toastText",
+			toastTitle: "tkl_toastTitle",
+			toastBody: "tkl_toastBody",
 			dlgOverlay: "tkl_dlgOverlay",
 			dlg: "tkl_dlg",
 			dlgHead: "tkl_dlgHead",
@@ -2988,6 +3000,166 @@ window.__ModuleLoader__.load({
 			});
 		}
 
+		//#region peak / off-peak
+		/**
+		 * Where the clock stands against DeepSeek's peak schedule, read off the
+		 * host's `peak` payload: the phase now and the next change.
+		 *
+		 * The host sends the upcoming changes (peak.js) instead of this bundle
+		 * re-deriving the schedule, so the holiday list lives in one place. The
+		 * payload is re-read every few minutes and covers eight days, so walking
+		 * it with the local clock stays right between reads.
+		 */
+		function peakNow(peak, now) {
+			if (peak === undefined || peak === null || !Array.isArray(peak.changes)) return undefined;
+			let phase = peak.phase;
+			let next;
+			for (const change of peak.changes) {
+				if (change.at <= now) phase = change.phase;
+				else {
+					next = change;
+					break;
+				}
+			}
+			return { phase, next };
+		}
+
+		/** "23 分钟后" / "1 小时 5 分后", or undefined past a day. */
+		function peakUntil(ms, translate) {
+			const minutes = Math.max(1, Math.ceil(ms / 60_000));
+			if (minutes < 60) return translate("peak.inMinutes", { m: minutes });
+			const hours = Math.floor(minutes / 60);
+			if (hours >= 24) return undefined;
+			const rest = minutes % 60;
+			return rest === 0 ? translate("peak.inHours", { h: hours }) : translate("peak.inHoursMinutes", { h: hours, m: rest });
+		}
+
+		/** The badge's peak line: 「高峰 · 23 分钟后空闲」. */
+		function peakLineText(peak, now, translate) {
+			const state = peakNow(peak, now);
+			if (state === undefined) return undefined;
+			const label = translate(state.phase === "peak" ? "peak.peak" : peak.holiday === true ? "peak.holiday" : "peak.off");
+			if (state.next === undefined) return label;
+			const target = translate(state.next.phase === "peak" ? "peak.toPeak" : "peak.toOff");
+			const until = peakUntil(state.next.at - now, translate);
+			if (until !== undefined) return `${label} · ${until}${target}`;
+			let when;
+			try {
+				when = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(state.next.at));
+			} catch {
+				when = new Date(state.next.at).toLocaleString();
+			}
+			return `${label} · ${when} ${target}`;
+		}
+
+		/**
+		 * Changes already alerted in this renderer, so a re-render, a remount or
+		 * a payload refresh never alerts the same switch twice. Module scope:
+		 * it resets when DSH is reopened, which is the point.
+		 */
+		const alertedChanges = new Set();
+
+		/**
+		 * The switch reminder: a corner card `aheadMinutes` before the phase
+		 * changes, for whichever direction `target` names. For every model, not
+		 * only DeepSeek's (用户 2026-10-14：峰段用其他模型，到谷段提醒我切回来).
+		 */
+		function PeakToast({ peak, now, translate }) {
+			const [shown, setShown] = react.useState(undefined);
+			const state = peakNow(peak, now);
+			const alert = peak?.alert;
+			const nextAt = state?.next?.at;
+			const nextPhase = state?.next?.phase;
+			react.useEffect(() => {
+				if (nextAt === undefined || alert?.enabled !== true) return;
+				const wanted = alert.target === "both" || (alert.target === "peak" ? nextPhase === "peak" : nextPhase === "off");
+				const lead = (Number.isFinite(alert.aheadMinutes) ? alert.aheadMinutes : 5) * 60_000;
+				if (!wanted || now < nextAt - lead || now >= nextAt || alertedChanges.has(nextAt)) return;
+				alertedChanges.add(nextAt);
+				setShown({ at: nextAt, phase: nextPhase });
+			}, [now, nextAt, nextPhase, alert?.enabled, alert?.target, alert?.aheadMinutes]);
+			// Gone on its own two minutes after the switch: by then it is news.
+			if (shown === undefined || now >= shown.at + 120_000) return null;
+			const minutes = Math.max(0, Math.ceil((shown.at - now) / 60_000));
+			const title = minutes === 0
+				? translate(shown.phase === "peak" ? "peak.toastNowPeak" : "peak.toastNowOff")
+				: translate(shown.phase === "peak" ? "peak.toastPeak" : "peak.toastOff", { m: minutes });
+			return jsxs("div", {
+				className: S.toast,
+				role: "status",
+				"data-phase": shown.phase,
+				children: [
+					jsxs("div", {
+						className: S.toastText,
+						children: [
+							jsx("div", { className: S.toastTitle, children: title }),
+							jsx("div", { className: S.toastBody, children: translate(shown.phase === "peak" ? "peak.toastPeakBody" : "peak.toastOffBody") })
+						]
+					}),
+					jsx("button", {
+						type: "button",
+						className: S.iconButton,
+						"aria-label": translate("action.close"),
+						onClick: () => setShown(undefined),
+						children: jsx(IconClose, { size: 14 })
+					})
+				]
+			});
+		}
+
+		/** Whether the holiday-list reminder already showed since DSH opened. */
+		let holidayNoticeShown = false;
+
+		/**
+		 * The holiday list is about to run out: once per DSH launch, from
+		 * `remindDays` before its last date (用户 2026-10-14：十二月最后十天每次
+		 * 打开 DSH 弹窗提醒).
+		 */
+		function HolidayNotice({ notice, translate }) {
+			const [open, setOpen] = react.useState(() => !holidayNoticeShown);
+			react.useEffect(() => {
+				holidayNoticeShown = true;
+			}, []);
+			if (!open) return null;
+			const close = () => setOpen(false);
+			const body = notice.daysLeft >= 0
+				? translate("peak.noticeBody", { until: notice.until, days: notice.daysLeft })
+				: translate("peak.noticeExpired", { until: notice.until, days: -notice.daysLeft });
+			return jsx("div", {
+				className: S.dlgOverlay,
+				onPointerDown: (event) => {
+					if (event.target === event.currentTarget) close();
+				},
+				children: jsxs("div", {
+					className: S.dlg,
+					role: "dialog",
+					"aria-label": translate("peak.noticeTitle"),
+					children: [
+						jsxs("div", {
+							className: S.dlgHead,
+							children: [
+								jsx("span", { className: S.dlgTitle, children: translate("peak.noticeTitle") }),
+								jsx("button", {
+									type: "button",
+									className: S.iconButton,
+									"aria-label": translate("action.close"),
+									onClick: close,
+									children: jsx(IconClose, { size: 16 })
+								})
+							]
+						}),
+						jsx("p", { className: S.note, children: body }),
+						jsx("p", { className: S.note, children: translate("peak.noticeHow") }),
+						jsx("div", {
+							className: S.actions,
+							children: jsx("button", { type: "button", className: `${S.btn} ${S.btnPrimary}`, onClick: close, children: translate("peak.noticeOk") })
+						})
+					]
+				})
+			});
+		}
+		//#endregion
+
 		/**
 		 * The footer seat and its panel.
 		 *
@@ -3009,6 +3181,14 @@ window.__ModuleLoader__.load({
 			const [tick, setTick] = react.useState(0);
 			react.useEffect(() => {
 				const timer = setInterval(() => setTick((n) => n + 1), BADGE_REFRESH_MS);
+				return () => clearInterval(timer);
+			}, []);
+			// The peak line's countdown and the switch reminder run on the local
+			// clock between payload reads; 30 s is fine enough for both and is a
+			// state update, not a request.
+			const [now, setNow] = react.useState(() => Date.now());
+			react.useEffect(() => {
+				const timer = setInterval(() => setNow(Date.now()), 30_000);
 				return () => clearInterval(timer);
 			}, []);
 			const days = (RANGES.find((r) => r.id === range) ?? RANGES[2]).days();
@@ -3070,6 +3250,9 @@ window.__ModuleLoader__.load({
 			// set to. The hover names that route and model, since the line itself
 			// has room for the figure only.
 			const balanceLine = badgeBalanceText(routeBalance, translate, currentModel?.model);
+			const peak = state.data?.peak;
+			const peakLine = peakLineText(peak, now, translate);
+			const peakPhase = peakNow(peak, now)?.phase;
 			const balanceTitle =
 				balanceLine === undefined
 					? undefined
@@ -3101,7 +3284,15 @@ window.__ModuleLoader__.load({
 									jsx("span", { className: S.badgeLabel, children: translate("panel.title") }),
 									balanceLine === undefined
 										? null
-										: jsx("span", { className: S.badgeSub, title: balanceTitle, children: balanceLine })
+										: jsx("span", { className: S.badgeSub, title: balanceTitle, children: balanceLine }),
+									peakLine === undefined
+										? null
+										: jsx("span", {
+												className: S.badgeSub,
+												"data-peak": peakPhase,
+												title: `${peakLine}\n${translate("peak.rule")}`,
+												children: peakLine
+											})
 								]
 							}),
 							jsx("span", { className: S.badgeValue, children: totalLabel })
@@ -3175,7 +3366,9 @@ window.__ModuleLoader__.load({
 										setDialogFor(undefined);
 										reload();
 									}
-								})
+								}),
+					peak === undefined ? null : jsx(PeakToast, { peak, now, translate }),
+					peak?.holidayNotice === undefined ? null : jsx(HolidayNotice, { notice: peak.holidayNotice, translate })
 				]
 			});
 		}
@@ -3350,7 +3543,27 @@ window.__ModuleLoader__.load({
 			"footer.days": "{n} 天前",
 			"footer.never": "尚未",
 			"footer.lastActivity": "最近一次用量{ago}",
-			"footer.unattributed": "{n} 行认不出是哪个站"
+			"footer.unattributed": "{n} 行认不出是哪个站",
+			"peak.peak": "高峰",
+			"peak.off": "空闲",
+			"peak.holiday": "节假日空闲",
+			"peak.toPeak": "高峰",
+			"peak.toOff": "空闲",
+			"peak.inMinutes": "{m} 分钟后",
+			"peak.inHours": "{h} 小时后",
+			"peak.inHoursMinutes": "{h} 小时 {m} 分后",
+			"peak.rule": "DeepSeek 官方：工作日 9–12、14–18 点为高峰，其余（含周末、法定节假日）为空闲，半价。\nCommand Code / OpenCode Go 的规则没写节假日：工作日的节假日它们仍按高峰。",
+			"peak.toastOff": "{m} 分钟后进入空闲时段",
+			"peak.toastPeak": "{m} 分钟后进入高峰时段",
+			"peak.toastNowOff": "已进入空闲时段",
+			"peak.toastNowPeak": "已进入高峰时段",
+			"peak.toastOffBody": "DeepSeek 半价，可以切回 DeepSeek 模型。",
+			"peak.toastPeakBody": "DeepSeek 恢复全价，可以考虑换用其他模型。",
+			"peak.noticeTitle": "峰谷节假日表快到期了",
+			"peak.noticeBody": "峰谷提醒用的法定节假日只配到 {until}（还剩 {days} 天）。",
+			"peak.noticeExpired": "峰谷提醒用的法定节假日只配到 {until}，已经过期 {days} 天。",
+			"peak.noticeHow": "国务院公布下一年放假安排后，把放假日期加进 tokenledger 配置的 peak.holidays（北京日期 YYYY-MM-DD）；不加的话，工作日的节假日会被当成高峰提醒。",
+			"peak.noticeOk": "知道了"
 		};
 		const en = {
 			"panel.title": "Token Ledger",
@@ -3520,7 +3733,27 @@ window.__ModuleLoader__.load({
 			"footer.days": "{n} d ago",
 			"footer.never": "never",
 			"footer.lastActivity": "last usage {ago}",
-			"footer.unattributed": "{n} rows could not be attributed"
+			"footer.unattributed": "{n} rows could not be attributed",
+			"peak.peak": "Peak",
+			"peak.off": "Off-peak",
+			"peak.holiday": "Holiday off-peak",
+			"peak.toPeak": "peak",
+			"peak.toOff": "off-peak",
+			"peak.inMinutes": "in {m} min: ",
+			"peak.inHours": "in {h} h: ",
+			"peak.inHoursMinutes": "in {h} h {m} min: ",
+			"peak.rule": "DeepSeek: weekdays 09-12 and 14-18 Beijing are peak; all other hours, weekends and Chinese public holidays are off-peak at half price.\nCommand Code / OpenCode Go state no holiday rule: a weekday holiday is still peak there.",
+			"peak.toastOff": "Off-peak starts in {m} min",
+			"peak.toastPeak": "Peak starts in {m} min",
+			"peak.toastNowOff": "Off-peak has started",
+			"peak.toastNowPeak": "Peak has started",
+			"peak.toastOffBody": "DeepSeek is half price; a good time to switch back to it.",
+			"peak.toastPeakBody": "DeepSeek is back to full price; consider another model.",
+			"peak.noticeTitle": "Holiday list is running out",
+			"peak.noticeBody": "The public holidays behind the peak reminder are configured only through {until} ({days} days left).",
+			"peak.noticeExpired": "The public holidays behind the peak reminder were configured only through {until}, {days} days ago.",
+			"peak.noticeHow": "Once next year's schedule is published, add its days off to peak.holidays in the tokenledger config (Beijing dates, YYYY-MM-DD); otherwise a weekday holiday is reminded as peak.",
+			"peak.noticeOk": "Got it"
 		};
 
 		/**
@@ -3616,6 +3849,10 @@ window.__ModuleLoader__.load({
 		exports.BalanceRow = BalanceRow;
 		exports.balanceRowValue = balanceRowValue;
 		exports.badgeBalanceText = badgeBalanceText;
+		exports.peakNow = peakNow;
+		exports.peakLineText = peakLineText;
+		exports.PeakToast = PeakToast;
+		exports.HolidayNotice = HolidayNotice;
 		exports.SetBalanceButton = SetBalanceButton;
 		exports.UserAuthDialog = UserAuthDialog;
 		exports.ManualBalanceDialog = ManualBalanceDialog;

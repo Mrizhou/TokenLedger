@@ -241,3 +241,31 @@
   `test/apply.test.js`「the 阿里云 AccessKey is stored once, shown masked, and signs the 百炼 card's read」、
   `test/client.test.js`「a 百炼 card with no AccessKey says where the balance lives…」。
   变异验证：签名头分隔符改错、读余额不取已存的 key、ID 不打码，对应测试各自失败。**合上游时这一处要保留**（上游没有阿里云）。
+- **DeepSeek 峰谷：侧边栏时段行、切换前提醒、节假日表到期提醒、按时段计价**（2026-10-14，用户「我需要加一个deepseek峰谷的提醒」，
+  拍板：提醒形态「1+2」（侧边栏一行＋右下角小提示，不做系统通知）、**所有模型都提醒**（「我在峰段用其他模型，到谷段提醒我了，我要切」）、
+  2026 年节假日先配上、十二月最后十天（或设定日前 N 天）每次打开 DSH 弹窗提醒补下一年、计价「以前的不算了，以后的要算」）：
+  - 规则来源（10-14 取原页）：DeepSeek 定价页「北京时间周一至周五（不含中国法定节假日）9:00 - 12:00、14:00 - 18:00 为高峰时段；其余时段，
+    包括周末及中国法定节假日全天均为空闲时段」，空闲＝高峰半价。Command Code（`/docs/resources/pricing-limits`）与 OpenCode Go（`/docs/go`）
+    转售 DeepSeek 模型用**同样的时段**，但原文**没写节假日** —— 按字面，工作日的节假日在它们那里仍是高峰。OpenCode Zen 是固定价、无峰谷。
+    调休补班的周末：三家原文都把周末整体列为空闲，没有例外，按空闲算。仓库原有的 `DEEPSEEK_OFF_PEAK`（00:30–08:30 夜间优惠）是旧规则，已删。
+  - 新增 `src/peak.js`：`phaseAt()` 把一个时刻分成 `peak` / `off` / `holiday`（工作日高峰时段但落在节假日）**三类**，由各费率自己决定 `holiday` 算不算谷；
+    一律按 UTC+8 算，不看宿主时区。`CN_HOLIDAYS` 内置 2026 年全部放假日（国务院办公厅通知，新华社全文 2025-11-04；含调休出来的工作日如 02-23、10-07，
+    不含补班周末）。`upcomingChanges()` 给出未来 8 天的切换点；`peakView()` 组装载荷里的 `peak`（当前时段、切换点、提醒设置、到期提醒）。
+  - 账本：`session_rollups` 加 `phase` 列进主键，**schema 4 → 5 原地迁移**（新表拷全部行、`phase=''`、换名），**不走整表 DROP** ——
+    否则日志已删的会话找不回，10-03 手工归并的账也会长回来。`meta.phaseSince` 记下开始分时段的时刻（迁移或建库那一刻），
+    之前的用量（包括以后任何一次重折叠）一律 `phase=''`、按原价计，之后的按事件时刻分类。`reset()` 不清 `meta`，所以 reindex 也不会改写历史。
+    `byModel` / `byProviderModel` / `byRoute` 默认仍合并时段（显示、导出、`ctx.tokenLedger` 形状不变），只有计价传 `{ phase: true }` 拆开。
+    ⚠️ **回滚**：v5 的库被 v4 的旧版本打开会触发「schema 比本版新、拒绝丢弃」，插件不加载（账本不受损）；回滚到 `acb5a28` 前要先想好这一点。
+    实测：10-14 用真实账本的 `VACUUM INTO` 副本迁移，458 行 / 413 个 checkpoint 全在，27 组 provider+model 合计逐字相同，内置价表算出的总额与旧代码同为 ¥41.693718；副本已删。
+  - 计价：费率可带 `offPeak: { factor, holidays }`，`perMillion` 即**高峰价**；`estimateCost(buckets, rate, phase)` 对谷时段乘 `factor`，`holidays` 默认 true。
+    内置 DeepSeek 官方 8 条全部带 `{ factor: 0.5, holidays: true }`。`priceWithConfiguredRates`、`priceToday`、`dailySeries` 改读拆时段的行，合并时去掉 `phase`。
+    没带 `offPeak` 的费率不受影响。
+  - 面板（`client.js`）：「用量账本」下加一行「高峰 · 23 分钟后空闲」（高峰时用警示色，悬停给规则与 CC/OpenCode 的节假日差异），30 秒走一次本地钟；
+    `PeakToast`：切换前 `aheadMinutes`（默认 5）分钟右下角小卡片，`target` 可选 both / peak / offpeak，同一切换点本次启动只弹一次，切换后 2 分钟自己消失；
+    `HolidayNotice`：节假日表有效期（默认＝表里最后一年的 12-31，可配 `holidaysUntil`）前 `remindDays`（默认 10）天起，**每次打开 DSH 弹一次**，过期后继续弹。
+    提醒按 DeepSeek 官方口径（节假日算空闲），对所有模型都提醒。
+  - 配置：`settings-schema.js` 加 `peak`（`alert` / `aheadMinutes` / `target` / `holidays` / `holidaysUntil` / `remindDays`）；`holidays` 是**追加**到内置表上的北京日期。
+  - 守卫测试：`test/peak.test.js`（时段边界表、周末与补班周六、节假日三分类、宿主时区无关、2026 表与通知逐条对、切换点跨周末/国庆、分类器的截止时刻、到期提醒窗口）、
+    `test/peak-ledger.test.js`（v4 原地迁移保住全部行与 checkpoint、新库记 phaseSince、拆时段存/合并显示、跨时段重报不重复计、谷时段半价/无时段按原价/网关节假日按峰）、
+    `test/pricing.test.js` 的 offPeak 四条、`test/client.test.js` 的峰谷四条、`test/settings-schema.test.js` 默认值。
+    变异验证：`src/` 整体换回改动前，以上 14 条全红；单把 v4 原地迁移关掉（回到 DROP），迁移那条红。**合上游时这一处要保留**（上游没有峰谷）。

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-	DEEPSEEK_OFF_PEAK,
 	DEEPSEEK_OFFICIAL_RATES,
 	RATE_BUCKETS,
 	RateTable,
@@ -12,6 +11,10 @@ import {
 	inPeriod,
 	priceRows
 } from "../src/pricing.js";
+
+// A time-of-day window for the windowed-rate tests. Not DeepSeek's schedule —
+// that lives in peak.js now, with weekdays and holidays a period cannot say.
+const NIGHT = definePeriod({ name: "night", utcOffsetMinutes: 480, fromHour: 0.5, toHour: 8.5 });
 
 const buckets = (o = {}) => ({
 	inputTokens: 0,
@@ -111,10 +114,59 @@ test("a period that wraps midnight is supported", () => {
 	assert.equal(inPeriod(night, Date.parse("2026-08-14T12:00:00Z")), false);
 });
 
-test("DeepSeek's published off-peak window is 00:30-08:30 Beijing", () => {
-	assert.equal(DEEPSEEK_OFF_PEAK.utcOffsetMinutes, 480);
-	assert.equal(inPeriod(DEEPSEEK_OFF_PEAK, Date.parse("2026-08-13T17:00:00Z")), true, "01:00 Beijing");
-	assert.equal(inPeriod(DEEPSEEK_OFF_PEAK, Date.parse("2026-08-14T06:00:00Z")), false, "14:00 Beijing");
+test("every shipped DeepSeek rate is a peak price with half-price off-peak, holidays included", () => {
+	for (const rate of DEEPSEEK_OFFICIAL_RATES) {
+		assert.deepEqual(rate.offPeak, { factor: 0.5, holidays: true }, rate.model);
+	}
+});
+
+test("an offPeak rate bills off-peak phases at its factor and leaves peak and unphased usage alone", () => {
+	const rate = defineRate({
+		model: "m",
+		currency: "CNY",
+		effectiveFrom: "2026-01-01",
+		perMillion: { inputTokens: 2, outputTokens: 8 },
+		offPeak: { factor: 0.5 }
+	});
+	const usage = buckets({ inputTokens: 1_000_000, outputTokens: 1_000_000 });
+	assert.equal(estimateCost(usage, rate).cost, 10, "no phase: recorded before phases existed");
+	assert.equal(estimateCost(usage, rate, "peak").cost, 10);
+	assert.equal(estimateCost(usage, rate, "off").cost, 5);
+	assert.equal(estimateCost(usage, rate, "holiday").cost, 5, "holidays default to off-peak");
+	const gateway = defineRate({
+		model: "m",
+		currency: "CNY",
+		effectiveFrom: "2026-01-01",
+		perMillion: { inputTokens: 2, outputTokens: 8 },
+		offPeak: { factor: 0.5, holidays: false }
+	});
+	assert.equal(estimateCost(usage, gateway, "holiday").cost, 10, "a gateway without a holiday clause bills peak");
+	assert.equal(estimateCost(usage, gateway, "off").cost, 5);
+	const plain = defineRate({ model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 2 } });
+	assert.equal(estimateCost(usage, plain, "off").cost, 2, "a rate without offPeak ignores the phase");
+});
+
+test("offPeak is validated", () => {
+	const base = { model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 1 } };
+	assert.throws(() => defineRate({ ...base, offPeak: { factor: 0 } }), /offPeak.factor/);
+	assert.throws(() => defineRate({ ...base, offPeak: { factor: 1.5 } }), /offPeak.factor/);
+	assert.throws(() => defineRate({ ...base, offPeak: { factor: 0.5, holidays: "no" } }), /offPeak.holidays/);
+});
+
+test("priceRows prices each phase row by its own phase", () => {
+	const table = new RateTable([
+		{ model: "m", currency: "CNY", effectiveFrom: "2026-01-01", perMillion: { inputTokens: 2 }, offPeak: { factor: 0.5 } }
+	]);
+	const priced = priceRows(
+		[
+			{ model: "m", phase: "peak", ...buckets({ inputTokens: 1_000_000 }) },
+			{ model: "m", phase: "off", ...buckets({ inputTokens: 1_000_000 }) },
+			{ model: "m", phase: "", ...buckets({ inputTokens: 1_000_000 }) }
+		],
+		table,
+		"2026-10-14"
+	);
+	assert.deepEqual(priced.totals, { CNY: 5 });
 });
 
 test("a windowed rate outranks a general rate of the same date, and needs the time to apply", () => {
@@ -124,7 +176,7 @@ test("a windowed rate outranks a general rate of the same date, and needs the ti
 			model: "v4",
 			currency: "CNY",
 			effectiveFrom: "2026-01-01",
-			window: DEEPSEEK_OFF_PEAK,
+			window: NIGHT,
 			perMillion: { inputTokens: 1 }
 		}
 	]);
@@ -241,7 +293,7 @@ test("windowedModels names models whose time-of-day rates can never win here", (
 			model: "peaky",
 			currency: "CNY",
 			effectiveFrom: "2026-01-01",
-			window: DEEPSEEK_OFF_PEAK,
+			window: NIGHT,
 			perMillion: { inputTokens: 1 }
 		}
 	]);

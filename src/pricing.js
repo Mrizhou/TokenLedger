@@ -23,6 +23,8 @@
  * @module dsh-tokenledger/pricing
  */
 
+import { isOffPeak } from "./peak.js";
+
 /** Cost buckets a rate must price, in the order they are reported. */
 export const RATE_BUCKETS = Object.freeze([
 	"inputTokens",
@@ -37,10 +39,14 @@ export const RATE_BUCKETS = Object.freeze([
  * Prices are per million tokens, the unit every provider publishes, so a rate
  * table can be transcribed from a price page without arithmetic.
  *
- * @param input - `{ model, currency, effectiveFrom, perMillion, window? }`.
+ * @param input - `{ model, currency, effectiveFrom, perMillion, window?, offPeak? }`.
  *   `perMillion` maps bucket names to numbers; omitted buckets are free only if
- *   explicitly set to 0. `window` optionally restricts the rate to a peak or
- *   off-peak period (see {@link definePeriod}).
+ *   explicitly set to 0. `window` optionally restricts the rate to a
+ *   time-of-day period (see {@link definePeriod}). `offPeak` — `{ factor,
+ *   holidays? }` — makes `perMillion` the PEAK price and bills usage recorded
+ *   in an off-peak phase (`peak.js`) at `factor` times it; `holidays` (default
+ *   true) says whether a weekday holiday counts as off-peak for this rate —
+ *   true at DeepSeek, false at gateways whose rule names no holidays.
  */
 export function defineRate(input) {
 	const { model, currency, effectiveFrom, perMillion } = input;
@@ -59,11 +65,23 @@ export function defineRate(input) {
 		prices[bucket] = value;
 	}
 	if (Object.keys(prices).length === 0) throw new TypeError(`rate for ${model} prices nothing`);
+	let offPeak;
+	if (input.offPeak !== undefined && input.offPeak !== null) {
+		const { factor, holidays } = input.offPeak;
+		if (typeof factor !== "number" || !Number.isFinite(factor) || factor <= 0 || factor > 1) {
+			throw new TypeError(`rate for ${model} has an invalid offPeak.factor`);
+		}
+		if (holidays !== undefined && typeof holidays !== "boolean") {
+			throw new TypeError(`rate for ${model} has an invalid offPeak.holidays`);
+		}
+		offPeak = Object.freeze({ factor, holidays: holidays !== false });
+	}
 	return Object.freeze({
 		model,
 		currency,
 		effectiveFrom,
 		window: input.window,
+		...(offPeak === undefined ? {} : { offPeak }),
 		perMillion: Object.freeze(prices)
 	});
 }
@@ -188,12 +206,15 @@ export class RateTable {
  *
  * @param buckets - token buckets, as produced by the usage fold.
  * @param rate - the rate to apply, or undefined.
+ * @param phase - the peak/off-peak phase the buckets were recorded in; `""`
+ *   (the default, and all usage from before phases existed) is billed at
+ *   `perMillion` as it always was.
  * @returns `{ cost, currency, priced, unpricedBuckets }`. `cost` is `null` when
  *   no rate applies — never `0`. `unpricedBuckets` names buckets that carried
  *   tokens the rate does not price, so a partial rate cannot silently
  *   understate a total.
  */
-export function estimateCost(buckets, rate) {
+export function estimateCost(buckets, rate, phase = "") {
 	if (rate === undefined) {
 		return { cost: null, currency: undefined, priced: false, unpricedBuckets: [...RATE_BUCKETS] };
 	}
@@ -208,6 +229,7 @@ export function estimateCost(buckets, rate) {
 		}
 		cost += (tokens / 1_000_000) * price;
 	}
+	if (rate.offPeak !== undefined && isOffPeak(phase, rate.offPeak.holidays)) cost *= rate.offPeak.factor;
 	return {
 		cost: round6(cost),
 		currency: rate.currency,
@@ -239,7 +261,8 @@ export function round6(value) {
  * Totals are kept per currency and never summed across currencies: a site
  * billing in USD and another in CNY produce two totals, not one wrong one.
  *
- * @param rows - rows carrying `model` and token buckets.
+ * @param rows - rows carrying `model` and token buckets, and `phase` when the
+ *   caller asked the store to split by it.
  * @param table - the rate table.
  * @param day - `YYYY-MM-DD` used to select the effective rate.
  * @returns `{ rows, totals, unpricedModels, partialTotals, partialModels }`
@@ -260,7 +283,7 @@ export function priceRows(rows, table, day) {
 	const partialModels = [];
 	const priced = rows.map((row) => {
 		const rate = table.rateFor(row.model, day);
-		const estimate = estimateCost(row, rate);
+		const estimate = estimateCost(row, rate, row.phase ?? "");
 		if (!estimate.priced) {
 			unpricedModels.push(row.model);
 		} else if (estimate.unpricedBuckets.length > 0) {
@@ -280,29 +303,19 @@ export function priceRows(rows, table, day) {
 	};
 }
 
-/**
- * DeepSeek's published off-peak discount window, 00:30–08:30 Beijing time.
- *
- * Exported as a period rather than baked into a rate so a rate table can pair
- * it with whatever prices are current — the window has outlived several price
- * changes, and the prices will outlive this constant.
- */
-export const DEEPSEEK_OFF_PEAK = definePeriod({
-	name: "off-peak",
-	utcOffsetMinutes: 8 * 60,
-	fromHour: 0.5,
-	toHour: 8.5
-});
+/** DeepSeek's off-peak terms: half price, holidays included (see `peak.js`). */
+const DEEPSEEK_OFF_PEAK_TERMS = Object.freeze({ factor: 0.5, holidays: true });
 
 /**
  * Official DeepSeek API prices, per million tokens, CNY, peak hours.
  *
  * Source: https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ (fetched
- * 2026-09-10). Official peak windows are Mon–Fri 09:00–12:00 and 14:00–18:00
- * Beijing time; off-peak is exactly half of these. Observed installs are
- * overwhelmingly inside the peak windows, so the default prices everything at
- * peak — an off-peak-heavy day is overestimated, never understated, and a
- * user-supplied `rates` list always wins.
+ * 2026-09-10, schedule re-checked 2026-10-14). Peak hours are Mon–Fri
+ * 09:00–12:00 and 14:00–18:00 Beijing time, holidays excepted; off-peak is
+ * exactly half (`peak.js`). Every rate carries `offPeak`, so usage recorded
+ * with a phase is billed by it; usage recorded before phases existed carries
+ * none and stays at peak — overestimated, never understated. A user-supplied
+ * `rates` list always wins.
  *
  * The table is a SCHEDULE, not a snapshot: DeepSeek renamed and repriced its
  * models on 2026-09-10 (`deepseek-flash`, i.e. V4.1 Flash, at ¥0.04/¥2/¥8
@@ -325,19 +338,22 @@ export const DEEPSEEK_OFFICIAL_RATES = Object.freeze([
 		model: "deepseek-v4-flash",
 		currency: "CNY",
 		effectiveFrom: "2026-09-01",
-		perMillion: { cacheReadTokens: 0.1, inputTokens: 3.0, outputTokens: 9.0 }
+		perMillion: { cacheReadTokens: 0.1, inputTokens: 3.0, outputTokens: 9.0 },
+		offPeak: DEEPSEEK_OFF_PEAK_TERMS
 	}),
 	defineRate({
 		model: "deepseek-v4-flash-vision-exp",
 		currency: "CNY",
 		effectiveFrom: "2026-09-01",
-		perMillion: { cacheReadTokens: 0.1, inputTokens: 3.0, outputTokens: 9.0 }
+		perMillion: { cacheReadTokens: 0.1, inputTokens: 3.0, outputTokens: 9.0 },
+		offPeak: DEEPSEEK_OFF_PEAK_TERMS
 	}),
 	defineRate({
 		model: "deepseek-v4-pro",
 		currency: "CNY",
 		effectiveFrom: "2026-09-01",
-		perMillion: { cacheReadTokens: 0.3, inputTokens: 9.0, outputTokens: 27.0 }
+		perMillion: { cacheReadTokens: 0.3, inputTokens: 9.0, outputTokens: 27.0 },
+		offPeak: DEEPSEEK_OFF_PEAK_TERMS
 	}),
 	// The V4.1 Flash preview alias IS V4.1 Flash from its first appearance, so
 	// it carries V4.1 prices even on days before the public rename.
@@ -345,7 +361,8 @@ export const DEEPSEEK_OFFICIAL_RATES = Object.freeze([
 		model: "deepseek-v4.1-flash-expires-on-0910",
 		currency: "CNY",
 		effectiveFrom: "2026-09-01",
-		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 }
+		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 },
+		offPeak: DEEPSEEK_OFF_PEAK_TERMS
 	}),
 	// --- V4.1 generation (2026-09-10 schedule) -------------------------------
 	// `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` stay callable but
@@ -355,19 +372,22 @@ export const DEEPSEEK_OFFICIAL_RATES = Object.freeze([
 		model: "deepseek-flash",
 		currency: "CNY",
 		effectiveFrom: "2026-09-10",
-		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 }
+		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 },
+		offPeak: DEEPSEEK_OFF_PEAK_TERMS
 	}),
 	defineRate({
 		model: "deepseek-v4-flash",
 		currency: "CNY",
 		effectiveFrom: "2026-09-10",
-		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 }
+		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 },
+		offPeak: DEEPSEEK_OFF_PEAK_TERMS
 	}),
 	defineRate({
 		model: "deepseek-v4-flash-vision-exp",
 		currency: "CNY",
 		effectiveFrom: "2026-09-10",
-		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 }
+		perMillion: { cacheReadTokens: 0.04, inputTokens: 2.0, outputTokens: 8.0 },
+		offPeak: DEEPSEEK_OFF_PEAK_TERMS
 	}),
 	// V4 Pro was scheduled to retire: the 2026-09-10 announcement said all
 	// `deepseek-v4-pro` requests would route to V4.1 Flash from 2026-09-14
@@ -382,7 +402,8 @@ export const DEEPSEEK_OFFICIAL_RATES = Object.freeze([
 		model: "deepseek-v4-pro",
 		currency: "CNY",
 		effectiveFrom: "2026-09-14",
-		perMillion: { cacheReadTokens: 0.3, inputTokens: 9.0, outputTokens: 27.0 }
+		perMillion: { cacheReadTokens: 0.3, inputTokens: 9.0, outputTokens: 27.0 },
+		offPeak: DEEPSEEK_OFF_PEAK_TERMS
 	})
 ]);
 
