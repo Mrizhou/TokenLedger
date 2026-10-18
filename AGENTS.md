@@ -61,30 +61,14 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    换装会触发账本重建：store schema 不一致时整表 DROP、从会话日志重折叠，
    **日志已删的会话用量找不回**（09-17 那次丢了 43 个，数字记在知识库项目笔记时间线）。
 
-   ~~旧做法（DSH Desktop 时代，已作废）~~：「不能整包覆盖，Blue 兼容声明不符」这个判断**是错的** ——
-   宿主不读 `blue.plugin.json`。下表只作历史。装机目录曾有**三处**手工补丁（`plugin.js` 上叠了两处）：
-
-   | 文件 | 补了什么 | 自检 | 备份 |
-   |------|---------|------|------|
-   | `src/plugin.js` | ① DSH 2.0 句柄式 persistence 兼容（2026-09-14） | `grep -c "persistence.open" src/plugin.js` | `src/plugin.js.bak-pre-dsh2-fix-20260914` |
-   | `src/plugin.js` | ② 重编号日志整份重折叠（2026-09-15，见下） | `grep -c "handle.read(0)" src/plugin.js` | `src/plugin.js.bak-pre-refold-20260915` |
-   | `src/client.js` | AccountPicker 下拉灰底灰字（2026-09-14） | `grep -c "tkl_select option" src/client.js` | `src/client.js.bak-pre-select-contrast-20260914` |
-
-   ⚠️ 手工补丁**会被 DSH 市场的更新/重装悄悄冲掉**，升完要回来把上表逐条重打。
-   打完必须**重启 DSH Desktop**：`plugin.js` 在启动时载入，样式表按 `STYLE_ID` 一次性注入 ——
-   两者热重载都不会换掉已经在内存里的那份。
-
-   **补丁 ② 的来由**：`86a30b6` 的句柄改法只换了读取方式，仍从 `consumedSeq + 1` 读尾巴；
-   而 v1→v2 会话迁移会**重编事件 seq**，老 checkpoint 会指到重编后日志的末尾之外 ——
-   读回来是空的 → `skipped` → **这个会话从此再不统计**，而且静音（红线 5）。
-   上游 @wangk123 在 [PR #65](https://github.com/zh667/TokenLedger/pull/65) 里发现的，
-   我们的 #64 因此关掉。本地一度自己补过一份（`ca5b3d5`），2026-09-15 同步时
-   **整份换成了上游的实现** —— 我们那两个测试在上游代码上原样通过，等于实测确认等价。
-
-   ⚠️ **上游合了不等于这张表可以删。** `client.js` 那处的
-   [PR #63](https://github.com/zh667/TokenLedger/pull/63) 已于 2026-09-15 合并
-   （`cf57c27` 就是我们的 commit），`plugin.js` 那两处也都在上游了 —— 但**装机版仍是
-   npm 上的 0.1.0**，一行都没跟上。要等上游发版 **且** 装机版升上去，这张表才能删。
+   **手工补丁时代已彻底结束，别再回去打补丁。** 那三处补丁（persistence 句柄兼容、重编号重折叠、下拉配色）
+   连同装机目录里的 `src/*.bak-pre-*` 备份，2026-09-16 随 desktop profile 一起没了 ——
+   **本仓库 `src/` 下现在一个 `.bak` 都没有**，装机版直接按 SHA 从本 fork 装（上面「装机 / 重装」就是全部流程）。
+   三处的现状：前两处上游已合（#64 因此关掉，[PR #65](https://github.com/zh667/TokenLedger/pull/65) 是它的超集 ——
+   老 checkpoint 指到重编号后日志的末尾之外，读回空 → 会话被永久跳过且静音，见红线 5）；
+   [PR #63](https://github.com/zh667/TokenLedger/pull/63) 的下拉配色随 `AccountPicker` 一起被删掉了。
+   历史清单、自检命令与逐条来由记在知识库项目笔记（`70-归档/TokenLedger.md`）与 `docs/FORK-VS-UPSTREAM.md`（差异正本）。
+   ⚠️ 若哪天又看到「重打补丁」「`.bak-pre-*` 待清除」这类字样，那是**过期描述**，不是待办。
 
 2. **🔴 没跑 `npm install` 就别下"测试挂了"的结论。**
    `@deepseek-ai/cordis` / `@deepseek-ai/schemastery` 是 devDeps，缺了会让
@@ -115,20 +99,20 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 ## 目录：什么进什么（2026-09-30 起）
 
 > 规矩正本：知识库 `40-领域/技术/项目目录规范.md`（工程版 ＋ 出处）；归位与清理用 skill `project-tidy`。
-> **四条硬规矩**：① 根上只许**四类文件**（入口 / 配置 / 发布必备 / 插件框架入口），**除这四类以外根上只许有目录，一个多余文件都不许有**；② `00-收件箱/YYYY-MM-DD/` 是**当天做的、还没想好放哪**的东西的暂存区，由 skill `project-tidy` 定期归位、归位后空的日期夹删掉 —— **它不是产出目录**；③ **一次性产物直接清除、不进 `archive/`**，只有有参考价值的旧版本才收档到 `archive/YYYY-MM-DD-<主题>/`；④ 一级目录按语义分，**日期只允许出现在两处**：`00-收件箱/YYYY-MM-DD/` 与跑批产出 `results/YYYY-MM-DD-<主题>/`。
+> **五条硬规矩**：① 根上只许**四类文件**（入口 / 配置 / 发布必备 / 插件框架入口），**除这四类以外根上只许有目录，一个多余文件都不许有**；② **根目录尽量干净**（2026-10-18 用户定）—— 空的骨架目录**不常驻根上**：`00-收件箱/`、`logs/`、`state/`、`archive/`、`results/` 一律**按需现建、用完即删**（git 本来也不收空目录），根上只留真有内容的目录；③ `00-收件箱/YYYY-MM-DD/` 是**当天做的、还没想好放哪**的东西的暂存区，由 skill `project-tidy` 定期归位、归位后空的日期夹删掉 —— **它不是产出目录**；④ **一次性产物直接清除、不进 `archive/`**，只有有参考价值的旧版本才收档到 `archive/YYYY-MM-DD-<主题>/`；⑤ 一级目录按语义分，**日期只允许出现在两处**：`00-收件箱/YYYY-MM-DD/` 与跑批产出 `results/YYYY-MM-DD-<主题>/`。
 
 **根目录只允许（四类）**：入口 `README.md` · `AGENTS.md` · `CLAUDE.md`；配置 `.gitignore` · `package.json` · `package-lock.json`；发布必备 `LICENSE` · `NOTICE`；**插件框架入口 `blue.plugin.json` · `cordis.patch.yml`** —— ⚠️ **这是 DSH 插件的框架约定（包根 ＝ 仓库根），它们本来就该在根上，不是乱**。
 
 | 现有/应有目录 | 什么进这里 | 不许进 |
 |---|---|---|
-| `00-收件箱/YYYY-MM-DD/`（**待建**） | **当天做的、还没想好放哪**的东西先扔这儿，等 skill `project-tidy` 归位 | 当成长期仓库；归位后不删空的日期夹 |
-| `src/` | 插件代码（宿主半边 / 浏览器半边；Blue 专属代码只在 `src/blue/`）。**与上游不同的四处差异逐条记在 `docs/FORK-VS-UPSTREAM.md`** | 手工补丁备份（`src/plugin.js.bak-pre-*` 属**一次性产物 → 直接清除**）；日志 |
+| `src/` | 插件代码（宿主半边 / 浏览器半边；Blue 专属代码只在 `src/blue/`）。**与上游不同的四处差异逐条记在 `docs/FORK-VS-UPSTREAM.md`** | 手工补丁备份 `*.bak-pre-*`（一次性产物 → 直接清除；**现仓库里一个都没有**）；日志 |
 | `test/` | 测试（`node --test`，全量基线 658/658） | 手跑脚本冒充测试 |
-| `docs/` | 文档 ＋ `docs/决策记录.md` ＋ `docs/FORK-VS-UPSTREAM.md`，**按主题分** | 根目录上的一次性报告 |
-| `node_modules/` | 依赖；**已 gitignore**（没跑 `npm install` 别下「测试挂了」的结论，见红线 2）；按新口径属**清除 / 忽略**项，不该常驻可见 | 提交进 git；当源码读 |
-| `logs/`、`state/`（**待建**） | 运行期产物：`.log` · `.pid` · 状态 json —— **一律进 `.gitignore`**（账本 `~/.dsh/tokenledger.sqlite` 在用户目录，**不在本项目**、别删） | 放在根目录；提交进 git |
-| `archive/YYYY-MM-DD-<主题>/`（**待建**） | **只收有参考价值的旧版本**：旧版本文档、确需回看的旧配置 | 🗑️ 一次性产物（`.bak*` 补丁备份、缓存 → **直接清除**）；无界堆积 |
-| 根上其余 | **待整理**：`node_modules/` 常驻根上（🗑️ 清除 / 忽略）；`src/` 下现有三份 `*.bak-pre-*` 手工补丁备份（🗑️ 属一次性产物）。逐条按 skill `project-tidy` 念过再动 | — |
+| `docs/` | 文档，**按主题分**。现有：`FORK-VS-UPSTREAM.md`（差异正本）、`HOST-CONTRACT.md`、`BLUE-MIGRATION.md`、`COMPARISON.md`、`ROADMAP.md`、`UI-PLAN.md`、`FEATURES.md`、`registry-entry.json`、`plans/adversarial-fixes.md`、`images/` | ⚠️ **`docs/决策记录.md` 不存在也不该建** —— 本仓库是公开 fork，个人决策记在知识库 `40-领域/技术/决策记录.md`（正本）与 `70-归档/TokenLedger.md`（项目笔记）；根目录上的一次性报告 |
+| `node_modules/` | 依赖；**已 gitignore**（`.gitignore` 第 1 行），没跑 `npm install` 别下「测试挂了」的结论，见红线 2 | 提交进 git；当源码读 |
+| `00-收件箱/YYYY-MM-DD/`（**按需建，现无内容**） | **当天做的、还没想好放哪**的东西先扔这儿，等 skill `project-tidy` 归位；**归位后空的日期夹与空的 `00-收件箱/` 都删掉**（别常驻根上） | 当成长期仓库；产出目录 |
+| `logs/`、`state/`（**按需建，现无内容**） | 运行期产物：`.log` · `.pid` · 状态 json —— **一律进 `.gitignore`**（账本 `~/.dsh/tokenledger.sqlite` 在用户目录，**不在本项目**、别删） | 放在根目录；提交进 git |
+| `archive/YYYY-MM-DD-<主题>/`（**按需建，现无内容**） | **只收有参考价值的旧版本**：旧版本文档、确需回看的旧配置 | 🗑️ 一次性产物（`.bak*`、缓存 → **直接清除**）；无界堆积 |
+| 根上其余 | **应始终为空**（2026-10-18 体检：根上 12 个文件全属白名单四类、其余只有目录，0 违规）。发现白名单外的文件 → 按 skill `project-tidy` 逐条念过再动 | 任何白名单外的文件；空的骨架目录常驻 |
 
 **禁物**（根上除上述四类文件外，一个文件都不许有）：`_tmp_*` · `*.bak*` · `*.log` · `*.pid` · 状态 json · `__pycache__/` · 序号后缀（`ablation2.py`、`result1.csv`）· 同名 `.py` 与目录并存 · 根上的 `.bat` / `.sh` / `.ps1`（进 `bin/`）· 一次性报告。
 **两类处理方式不同**：🗑️ 一次性产物 → **直接清除**；📦 有参考价值的旧版本 → 收档 `archive/YYYY-MM-DD-<主题>/`（`archive/` 是收档，**不是垃圾桶**）。
