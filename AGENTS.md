@@ -152,7 +152,14 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
   凡是账本里已有用量的模型，`effectiveFrom` 一律填「最早有用量那天」或「本月 1 号」，不要填配价日期。
 - **峰谷计价只从 `meta.phaseSince` 起算**（2026-10-14，用户「以前的不算了，以后的要算」）：schema 4→5 是**原地迁移**、不 DROP，
   老行 `phase=''` 按原价（高峰）计，重折叠也不会改写这条线之前的历史。给 DeepSeek 系模型配价时 `perMillion` 填**高峰价**、加
-  `offPeak: { factor: 0.5, holidays: true }`（官方）/ `holidays: false`（Command Code、OpenCode Go：原文没写节假日）。
+  `offPeak: { factor: 0.5, holidays: true }`。
+  🔴 **2026-10-18 起账本一律按「模型厂商官方刊例价」计，不再按第三方转售价**（用户「按官方价，不要按第三方价」「官方没有的就不填」，
+  详见知识库决策记录）：账本要用同一把尺子比各家套餐，转售价会让同一模型出现两套价。所以 commandcode 路由的
+  `deepseek/deepseek-v4.1-flash`（＝DeepSeek 官方 `deepseek-flash` / V4.1-Flash-1017）现按 DeepSeek 官方价 ¥2/¥0.04/¥8、
+  `holidays: true` —— **不再用 Command Code 自己那套峰谷窗口与 `holidays: false`**（那条 10-14 的口径已废）。
+  `holidays: false` 现在只在「照抄某网关原文、而该网关明确不给节假日豁免」时才用，DeepSeek 系模型不再属于这种。
+  ⚠️ 官方无刊例价的模型（如 `gpt-oss-120b-medium`、`stealth/space-bunny-alpha`）**删掉费率不填**、让面板显示未计价，
+  **不要填 0**：填 0 会被当成已计价、成本 0，与「查不到官方价」混淆。
   节假日表内置到 2026 年，**每年国务院公布放假安排后**往配置 `peak.holidays` 里追加下一年；不补的话 12 月最后十天起每次打开都会弹窗。
   ⚠️ v5 的库被旧版本（≤ `acb5a28`）打开会拒绝加载 —— 回滚前先想好这一点。
 - **账本被手工归并过**（2026-10-03，用户指定）：`bd` → `google-antigravity`、`modlens-ali` → 官方、`deepseek-official` → `deepseek-account`（官方合一）、
