@@ -22,9 +22,9 @@ pi-ai catalog 里，settings 的 profile 看不见；第三处是 0.1.7 的 revi
 > `docs/FORK-VS-UPSTREAM.md` —— 2026-09-30 移出（为压到 Antigravity 读规则文件的 24000 字节上限以内），内容一字未改。
 > 上面那段只是目录，逐条结论在那份文件里：① `balance.js` 跳过没配置的 catalog 路由；② `BUILTIN_PROVIDER_ORIGINS` 加 `xiaomi`；
 > ③ `plugin.js` `revisionUnchanged()` 的 0.1.7 revision 形态；④ `client.js` 的 0.1.7 侧边栏席位样式；⑤ 0.1.7 首开慢那组修复；
-> ⑥ MiMo 余额改手填、按账本用量扣减（`manual-balance.js`，10-04 起；09-25 ~ 10-04 是控制台 cookie）+ `credentials-file.js`；⑦ DeepSeek 先读登录账户钱包；⑧ Command Code 的 `/alpha/*` 额度与表项；⑨ 侧边栏「用量账本」下的当前模型余额（`client.js` 读 DSH 模型选择 ＋ `balance.js` 的 `findAccount`）；⑩ Antigravity 插件的额度进余额账户（探测 `antigravityAuth` 服务）；⑪ 面板「余额」一节列**全部账户**、去掉下拉选择（`client.js` `useBalances`）；⑫ 阿里云百炼的余额用 AccessKey 读阿里云费用中心（`aliyun-bss.js`）；⑬ DeepSeek 峰谷：侧边栏时段行、切换前提醒、节假日表到期提醒、按时段计价（`peak.js`，账本 schema 5 加 `phase` 列）。
+> ⑥ MiMo 余额改手填、按账本用量扣减（`manual-balance.js`，10-04 起；09-25 ~ 10-04 是控制台 cookie）+ `credentials-file.js`；⑦ DeepSeek 先读登录账户钱包；⑧ Command Code 的 `/alpha/*` 额度与表项；⑨ 侧边栏「用量账本」下的当前模型余额（`client.js` 读 DSH 模型选择 ＋ `balance.js` 的 `findAccount`）；⑩ Antigravity 插件的额度进余额账户（探测 `antigravityAuth` 服务）；⑪ 面板「余额」一节列**全部账户**、去掉下拉选择（`client.js` `useBalances`）；⑫ 阿里云百炼的余额用 AccessKey 读阿里云费用中心（`aliyun-bss.js`）；⑬ DeepSeek 峰谷：侧边栏时段行、切换前提醒、节假日表到期提醒、按时段计价（`peak.js`，账本 schema 5 加 `phase` 列）；⑭ 自动重建不清表（`store.forgetCheckpoints()` ＋ `dropUnfolded()`，重建中途累计不再一点一涨）。
 >
-> **什么时候必须去读它**：同步 / 合并上游之前；要动上面 ①–⑬ 涉及的 `src/` 文件之前；想删某条守卫测试之前。
+> **什么时候必须去读它**：同步 / 合并上游之前；要动上面 ①–⑭ 涉及的 `src/` 文件之前；想删某条守卫测试之前。
 > **合上游的铁律**：标了「合上游时这一处要保留」的一律保留本 fork 写法；上游自己修了同一处就取上游那份，
 > 但必须确认对应守卫测试仍全绿。**任何一处都不许在合并里被静默丢掉。**
 
@@ -42,7 +42,7 @@ Node.js ≥22、ESM、**零运行时依赖**、**无构建步骤**（`package.js
 
 ```bash
 npm install                        # 不能省，见红线 2
-npm test                           # 全量，当前基线 658/658（2026-10-14）
+npm test                           # 全量，当前基线 660/660（2026-10-20）
 node --test test/plugin.test.js    # 单文件
 npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test 一起跑）
 ```
@@ -79,7 +79,7 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
    `npm` 在 Windows 上是 `npm.cmd`，`execFileSync("npm", …)` 报 `ENOENT`；
    **改成 `npm.cmd` 也没用** —— Node 18.20/20.12/22 之后不带 shell spawn `.cmd`
    会抛 **EINVAL**（CVE-2024-27980 的缓解）。唯一可行的是 `shell: true`，
-   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **658/658**（2026-10-14）。
+   而走了 shell，带路径的参数就要自己加引号。全量基线现在是 **660/660**（2026-10-20）。
 
 4. **🔴 对上游 DSH 的 API 一律"探测 + 降级"，不要二选一改掉。**
    这是 fork，既要能跑在新 DSH 上，也要能回滚。
@@ -106,7 +106,8 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
 | 现有/应有目录 | 什么进这里 | 不许进 |
 |---|---|---|
 | `src/` | 插件代码（宿主半边 / 浏览器半边；Blue 专属代码只在 `src/blue/`）。**与上游不同的四处差异逐条记在 `docs/FORK-VS-UPSTREAM.md`** | 手工补丁备份 `*.bak-pre-*`（一次性产物 → 直接清除；**现仓库里一个都没有**）；日志 |
-| `test/` | 测试（`node --test`，全量基线 658/658） | 手跑脚本冒充测试 |
+| `tools/` | 维护工具（Node/ESM 零依赖维护脚本，如 `tools/ledger-maintenance.mjs`） | 一次性手跑临时脚本 |
+| `test/` | 测试（`node --test`，全量基线 660/660） | 手跑脚本冒充测试 |
 | `docs/` | 文档，**按主题分**。现有：`FORK-VS-UPSTREAM.md`（差异正本）、`HOST-CONTRACT.md`、`BLUE-MIGRATION.md`、`COMPARISON.md`、`ROADMAP.md`、`UI-PLAN.md`、`FEATURES.md`、`registry-entry.json`、`plans/adversarial-fixes.md`、`images/` | ⚠️ **`docs/决策记录.md` 不存在也不该建** —— 本仓库是公开 fork，个人决策记在知识库 `40-领域/技术/决策记录.md`（正本）与 `70-归档/TokenLedger.md`（项目笔记）；根目录上的一次性报告 |
 | `node_modules/` | 依赖；**已 gitignore**（`.gitignore` 第 1 行），没跑 `npm install` 别下「测试挂了」的结论，见红线 2 | 提交进 git；当源码读 |
 | `00-收件箱/YYYY-MM-DD/`（**按需建，现无内容**） | **当天做的、还没想好放哪**的东西先扔这儿，等 skill `project-tidy` 归位；**归位后空的日期夹与空的 `00-收件箱/` 都删掉**（别常驻根上） | 当成长期仓库；产出目录 |
@@ -146,9 +147,15 @@ npm pack --dry-run --json          # 打包契约（AGENTS.md 要求跟 npm test
   **不要填 0**：填 0 会被当成已计价、成本 0，与「查不到官方价」混淆。
   节假日表内置到 2026 年，**每年国务院公布放假安排后**往配置 `peak.holidays` 里追加下一年；不补的话 12 月最后十天起每次打开都会弹窗。
   ⚠️ v5 的库被旧版本（≤ `acb5a28`）打开会拒绝加载 —— 回滚前先想好这一点。
-- **账本被手工归并过**（2026-10-03，用户指定）：`bd` → `google-antigravity`、`modlens-ali` → 官方、`deepseek-official` → `deepseek-account`（官方合一）、
-  反代时代的 `gemini-3.8-flash-high` → `antigravity-gemini-3.8-flash`。**这不是永久的**：全量重折叠（改 `relays`/`officialOrigins`、`/tokenledger reindex`、换 schema）
-  会按老日志把它们长回来，届时重跑 `D:\Workspace\plugin-compare\{merge-ledger,rename-model}.py`（都默认 dry-run、`--apply` 写库并先备份）。
+- **账本归并与路由钉住**（2026-10-20 更新）：
+  ① **已卸插件的旧路由必须配在 `relays` 钉住**，否则全量重折叠后必回「未知路由」（`unrouted`）。钉在**装机 profile 的** `~/.dsh/profiles/desktop/cordis.patch.yml`
+  （`tokenledger` 条目的 `config.relays`；**不是**仓库根上那份框架用的 `cordis.patch.yml`）：`bd` 和 `google-antigravity`（均指向 `daily-cloudcode-pa.googleapis.com`）、`modlens-ali`（指向百炼）、`our-free-model`（指向 `https://opencode.ai`）。`workbuddy-ai`（23 行）因插件已卸且无公开端点，保持在 `unrouted`。
+  🔴 **改 `relays` 本身就会触发一次全量重折叠**（归因对不上 → 自动重建）：改文件不热生效，要完全退出桌面版再开，重建在重启后跑（2026-10-20 实测约两分钟）。
+  ⚠️ 钉住只管**站点**；`bd` 与 `google-antigravity` 仍是两个路由，面板上照旧各占一行（10-03 那次是连 provider 一起并的，重折叠后 provider 也长回来了）。
+  ② 反代时代的旧模型 id（`bd` 下的 `gemini-3.8-flash-high` → `antigravity-gemini-3.8-flash`）**每次全量重折叠都会长回来**，用仓库内维护脚本重跑：`node tools/ledger-maintenance.mjs rename-model --from gemini-3.8-flash-high --to antigravity-gemini-3.8-flash --apply`
+  （默认 dry-run；`--apply` 先用 `VACUUM INTO` 备份到 `~/.dsh/backups/ledger-maintenance-<时间>/`、再做总量守恒校验；状态总览 `node tools/ledger-maintenance.mjs status`）。
+  **顺序：先让会触发重折叠的改动（改 `relays`、换 SHA 重装）生效、重启、等重建完，再跑改名** —— 2026-10-20 先改名（11:54）后重启（12:14），改名被冲掉。
+  备份别用拷文件：插件开着时最近的提交还在 `-wal` 里，单拷主文件是半截快照（10-20 那份就比前一天的备份还少）。原 `D:\Workspace\plugin-compare\*.py` 已收拢废止。
 - git 作者身份：全局配置是 gitee 的 `zhou-synn`，**本仓库用 local override 换成 GitHub noreply**
   （`57312813+Mrizhou@users.noreply.github.com`），提交才归到 `Mrizhou` 名下。这个 override 只存在
   本目录的 `.git/config` 里，**重新 clone 不会带过去**。
