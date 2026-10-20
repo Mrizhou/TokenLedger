@@ -5,7 +5,11 @@
  *
  * Supported commands:
  *   - status: Report current site distribution, unrouted routes, and model breakdown.
- *   - rename-model --from <oldModel> --to <newModel> [--apply] [--db <path>]
+ *   - rename-model --from <oldModel> --to <newModel> --force [--apply] [--db <path>]
+ *
+ * rename-model is a last resort: the ledger is derived from session logs, so a
+ * hand edit is undone by the next full rebuild. Without --force it refuses and
+ * prints the `merge` config that makes the rename permanent.
  *
  * Safe by default: runs in dry-run mode unless --apply is explicitly specified.
  * When --apply is given, an automatic timestamped backup is saved to ~/.dsh/backups/
@@ -26,6 +30,7 @@ function parseArgs(args) {
 	const parsed = {
 		command: "status",
 		apply: false,
+		force: false,
 		from: undefined,
 		to: undefined,
 		db: defaultDbPath()
@@ -43,6 +48,8 @@ function parseArgs(args) {
 			parsed.apply = true;
 		} else if (arg === "--dry-run") {
 			parsed.apply = false;
+		} else if (arg === "--force") {
+			parsed.force = true;
 		} else if (arg === "--from" && i + 1 < args.length) {
 			parsed.from = args[++i];
 		} else if (arg === "--to" && i + 1 < args.length) {
@@ -63,7 +70,28 @@ function formatTokens(num) {
 }
 
 function handleStatus(db) {
-	console.log("=== 站点分布 ===");
+	console.log("=== 账本重建 ===");
+	const rebuild = db.prepare("SELECT value FROM meta WHERE key = 'rebuild'").get();
+	if (rebuild === undefined) {
+		console.log("  没有记录（插件 77092bf 之后的版本才开始记）");
+	} else {
+		const r = JSON.parse(rebuild.value);
+		const when = (ms) => (Number.isFinite(ms) ? new Date(ms).toLocaleString() : "—");
+		const state = r.doneAt === undefined ? "进行中或被中断" : `用时 ${Math.round((r.doneAt - r.at) / 1000)} 秒，清掉 ${r.dropped ?? 0} 个会话`;
+		console.log(`  共 ${r.count} 次；最近一次 ${when(r.at)}（${state}）`);
+		console.log(`  原因: ${r.reason}`);
+	}
+
+	// 一个路由落在两个站点 = 账本和目录对不上，插件会一直判过期、反复重建（10-03 那次死循环的判据）。
+	const split = db.prepare(`
+		SELECT provider, group_concat(DISTINCT site) AS sites, count(DISTINCT site) AS n
+		FROM session_rollups GROUP BY provider HAVING n > 1
+	`).all();
+	console.log("\n=== 一个路由多个站点 ===");
+	if (split.length === 0) console.log("  无（每个路由只归一个站点）");
+	for (const s of split) console.log(`  ⚠ ${s.provider}: ${s.sites}`);
+
+	console.log("\n=== 站点分布 ===");
 	const sites = db.prepare(`
 		SELECT site, count(*) as rows,
 		       sum(inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens) as totalTokens,
@@ -125,7 +153,7 @@ function backupDatabase(db) {
 	return target;
 }
 
-function handleRenameModel(db, dbPath, fromModel, toModel, apply) {
+function handleRenameModel(db, fromModel, toModel, apply, force) {
 	if (!fromModel || !toModel) {
 		console.error("错误: rename-model 需要提供 --from <oldModel> 和 --to <newModel>");
 		process.exit(1);
@@ -133,6 +161,19 @@ function handleRenameModel(db, dbPath, fromModel, toModel, apply) {
 	if (fromModel === toModel) {
 		console.error("错误: --from 与 --to 不能相同");
 		process.exit(1);
+	}
+	// 账本是从会话日志算出来的：直接改的行，下一次整表重建就按日志原文长回来
+	// （10-03 的归并、10-20 的改名都这样丢过）。改名写进插件的 merge 配置，收账时就按新名记。
+	if (!force) {
+		console.error("拒绝执行: 直接改账本的结果会在下一次整表重建时被冲掉。");
+		console.error("请把这条改名写进 ~/.dsh/profiles/desktop/cordis.patch.yml 的 tokenledger 条目，然后完全退出 DSH 再打开：");
+		console.error("");
+		console.error("    merge:");
+		console.error("      models:");
+		console.error(`        ${JSON.stringify(fromModel)}: ${JSON.stringify(toModel)}`);
+		console.error("");
+		console.error("插件会自动重建一次，之后任何重建都保持合并。确实要临时改库（例如插件没装时），加 --force。");
+		process.exit(2);
 	}
 
 	const sourceRows = db.prepare("SELECT * FROM session_rollups WHERE model = ?").all(fromModel);
@@ -260,7 +301,7 @@ function main() {
 			handleStatus(db);
 			break;
 		case "rename-model":
-			handleRenameModel(db, opts.db, opts.from, opts.to, opts.apply);
+			handleRenameModel(db, opts.from, opts.to, opts.apply, opts.force);
 			break;
 		default:
 			console.error(`未知命令: ${opts.command}。可用命令: status, rename-model`);

@@ -686,6 +686,13 @@ test("a rebuild keeps the cumulative total whole while it runs, then drops sessi
 		assert.equal(api2.totals({}).inputTokens, 2000, "s3's log is gone, so its rows go — as reset() would have lost them");
 		assert.equal(api2.totals({}, "api.relay-one.example").inputTokens, 2000, "every surviving session moved to the relay");
 		assert.equal(api2.store.diagnostics().sessionsTracked, 2);
+
+		// The rebuild leaves a record: how many, when, why, how it ended.
+		const record = api2.diagnostics().lastRebuild;
+		assert.equal(record.count, 1);
+		assert.match(record.reason, /api99: direct -> api\.relay-one\.example/);
+		assert.equal(typeof record.doneAt, "number");
+		assert.equal(record.dropped, 1, "s3, whose log is gone");
 		await second.dispose();
 	} finally {
 		try {

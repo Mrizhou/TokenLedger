@@ -727,6 +727,9 @@ export async function runCommand(rawInput, deps) {
 			// number that says the fold is missing something, rather than that
 			// there was nothing to find.
 			`  归因不上的行     ${d.unattributedRows}${d.unattributedRows > 0 ? "  ← 这些行的 provider 或 model 是 unknown" : ""}`,
+			// A rebuild nobody can see is how "every restart rebuilt twice" went
+			// unnoticed; the record says how often, when, and what triggered it.
+			...rebuildLines(d.lastRebuild),
 			"",
 			...routeAttributionReport(store, deps.directory?.())
 		].join("\n");
@@ -848,6 +851,20 @@ export function unmergedRoutes(store, merge) {
 		}
 	}
 	return [...out];
+}
+
+/** The diagnostics lines for the last rebuild record (see `LedgerStore.recordRebuildStart`). */
+export function rebuildLines(record) {
+	if (record === undefined) return ["  账本重建         没有记录（本版本起才开始记）"];
+	const when = (ms) => (Number.isFinite(ms) ? new Date(ms).toLocaleString() : "—");
+	const state =
+		record.doneAt === undefined
+			? "进行中或被中断"
+			: `用时 ${Math.max(0, Math.round((record.doneAt - record.at) / 1000))} 秒${record.dropped > 0 ? `，清掉 ${record.dropped} 个日志已不在的会话` : ""}`;
+	return [
+		`  账本重建         共 ${record.count ?? 0} 次；最近一次 ${when(record.at)}（${state}）`,
+		`  最近一次的原因   ${record.reason ?? "—"}`
+	];
 }
 
 /**
@@ -1107,13 +1124,11 @@ export function apply(ctx, userConfig = {}) {
 			if (!rebuilding && (stale.length > 0 || unmerged.length > 0) && !settled) {
 				logger?.debug?.("tokenledger: the index disagrees with the directory; waiting for the directory to settle before rebuilding");
 			} else if (!rebuilding && (stale.length > 0 || unmerged.length > 0)) {
-				logger?.info?.(
-					"tokenledger: rebuilding the index — %s",
-					[
-						...stale.map((r) => `${r.provider}: ${r.site} -> ${r.expected}`),
-						...unmerged.map((m) => `merge ${m}`)
-					].join(", ")
-				);
+				const reason = [
+					...stale.map((r) => `${r.provider}: ${r.site} -> ${r.expected}`),
+					...unmerged.map((m) => `merge ${m}`)
+				].join(", ");
+				logger?.info?.("tokenledger: rebuilding the index — %s", reason);
 				// The reset discards the good index AND the checkpoints, so it
 				// must not run when the logs cannot even be listed: a failed
 				// rebuild after a blind reset leaves the panel empty, and any
@@ -1130,6 +1145,7 @@ export function apply(ctx, userConfig = {}) {
 				// its new ones replace them.
 				if (await canListSessions(ctx.sessionPersistence, logger)) {
 					store.forgetCheckpoints();
+					store.recordRebuildStart(reason);
 					rebuilding = true;
 				} else {
 					logger?.warn?.("tokenledger: keeping the old index; the session logs are not listable right now");
@@ -1149,6 +1165,7 @@ export function apply(ctx, userConfig = {}) {
 			// session would look unfolded, so the drop waits for a real pass.
 			if (rebuilding && !(stats.scanned === 0 && stats.failed > 0)) {
 				const dropped = store.dropUnfolded();
+				store.recordRebuildDone(dropped);
 				rebuilding = false;
 				if (dropped > 0) logger?.info?.("tokenledger: rebuild dropped %d session(s) whose logs were not re-read", dropped);
 			}
@@ -1297,7 +1314,10 @@ export function apply(ctx, userConfig = {}) {
 	/** Discard the derived index; the next sweep rebuilds it from seq 0. */
 	const reindexAndPublish = async () => {
 		store.reset();
-		return runSweepAndPublish();
+		store.recordRebuildStart("/tokenledger reindex");
+		const result = await runSweepAndPublish();
+		if (result !== undefined) store.recordRebuildDone(0);
+		return result;
 	};
 
 	const handleCommand = (rawInput) =>

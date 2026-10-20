@@ -6,6 +6,7 @@ import {
 	canListSessions,
 	normalizeMergeConfig,
 	normalizeRelayConfig,
+	rebuildLines,
 	staleAttributions,
 	sweep,
 	unmergedRoutes
@@ -489,6 +490,15 @@ test("merge config ignores entries that are not a rename", () => {
 	const merge = normalizeMergeConfig({ merge: { providers: { a: "a", b: "", c: 3, "": "x", d: "e" }, models: ["x"] } });
 	assert.deepEqual([...merge.providers], [["d", "e"]]);
 	assert.equal(merge.models.size, 0);
+});
+
+test("diagnostics says whether, when, and why the ledger was rebuilt", () => {
+	assert.match(rebuildLines(undefined).join("\n"), /没有记录/);
+	const done = rebuildLines({ count: 3, at: 0, reason: "merge bd -> google-antigravity", doneAt: 61_000, dropped: 2 }).join("\n");
+	assert.match(done, /共 3 次/);
+	assert.match(done, /用时 61 秒，清掉 2 个日志已不在的会话/);
+	assert.match(done, /merge bd -> google-antigravity/);
+	assert.match(rebuildLines({ count: 1, at: 0, reason: "r" }).join("\n"), /进行中或被中断/);
 });
 
 test("relay attribution flows through the sweep", async () => {

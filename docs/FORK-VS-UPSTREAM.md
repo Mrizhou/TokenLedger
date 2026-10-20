@@ -299,3 +299,15 @@
     「configuring a merge re-folds the old rows…, and a reindex keeps them merged」。三条原有重建测试加了 `rebuildSettleMs: 0`。
     变异验证（每次只拆一处）：缺席当 unrouted → 2 条红；`moved` 恢复触发 → 迟注册那条红；去掉稳定期 → 稳定期那条红；收账不传 `merge` → 2 条红；忽略未合并行 → apply 归并那条红。
     **合上游时这一处要保留**（上游没有 `merge`，仍按 origin 集合变动重建）。
+- **账本重建留记录、诊断里看得见**（2026-10-20，用户「这些老问题一直出现 是为什么 能预防吗」→「都做」）：
+  - 来由：修复前每次重启都整表重建两遍，却没人知道 —— 宿主不落插件日志，唯一痕迹是 454 个 checkpoint 时间戳相同。看不见的重建，就是「老毛病时好时坏」的来源。
+  - 改法：`store.js` 新增 `recordRebuildStart(reason)` / `recordRebuildDone(dropped)` / `rebuildRecord()`，一条 `meta` 记录 `rebuild = { count, at, reason, doneAt?, dropped? }`
+    （`reset()` 不清 `meta`，所以记录比它描述的重建活得久）；`diagnostics()` 只在有记录时多出 `lastRebuild` 字段（附加、不改原有字段，`ctx.tokenLedger.diagnostics` 随之附加）。
+    `plugin.js`：自动重建开始时记原因（哪几个路由 `site -> expected`、哪几条 `merge`），`dropUnfolded()` 后记结束；`/tokenledger reindex` 命令也记；
+    兼容边界 `ctx.tokenLedger.reindex` **不记**（行为不许变）。`/tokenledger diagnostics` 多两行「账本重建 / 最近一次的原因」（`rebuildLines()`）。
+    不做弹窗或主动提醒（10-18 用户否过同类主动提醒）。
+  - 配套（不在 `src/`）：`tools/ledger-maintenance.mjs status` 打印同一条记录并检查「一个路由多个站点」（10-03 死循环的判据）；
+    `rename-model` 不加 `--force` 拒绝执行（退出码 2）、打印该写进 `merge` 的配置 —— 规矩由脚本把关，不靠文档（呼应 10-09 用户定的「改动由脚本事后把关，不靠提示词」）。
+  - 守卫测试：`test/store.test.js`「the rebuild record counts rebuilds, survives reset…」、`test/plugin.test.js`「diagnostics says whether, when, and why…」、
+    `test/apply.test.js` 重建那条加了记录断言、新文件 `test/ledger-maintenance.test.js`（以子进程真跑脚本，`HOME` 指到临时目录）。
+    变异验证：去掉开始 / 结束记录、去掉诊断字段、去掉 `--force` 闸门、去掉分站点检查，各自对应的测试都红。**合上游时这一处要保留**。

@@ -135,6 +135,19 @@ test("a replacement spanning a restart is still not double counted", () => {
 	});
 });
 
+test("the rebuild record counts rebuilds, survives reset, and only appears once there is one", () => {
+	withStore((store) => {
+		assert.equal(store.diagnostics().lastRebuild, undefined, "no record, no field");
+		store.recordRebuildStart("x: direct -> relay", 1000);
+		assert.deepEqual(store.rebuildRecord(), { count: 1, at: 1000, reason: "x: direct -> relay" });
+		store.recordRebuildDone(2, 4000);
+		store.reset();
+		assert.deepEqual(store.diagnostics().lastRebuild, { count: 1, at: 1000, reason: "x: direct -> relay", doneAt: 4000, dropped: 2 });
+		store.recordRebuildStart("again", 5000);
+		assert.deepEqual(store.rebuildRecord(), { count: 2, at: 5000, reason: "again" }, "a new start clears the old outcome");
+	});
+});
+
 test("reset clears everything so the next pass rebuilds from seq 0", () => {
 	withStore((store) => {
 		const state = { days: new Map(), lastSample: null, currentRoute: null, consumedSeq: -1 };

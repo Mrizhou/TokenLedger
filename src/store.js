@@ -245,6 +245,44 @@ export class LedgerStore {
 		this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('phaseSince', ?)").run(String(Date.now()));
 	}
 
+	/**
+	 * Note that a rebuild started, and why. Kept in `meta`, which `reset()`
+	 * leaves alone, so the record outlives the rebuild it describes.
+	 *
+	 * Every restart used to rebuild the ledger twice, and nobody could tell: the
+	 * host keeps no plugin log, and the only trace was 454 checkpoints sharing a
+	 * timestamp. A rebuild that says when and why is one that can be noticed.
+	 */
+	recordRebuildStart(reason, at = Date.now()) {
+		const previous = this.rebuildRecord();
+		this.#writeRebuild({ count: (previous?.count ?? 0) + 1, at, reason: String(reason).slice(0, 500) });
+	}
+
+	/** Close the record {@link recordRebuildStart} opened. */
+	recordRebuildDone(dropped = 0, at = Date.now()) {
+		const current = this.rebuildRecord();
+		if (current === undefined) return;
+		this.#writeRebuild({ ...current, doneAt: at, dropped });
+	}
+
+	/** `{ count, at, reason, doneAt?, dropped? }` for the last rebuild, or undefined. */
+	rebuildRecord() {
+		const row = this.#db.prepare("SELECT value FROM meta WHERE key = 'rebuild'").get();
+		if (row === undefined) return undefined;
+		try {
+			const value = JSON.parse(row.value);
+			return value !== null && typeof value === "object" ? value : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	#writeRebuild(value) {
+		this.#db
+			.prepare("INSERT INTO meta (key, value) VALUES ('rebuild', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+			.run(JSON.stringify(value));
+	}
+
 	/** Epoch ms from which usage is split by peak/off-peak phase. */
 	phaseSince() {
 		const row = this.#db.prepare("SELECT value FROM meta WHERE key = 'phaseSince'").get();
@@ -607,6 +645,7 @@ export class LedgerStore {
 		const unknownRoutes = this.#db
 			.prepare("SELECT COUNT(*) AS n FROM session_rollups WHERE provider = 'unknown' OR model = 'unknown'")
 			.get();
+		const lastRebuild = this.rebuildRecord();
 		return {
 			schemaVersion: SCHEMA_VERSION,
 			rollupRows: Number(counts.rollupRows),
@@ -616,7 +655,8 @@ export class LedgerStore {
 			lastDay: counts.lastDay ?? undefined,
 			lastUsageAt: counts.lastUsageAt === null ? undefined : Number(counts.lastUsageAt),
 			lastUpdatedAt: counts.lastUpdatedAt === null ? undefined : Number(counts.lastUpdatedAt),
-			unattributedRows: Number(unknownRoutes.n)
+			unattributedRows: Number(unknownRoutes.n),
+			...(lastRebuild === undefined ? {} : { lastRebuild })
 		};
 	}
 
