@@ -428,6 +428,36 @@ export class LedgerStore {
 		});
 	}
 
+	/**
+	 * Start a rebuild that stays readable. Only the checkpoints go: every session
+	 * is then re-read from its seed boundary, and `commitSession` swaps its rows
+	 * one session at a time, so the totals a panel reads mid-rebuild stay whole
+	 * instead of climbing from zero. Finish with {@link dropUnfolded}.
+	 */
+	forgetCheckpoints() {
+		this.#db.exec("DELETE FROM checkpoints");
+	}
+
+	/**
+	 * End a {@link forgetCheckpoints} rebuild: drop the sessions the full pass did
+	 * not re-commit (log deleted, unreadable, or empty). Their rows still carry
+	 * the old attribution, and left in place they would call the index stale
+	 * again — the same loss `reset()` takes, only deferred to the end.
+	 *
+	 * @returns how many sessions were dropped.
+	 */
+	dropUnfolded() {
+		return this.#transaction(() => {
+			const orphaned = "sessionId NOT IN (SELECT sessionId FROM checkpoints)";
+			const dropped = Number(
+				this.#db.prepare(`SELECT count(DISTINCT sessionId) AS n FROM session_rollups WHERE ${orphaned}`).get().n
+			);
+			this.#db.exec(`DELETE FROM session_rollups WHERE ${orphaned}`);
+			this.#db.exec(`DELETE FROM sessions WHERE ${orphaned}`);
+			return dropped;
+		});
+	}
+
 	/** Totals over a date range, optionally restricted to one site and provider route. */
 	totals(range = {}, site = undefined, provider = undefined) {
 		const { sql, params } = rangeClause(range, site, "", provider);

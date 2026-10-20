@@ -617,6 +617,149 @@ test("a rebuild that cannot list the logs keeps the old index instead of blankin
 	}
 });
 
+test("a rebuild keeps the cumulative total whole while it runs, then drops sessions whose logs are gone", async () => {
+	// 2026-10-20 on a real install: a relay change rebuilt the index, the
+	// re-fold took a minute, and every panel open or range click in between
+	// read a store that had been emptied — the cumulative total climbed a
+	// little on each click. Mid-rebuild the old rows must still be there.
+	const { mkdtempSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const dir = mkdtempSync(join(tmpdir(), "tokenledger-rebuild-"));
+	const database = join(dir, "ledger.sqlite");
+	const logs = { s1: [turn(1, "api99")], s2: [turn(1, "api99")], s3: [turn(1, "api99")] };
+	const persistenceOf = (ids, readFrom) => ({
+		listSnapshots: async () => ids.map((id) => ({ header: { id }, revision: "r1" })),
+		readFrom
+	});
+	let api;
+	let api2;
+	try {
+		// First generation: no relay known, three sessions land as unrouted.
+		const first = fakeContext({
+			persistence: persistenceOf(["s1", "s2", "s3"], async (id, from) => ({ events: from === 0 ? logs[id] : [] }))
+		});
+		const firstServices = captureServices(first.ctx);
+		apply(first.ctx, { database, sweepIntervalMs: 0, sweepOnStart: false, detect: async () => ({ billingAvailable: false }) });
+		await settle();
+		api = firstServices.get("tokenLedger");
+		await api.sweep();
+		assert.equal(api.totals({}).inputTokens, 3000);
+		await first.dispose();
+
+		// Second generation: the relay is configured, s3's log was deleted, and
+		// s2's read is held open so the rebuild can be observed half way.
+		let release;
+		const gate = new Promise((resolve) => (release = resolve));
+		let s2Waiting = false;
+		const second = fakeContext({
+			providers: [piAi("api99")],
+			section: { providers: { api99: { baseURL: "https://api.relay-one.example/v1" } } },
+			persistence: persistenceOf(["s1", "s2"], async (id, from) => {
+				if (id === "s2") {
+					s2Waiting = true;
+					await gate;
+				}
+				return { events: from === 0 ? logs[id] : [] };
+			})
+		});
+		const secondServices = captureServices(second.ctx);
+		apply(second.ctx, {
+			database,
+			sweepIntervalMs: 0,
+			sweepOnStart: false,
+			detect: async () => ({ billingAvailable: false }),
+			relays: { api99: "https://api.relay-one.example/v1" }
+		});
+		await settle();
+		api2 = secondServices.get("tokenLedger");
+		const rebuild = api2.sweep();
+		assert.ok(await waitFor(() => s2Waiting), "the rebuild reaches the held session");
+
+		assert.equal(api2.totals({}).inputTokens, 3000, "mid-rebuild the old rows still count; an emptied store read 1000 here");
+		assert.equal(api2.totals({}, "api.relay-one.example").inputTokens, 1000, "s1 is already re-attributed");
+
+		release();
+		await rebuild;
+		assert.equal(api2.totals({}).inputTokens, 2000, "s3's log is gone, so its rows go — as reset() would have lost them");
+		assert.equal(api2.totals({}, "api.relay-one.example").inputTokens, 2000, "every surviving session moved to the relay");
+		assert.equal(api2.store.diagnostics().sessionsTracked, 2);
+		await second.dispose();
+	} finally {
+		try {
+			api?.store?.close();
+		} catch {}
+		try {
+			api2?.store?.close();
+		} catch {}
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a rebuild whose listing fails after the probe keeps every session and finishes on the next sweep", async () => {
+	// The readability probe and the sweep list separately. If the second one
+	// fails, nothing was re-read, and treating every session as unfolded would
+	// blank the ledger the probe exists to protect.
+	const { mkdtempSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const dir = mkdtempSync(join(tmpdir(), "tokenledger-rebuild-"));
+	const database = join(dir, "ledger.sqlite");
+	const readFrom = async (_id, from) => ({ events: from === 0 ? [turn(1, "api99")] : [] });
+	const list = async () => [{ header: { id: "s1" }, revision: "r1" }, { header: { id: "s2" }, revision: "r1" }];
+	let api;
+	let api2;
+	try {
+		const first = fakeContext({ persistence: { listSnapshots: list, readFrom } });
+		const firstServices = captureServices(first.ctx);
+		apply(first.ctx, { database, sweepIntervalMs: 0, sweepOnStart: false, detect: async () => ({ billingAvailable: false }) });
+		await settle();
+		api = firstServices.get("tokenLedger");
+		await api.sweep();
+		assert.equal(api.totals({}).inputTokens, 2000);
+		await first.dispose();
+
+		let calls = 0;
+		const second = fakeContext({
+			providers: [piAi("api99")],
+			section: { providers: { api99: { baseURL: "https://api.relay-one.example/v1" } } },
+			persistence: {
+				// Probe succeeds, the sweep's own listing fails, then the host recovers.
+				listSnapshots: async () => {
+					if (++calls === 2) throw new Error("locked");
+					return list();
+				},
+				readFrom
+			}
+		});
+		const secondServices = captureServices(second.ctx);
+		apply(second.ctx, {
+			database,
+			sweepIntervalMs: 0,
+			sweepOnStart: false,
+			detect: async () => ({ billingAvailable: false }),
+			relays: { api99: "https://api.relay-one.example/v1" }
+		});
+		await settle();
+		api2 = secondServices.get("tokenLedger");
+		await api2.sweep();
+		assert.equal(api2.totals({}).inputTokens, 2000, "a failed listing re-read nothing, so nothing may be dropped");
+
+		await api2.sweep();
+		assert.equal(api2.totals({}).inputTokens, 2000);
+		assert.equal(api2.totals({}, "api.relay-one.example").inputTokens, 2000, "the next sweep finishes the rebuild");
+		await second.dispose();
+	} finally {
+		try {
+			api?.store?.close();
+		} catch {}
+		try {
+			api2?.store?.close();
+		} catch {}
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("a failed sweep is visible in diagnostics instead of vanishing into the log", async () => {
 	// Sweep failures are silent by design (a failed collection must not break
 	// the panel), but "the panel is not growing and nothing says why" needs

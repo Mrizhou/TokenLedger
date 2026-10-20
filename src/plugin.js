@@ -968,6 +968,10 @@ export function apply(ctx, userConfig = {}) {
 	};
 
 	let running = false;
+	// An automatic rebuild in flight: checkpoints forgotten, old rows still being
+	// swapped out. Outlives a sweep that could not list the logs, so the next one
+	// finishes the job instead of dropping every session as unfolded.
+	let rebuilding = false;
 	// When the logs were last LOOKED AT, which is a different fact from when
 	// they last changed. The checkpoint table only advances on a session that
 	// moved, so a quiet hour leaves `MAX(updatedAt)` an hour behind while the
@@ -1032,8 +1036,17 @@ export function apply(ctx, userConfig = {}) {
 				// session whose logs were deleted since is gone for good (the
 				// reset is irreversible). Probe readability first; a host that
 				// cannot be listed keeps its old index until it can.
+				//
+				// Not `store.reset()`: a full re-fold takes a minute on a real
+				// install, every panel open or range click reads the store in the
+				// meantime (the sweep it asks for returns early while this one
+				// runs), and an emptied store showed the cumulative total climbing
+				// a little on every click. Forgetting only the checkpoints re-reads
+				// every log the same way while each session's old rows stay until
+				// its new ones replace them.
 				if (await canListSessions(ctx.sessionPersistence, logger)) {
-					store.reset();
+					store.forgetCheckpoints();
+					rebuilding = true;
 				} else {
 					logger?.warn?.("tokenledger: keeping the old index; the session logs are not listable right now");
 				}
@@ -1047,6 +1060,13 @@ export function apply(ctx, userConfig = {}) {
 				// next fold on (already-folded usage keeps the phase it got).
 				phaseOf: phaseClassifier({ since: store.phaseSince(), holidays: holidaySet(normalizePeakConfig(config.peak).holidays) })
 			});
+			// Nothing scanned and a failure is the listing itself failing; every
+			// session would look unfolded, so the drop waits for a real pass.
+			if (rebuilding && !(stats.scanned === 0 && stats.failed > 0)) {
+				const dropped = store.dropUnfolded();
+				rebuilding = false;
+				if (dropped > 0) logger?.info?.("tokenledger: rebuild dropped %d session(s) whose logs were not re-read", dropped);
+			}
 			if (stats.updated > 0 || stats.failed > 0) {
 				logger?.info?.(
 					"tokenledger: swept %d, updated %d, skipped %d, failed %d",

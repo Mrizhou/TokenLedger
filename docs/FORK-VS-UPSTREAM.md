@@ -269,3 +269,17 @@
     `test/peak-ledger.test.js`（v4 原地迁移保住全部行与 checkpoint、新库记 phaseSince、拆时段存/合并显示、跨时段重报不重复计、谷时段半价/无时段按原价/网关节假日按峰）、
     `test/pricing.test.js` 的 offPeak 四条、`test/client.test.js` 的峰谷四条、`test/settings-schema.test.js` 默认值。
     变异验证：`src/` 整体换回改动前，以上 14 条全红；单把 v4 原地迁移关掉（回到 DROP），迁移那条红。**合上游时这一处要保留**（上游没有峰谷）。
+- **自动重建不清表：只清 checkpoint、逐会话替换、最后清孤行**（2026-10-20，用户「又出现那个点一下增加累计的bug了」）：
+  - 现象：DSH 改了 `relays` 后重启（12:14），归因对不上 → `runSweep` 走 `store.reset()` + 整份重折叠，真实账本约两分钟。
+    这期间每次打开面板、点今日/本月/累计、点刷新都请求 `/api/tokenledger/usage`，它要的那次 sweep 因 `running` 直接返回，读到的是**清空后重建到一半**的库，
+    累计数一点一涨。重建完就恢复（当日实测：连采 2 分钟 518 行 / 29,160 次请求恒定，接口连请求 6 次逐字相同）。
+  - 改法：`plugin.js` `runSweep` 的「relay 集合变了 / 归因过期」那条路径把 `store.reset()` 换成 `store.forgetCheckpoints()`（只删 checkpoint），
+    每个会话照旧从 seed 边界整份重读、`commitSession` 先删后插替换它自己的行，所以重建中途累计基本不动（只在会话之间换站点归属）；
+    sweep 完整跑完后 `store.dropUnfolded()` 删掉没被重新提交的会话（日志已删 / 读失败 / 空）—— 与 `reset()` 丢的是同一批，只是挪到最后，
+    否则它们带着旧归因留下，`staleAttributions()` 会一直判过期、每轮重建。列表本身失败（`scanned 0 且 failed > 0`）时不清，`rebuilding` 留到下一轮做完。
+    `loadState()` 在没有 checkpoint 时返回空状态，两条读日志的分支都不会把旧行叠进新折叠，不重复计。
+    显式重建不变：`/tokenledger reindex` 与 `ctx.tokenLedger.reindex` 仍走 `reset()`（后者是兼容边界，行为不许变）。
+  - 守卫测试：`test/apply.test.js`「a rebuild keeps the cumulative total whole while it runs…」（卡住第二个会话的读，中途累计必须还是 3000、
+    已重读的那个已归到 relay；放行后日志已删的会话被清、剩下的全部归到 relay）与「a rebuild whose listing fails after the probe…」。
+    变异验证：`src/` 换回改动前，第一条红在中途累计 `actual: 1000`（正是现场症状）；把列表失败的判断去掉，第二条红在 `actual: 0`。
+    **合上游时这一处要保留**（上游仍是 `reset()`）。
