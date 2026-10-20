@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildResolver, canListSessions, normalizeRelayConfig, staleAttributions, sweep } from "../src/plugin.js";
+import {
+	buildResolver,
+	canListSessions,
+	normalizeMergeConfig,
+	normalizeRelayConfig,
+	staleAttributions,
+	sweep,
+	unmergedRoutes
+} from "../src/plugin.js";
 import { LedgerStore } from "../src/store.js";
 import { RelaySiteRegistry, createSiteResolver } from "../src/relay-sites.js";
 import { DIRECT } from "../src/usage.js";
@@ -425,6 +433,62 @@ test("rows with no route at all are left alone", async () => {
 		await indexedWith(store, "s1", [message(1, 1, undefined, undefined, { inputTokens: 10, outputTokens: 0 })], liveDirectory().resolveSite);
 		assert.deepEqual(staleAttributions(store, liveDirectory()), []);
 	});
+});
+
+test("a provider missing from the directory is not evidence that its rows moved", async () => {
+	// 2026-10-20 on a real install: provider plugins register after the first
+	// sweep, so for a while the directory simply does not list them. Reading
+	// that absence as "now unrouted" rebuilt the whole index on every restart.
+	await withStore(async (store) => {
+		const directory = liveDirectory();
+		await indexedWith(store, "s1", [header("ninerelay", "gpt"), message(1, 1, "ninerelay", "gpt", { inputTokens: 100, outputTokens: 0 })], directory.resolveSite);
+		const notYetListed = { available: true, providerBaseUrls: {}, resolveSite: createSiteResolver(new RelaySiteRegistry([]), {}) };
+		assert.deepEqual(staleAttributions(store, notYetListed), []);
+	});
+});
+
+test("the merge config renames routes and models as they are folded", async () => {
+	// A hand edit of the ledger grew back on every full re-fold. Folded under
+	// the new names, a re-fold reproduces the merge.
+	await withStore(async (store) => {
+		const registry = new RelaySiteRegistry([{ id: "cloud", type: "newapi", baseUrl: "https://cloud.example" }]);
+		const providerBaseUrls = { plugin: "https://cloud.example" };
+		const resolveSite = createSiteResolver(registry, providerBaseUrls);
+		const merge = normalizeMergeConfig({ merge: { providers: { proxy: "plugin" }, models: { "gemini-high": "gemini" } } });
+		const sessions = new Map([
+			["s1", { revision: "r1", events: [header("proxy", "gemini-high"), message(1, 1, "proxy", "gemini-high", { inputTokens: 100, outputTokens: 1 })] }],
+			["s2", { revision: "r1", events: [header("plugin", "gemini"), message(1, 1, "plugin", "gemini", { inputTokens: 50, outputTokens: 1 })] }]
+		]);
+		await sweep(fakePersistence(sessions), store, { resolveSite, merge });
+		assert.deepEqual(
+			store.distinctRoutes().map((r) => `${r.site} ${r.provider}`),
+			["cloud plugin"],
+			"the merged route takes the target's site even though only the target is in the directory"
+		);
+		assert.deepEqual(store.distinctModels().map((r) => r.model), ["gemini"]);
+		assert.equal(store.totals().inputTokens, 150);
+		assert.deepEqual(unmergedRoutes(store, merge), []);
+
+		store.reset();
+		await sweep(fakePersistence(sessions), store, { resolveSite, merge });
+		assert.deepEqual(store.distinctModels().map((r) => r.model), ["gemini"], "a full re-fold keeps the merge");
+		assert.equal(store.totals().inputTokens, 150);
+	});
+});
+
+test("rows written before a merge was configured ask for a re-fold", async () => {
+	await withStore(async (store) => {
+		await indexedWith(store, "s1", [header("proxy", "gemini-high"), message(1, 1, "proxy", "gemini-high", { inputTokens: 10, outputTokens: 0 })], undefined);
+		const merge = normalizeMergeConfig({ merge: { providers: { proxy: "plugin" }, models: { "gemini-high": "gemini" } } });
+		assert.deepEqual(unmergedRoutes(store, merge), ["proxy -> plugin", "gemini-high -> gemini"]);
+		assert.deepEqual(unmergedRoutes(store, normalizeMergeConfig({})), []);
+	});
+});
+
+test("merge config ignores entries that are not a rename", () => {
+	const merge = normalizeMergeConfig({ merge: { providers: { a: "a", b: "", c: 3, "": "x", d: "e" }, models: ["x"] } });
+	assert.deepEqual([...merge.providers], [["d", "e"]]);
+	assert.equal(merge.models.size, 0);
 });
 
 test("relay attribution flows through the sweep", async () => {

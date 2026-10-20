@@ -283,3 +283,19 @@
     已重读的那个已归到 relay；放行后日志已删的会话被清、剩下的全部归到 relay）与「a rebuild whose listing fails after the probe…」。
     变异验证：`src/` 换回改动前，第一条红在中途累计 `actual: 1000`（正是现场症状）；把列表失败的判断去掉，第二条红在 `actual: 0`。
     **合上游时这一处要保留**（上游仍是 `reset()`）。
+- **重启不再重建账本；账本归并改成收账时按配置合并（`merge`）**（2026-10-20，用户「两个都做」）：
+  - 现象（当日实测）：没改任何配置的一次重启（13:45:24）也把 454 个会话整表重折叠了**两遍**。第二遍里 `unrouted` 从 33 行回到 23 行，
+    差的 10 行正好是 `qoder-cn` 的行数 —— 推断：首轮 sweep 时 Qoder 等服务商插件还没注册，`staleAttributions()` 把「目录里没有」当成「该记 unrouted」，
+    按半张目录重建一遍；插件注册后 origin 集合变了（`moved`），再重建一遍。每次重启手工改过的账（10-03 的归并、10-20 的改名）都被冲掉。
+  - 改法（`plugin.js`）：① `staleAttributions()` 遇到 `resolveSite()` 返回 `undefined`（目录里没有这个服务商）就跳过 —— 没列出来是「还不知道」，不是「变了」；
+    代价：服务商整个卸掉后，它的旧行留在原站点、不再改记 `unrouted`。② origin 集合变了（`moved`）只记日志、不再单独触发重建 —— 它能挪动的行都会被 stale 检查看到。
+    ③ 自动重建等目录（是否可读 ＋ 每个服务商的 baseURL ＋ 直连服务商名单）连续 `rebuildSettleMs`（默认 60 秒，内部参数、不进设置）不变才动手，免得按半张目录折叠。
+  - 归并（`usage.js` `applyUsageDelta` 的 `merge` 选项 ＋ `normalizeMergeConfig()` ＋ `unmergedRoutes()` ＋ 设置项 `merge`）：
+    `merge.providers` / `merge.models` 把旧路由名 / 旧模型名在**记行之前**换成新名，合并后的路由按**新名**解析站点；账本里还留着旧名的行会触发一次（等过稳定期的）重建。
+    只换一跳；删掉某条不会自动拆开已合并的行，要 `/tokenledger reindex`。装机配置写了 10-03 用户定的四条（见 profile `cordis.patch.yml` 的注释）。
+  - 守卫测试：`test/plugin.test.js`「a provider missing from the directory is not evidence…」「the merge config renames routes and models as they are folded」
+    「rows written before a merge was configured ask for a re-fold」「merge config ignores entries that are not a rename」；
+    `test/apply.test.js`「a restart whose provider plugins register late does not rebuild the index」「an automatic rebuild waits for the directory to hold still」
+    「configuring a merge re-folds the old rows…, and a reindex keeps them merged」。三条原有重建测试加了 `rebuildSettleMs: 0`。
+    变异验证（每次只拆一处）：缺席当 unrouted → 2 条红；`moved` 恢复触发 → 迟注册那条红；去掉稳定期 → 稳定期那条红；收账不传 `merge` → 2 条红；忽略未合并行 → apply 归并那条红。
+    **合上游时这一处要保留**（上游没有 `merge`，仍按 origin 集合变动重建）。

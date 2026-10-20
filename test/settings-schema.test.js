@@ -20,6 +20,7 @@ test("the settings schema exposes Chinese labels without changing resolved defau
 		endpoints: [],
 		userAuth: {},
 		relays: {},
+		merge: { providers: {}, models: {} },
 		officialOrigins: [],
 		fingerprint: false,
 		database: "tokenledger.sqlite",
@@ -28,6 +29,12 @@ test("the settings schema exposes Chinese labels without changing resolved defau
 		peak: { alert: true, aheadMinutes: 5, target: "both", holidays: [], remindDays: 10 }
 	});
 	assert.equal(schema.dict.peak.meta.description, "峰谷提醒");
+	assert.equal(schema.dict.merge.meta.description, "账本归并");
+	assert.deepEqual(
+		schema({ merge: { providers: { bd: "google-antigravity" } } }).merge,
+		{ providers: { bd: "google-antigravity" }, models: {} },
+		"a configured merge survives resolution"
+	);
 });
 
 test("wallet tokens are schema-declared write-only secrets", () => {

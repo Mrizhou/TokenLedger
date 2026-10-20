@@ -582,6 +582,11 @@ export class LedgerStore {
 		return this.#db.prepare("SELECT DISTINCT site, provider FROM session_rollups").all();
 	}
 
+	/** Every distinct model id in the ledger. */
+	distinctModels() {
+		return this.#db.prepare("SELECT DISTINCT model FROM session_rollups").all();
+	}
+
 	/**
 	 * Index health, for the diagnostics surface. Deliberately counts and
 	 * identifiers only — never prompts, tool arguments, credentials, or content.

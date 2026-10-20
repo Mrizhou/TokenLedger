@@ -593,7 +593,8 @@ test("a rebuild that cannot list the logs keeps the old index instead of blankin
 			sweepIntervalMs: 0,
 			sweepOnStart: false,
 			detect: async () => ({ billingAvailable: false }),
-			relays: { api99: "https://api.relay-one.example/v1" }
+			relays: { api99: "https://api.relay-one.example/v1" },
+			rebuildSettleMs: 0
 		});
 		await settle();
 		api2 = secondServices.get("tokenLedger");
@@ -669,7 +670,8 @@ test("a rebuild keeps the cumulative total whole while it runs, then drops sessi
 			sweepIntervalMs: 0,
 			sweepOnStart: false,
 			detect: async () => ({ billingAvailable: false }),
-			relays: { api99: "https://api.relay-one.example/v1" }
+			relays: { api99: "https://api.relay-one.example/v1" },
+			rebuildSettleMs: 0
 		});
 		await settle();
 		api2 = secondServices.get("tokenLedger");
@@ -738,7 +740,8 @@ test("a rebuild whose listing fails after the probe keeps every session and fini
 			sweepIntervalMs: 0,
 			sweepOnStart: false,
 			detect: async () => ({ billingAvailable: false }),
-			relays: { api99: "https://api.relay-one.example/v1" }
+			relays: { api99: "https://api.relay-one.example/v1" },
+			rebuildSettleMs: 0
 		});
 		await settle();
 		api2 = secondServices.get("tokenLedger");
@@ -758,6 +761,139 @@ test("a rebuild whose listing fails after the probe keeps every session and fini
 		} catch {}
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+/**
+ * Two generations of `apply` over one database file — a DSH restart. The first
+ * folds `logs` with `firstConfig`; `second` gets the context and config of the
+ * restarted plugin and runs with the legacy API in hand.
+ */
+async function acrossRestart({ logs, firstContext = {}, firstConfig = {}, secondContext, secondConfig }, second) {
+	const { mkdtempSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const dir = mkdtempSync(join(tmpdir(), "tokenledger-restart-"));
+	const database = join(dir, "ledger.sqlite");
+	const persistence = {
+		listSnapshots: async () => Object.keys(logs).map((id) => ({ header: { id }, revision: "r1" })),
+		readFrom: async (id, from) => ({ events: from === 0 ? logs[id] : [] })
+	};
+	const base = { database, sweepIntervalMs: 0, sweepOnStart: false, detect: async () => ({ billingAvailable: false }) };
+	let api;
+	let api2;
+	try {
+		const first = fakeContext({ ...firstContext, persistence });
+		const firstServices = captureServices(first.ctx);
+		apply(first.ctx, { ...base, ...firstConfig });
+		await settle();
+		api = firstServices.get("tokenLedger");
+		await api.sweep();
+		await first.dispose();
+
+		const restarted = fakeContext({ ...secondContext, persistence });
+		const services = captureServices(restarted.ctx);
+		apply(restarted.ctx, { ...base, ...secondConfig });
+		await settle();
+		api2 = services.get("tokenLedger");
+		await second(api2, restarted);
+		await restarted.dispose();
+	} finally {
+		try {
+			api?.store?.close();
+		} catch {}
+		try {
+			api2?.store?.close();
+		} catch {}
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+test("a restart whose provider plugins register late does not rebuild the index", async () => {
+	// 2026-10-20 on a real install: every restart rebuilt the whole ledger
+	// twice. The first sweep ran before every provider plugin had registered —
+	// their absence read as "now unrouted" — and the origin set moved again as
+	// each one arrived. Neither says a recorded row is wrong.
+	const section = {
+		providers: {
+			api99: { baseURL: "https://api.relay-one.example/v1" },
+			api77: { baseURL: "https://api.relay-two.example/v1" }
+		}
+	};
+	const providers = [piAi("api99"), piAi("api77")];
+	await acrossRestart(
+		{
+			logs: { s1: [turn(1, "api99")], s2: [turn(1, "api77")] },
+			firstContext: { providers, section },
+			secondContext: { providers: [piAi("api99")], section },
+			secondConfig: { rebuildSettleMs: 0 }
+		},
+		async (api, restarted) => {
+			const before = api.totals({}, "api.relay-two.example").inputTokens;
+			assert.equal(before, 1000);
+			const early = await api.sweep();
+			assert.equal(early.updated, 0, "api77 not registered yet: no rebuild");
+
+			// The late plugin registers; the origin set moves.
+			restarted.ctx.get("llm").listConfigurableProviders = () => providers;
+			const late = await api.sweep();
+			assert.equal(late.updated, 0, "every row already agrees: no rebuild");
+			assert.equal(api.totals({}, "api.relay-two.example").inputTokens, before);
+		}
+	);
+});
+
+test("an automatic rebuild waits for the directory to hold still", async () => {
+	const section = { providers: { api99: { baseURL: "https://api.relay-one.example/v1" } } };
+	await acrossRestart(
+		{
+			logs: { s1: [turn(1, "api99")] },
+			secondContext: { providers: [piAi("api99")], section },
+			secondConfig: { relays: { api99: "https://api.relay-one.example/v1" }, rebuildSettleMs: 40 }
+		},
+		async (api) => {
+			assert.equal(api.totals({}, "direct").inputTokens, 1000, "folded before the relay was known");
+			const early = await api.sweep();
+			assert.equal(early.updated, 0, "the directory only just appeared; the rebuild waits");
+			await new Promise((resolve) => setTimeout(resolve, 60));
+			const settled = await api.sweep();
+			assert.equal(settled.updated, 1, "once it has held still, the stale row is re-folded");
+			assert.equal(api.totals({}, "api.relay-one.example").inputTokens, 1000);
+		}
+	);
+});
+
+test("configuring a merge re-folds the old rows under the new names, and a reindex keeps them merged", async () => {
+	const section = {
+		providers: {
+			plugin: { baseURL: "https://cloud.example/v1" },
+			proxy: { baseURL: "https://cloud.example/v1" }
+		}
+	};
+	const providers = [piAi("plugin"), piAi("proxy")];
+	const proxied = { ...turn(1, "proxy") };
+	proxied.data = { ...proxied.data, message: { role: "assistant", source: { kind: "model", provider: "proxy", model: "gpt-high" } } };
+	await acrossRestart(
+		{
+			logs: { s1: [proxied], s2: [turn(1, "plugin")] },
+			firstContext: { providers, section },
+			secondContext: { providers, section },
+			secondConfig: { merge: { providers: { proxy: "plugin" }, models: { "gpt-high": "gpt" } }, rebuildSettleMs: 0 }
+		},
+		async (api) => {
+			assert.equal(api.store.distinctRoutes().length, 2, "two routes before the merge");
+			await api.sweep();
+			const routes = () => api.store.distinctRoutes().map((r) => r.provider);
+			const models = () => api.store.distinctModels().map((r) => r.model);
+			assert.deepEqual(routes(), ["plugin"]);
+			assert.deepEqual(models(), ["gpt"]);
+			assert.equal(api.totals({}).inputTokens, 2000, "merged, not dropped or doubled");
+
+			await api.reindex();
+			assert.deepEqual(routes(), ["plugin"], "a full reset and re-fold keeps the merge");
+			assert.deepEqual(models(), ["gpt"]);
+			assert.equal(api.totals({}).inputTokens, 2000);
+		}
+	);
 });
 
 test("a failed sweep is visible in diagnostics instead of vanishing into the log", async () => {

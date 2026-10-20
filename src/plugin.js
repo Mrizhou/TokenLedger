@@ -217,7 +217,10 @@ const DEFAULTS = {
 	database: "tokenledger.sqlite",
 	sweepIntervalMs: 60_000,
 	sweepOnStart: true,
-	commandEnabled: true
+	commandEnabled: true,
+	// How long the provider directory must hold still before an automatic
+	// rebuild may fold against it. Internal; not a user setting.
+	rebuildSettleMs: 60_000
 };
 
 /**
@@ -287,6 +290,35 @@ export function normalizeRelayConfig(config = {}) {
 	}
 
 	return { sites, providerBaseUrls, resolveSite: buildResolver({ sites, providerBaseUrls }) };
+}
+
+/**
+ * Turn the `merge` config into the two renames the fold applies.
+ *
+ * ```yaml
+ * merge:
+ *   providers: { bd: google-antigravity }
+ *   models: { gemini-3.8-flash-high: antigravity-gemini-3.8-flash }
+ * ```
+ *
+ * Merging used to be a hand edit of the ledger, and every full re-fold — a
+ * relay change, a reindex, a restart that found the index stale — grew the old
+ * names back. Applied at fold time, a re-fold reproduces the merge instead. A
+ * merged provider takes the TARGET's site, so its rows never disagree with the
+ * directory. One hop only: a target is not looked up again.
+ *
+ * @returns `{ providers, models }`, each a Map from the old name to the new.
+ */
+export function normalizeMergeConfig(config = {}) {
+	const mapOf = (value) => {
+		const out = new Map();
+		if (value === null || typeof value !== "object" || Array.isArray(value)) return out;
+		for (const [from, to] of Object.entries(value)) {
+			if (from !== "" && typeof to === "string" && to !== "" && to !== from) out.set(from, to);
+		}
+		return out;
+	};
+	return { providers: mapOf(config.merge?.providers), models: mapOf(config.merge?.models) };
 }
 
 /**
@@ -506,7 +538,7 @@ export async function sweep(persistence, store, options = {}) {
 				continue;
 			}
 
-			applyUsageDelta(state, events, { resolveSite, dayOffsetMinutes: options.dayOffsetMinutes, phaseOf });
+			applyUsageDelta(state, events, { resolveSite, dayOffsetMinutes: options.dayOffsetMinutes, phaseOf, merge: options.merge });
 			store.commitSession(sessionId, state, {
 				logRevision: revision,
 				dshVersion: options.dshVersion,
@@ -784,10 +816,38 @@ export function staleAttributions(store, directory) {
 		// folds to DIRECT, so DIRECT is what "expected" has to mean here.
 		// Reading it as UNROUTED called the whole index stale and rebuilt the
 		// store on every sweep — forever.
-		const expected = directory.resolveSite === undefined ? DIRECT : (directory.resolveSite(row.provider) ?? UNROUTED);
+		const expected = directory.resolveSite === undefined ? DIRECT : directory.resolveSite(row.provider);
+		// Absent from the directory is "not known yet", not "moved". At startup
+		// the provider plugins register after the first sweep; reading their
+		// absence as UNROUTED rebuilt the whole index on every restart, twice —
+		// once into the half-known directory and once back out of it.
+		if (expected === undefined) continue;
 		if (expected !== row.site) out.push({ site: row.site, provider: row.provider, expected });
 	}
 	return out;
+}
+
+/**
+ * Rows still carrying a name the `merge` config folds away — written before
+ * the merge was configured. Only a re-fold can move them, so they ask for one.
+ *
+ * @param store - the ledger.
+ * @param merge - from {@link normalizeMergeConfig}.
+ * @returns `"old -> new"` strings, empty when every row is already merged.
+ */
+export function unmergedRoutes(store, merge) {
+	const out = new Set();
+	if (merge?.providers?.size > 0) {
+		for (const { provider } of store.distinctRoutes()) {
+			if (merge.providers.has(provider)) out.add(`${provider} -> ${merge.providers.get(provider)}`);
+		}
+	}
+	if (merge?.models?.size > 0) {
+		for (const { model } of store.distinctModels()) {
+			if (merge.models.has(model)) out.add(`${model} -> ${merge.models.get(model)}`);
+		}
+	}
+	return [...out];
 }
 
 /**
@@ -933,8 +993,13 @@ export function apply(ctx, userConfig = {}) {
 		}
 	});
 
+	// A rebuild folds against the directory of its moment, so it waits until the
+	// directory has held still for `rebuildSettleMs` (see refreshDirectory).
+	let directorySignature;
+	let directoryChangedAt = Date.now();
+
 	/** Distinct origins, order-independent — the only change that alters attribution. */
-	const originKey = (d) => [...new Set(Object.values(d.providerBaseUrls ?? {}))].sort().join(" ");
+	const originKey =(d) => [...new Set(Object.values(d.providerBaseUrls ?? {}))].sort().join(" ");
 
 	/**
 	 * @returns whether the origin set moved, which means already-folded history
@@ -953,6 +1018,17 @@ export function apply(ctx, userConfig = {}) {
 		merged.sites = withKnownSoftware(merged.sites, fingerprints.software);
 		const next = { ...merged, available: discovered.available === true, resolveSite: buildResolver(merged) };
 		const moved = directoryKnown && originKey(next) !== originKey(directory);
+		// Who is listed and where each origin points: what a rebuild would fold
+		// against. Provider plugins keep registering for a while after startup.
+		const signature = JSON.stringify([
+			next.available,
+			Object.entries(next.providerBaseUrls ?? {}).sort(),
+			[...(next.directProviders ?? [])].sort()
+		]);
+		if (signature !== directorySignature) {
+			directorySignature = signature;
+			directoryChangedAt = Date.now();
+		}
 
 		if (!directoryKnown && discovered.available && merged.sites.length > 0) {
 			logger?.info?.(
@@ -1015,21 +1091,29 @@ export function apply(ctx, userConfig = {}) {
 			// the alternative is a report that shows a site starting from the
 			// moment it was noticed, which reads as "you just started using this"
 			// rather than "this was only just recognised".
-			const moved = refreshDirectory();
-			// Two reasons to rebuild, and the second is the one that was missing.
-			// A changed relay set is the obvious case; an index that simply
-			// disagrees with the directory is the case that survives it.
-			const stale = moved ? [] : staleAttributions(store, directory);
-			if (moved || stale.length > 0) {
-				if (moved) {
-					logger?.info?.("tokenledger: the relay set changed; rebuilding the index so past traffic is attributed too");
-				} else {
-					logger?.info?.(
-						"tokenledger: %d route(s) are recorded under a site the directory no longer agrees with (%s); rebuilding",
-						stale.length,
-						stale.map((r) => `${r.provider}: ${r.site} -> ${r.expected}`).join(", ")
-					);
-				}
+			//
+			// What triggers it is a recorded row that disagrees: with the
+			// directory (`staleAttributions`) or with the merge config
+			// (`unmergedRoutes`). A changed origin set alone no longer does — every
+			// row it would actually move is a stale row, and the origin set moves
+			// on every startup as provider plugins register one by one.
+			if (refreshDirectory()) logger?.info?.("tokenledger: the relay set changed; checking the index against it");
+			const merge = normalizeMergeConfig(config);
+			const stale = staleAttributions(store, directory);
+			const unmerged = unmergedRoutes(store, merge);
+			// The rebuild folds against the directory as it is right now, so a
+			// directory still filling in would bake a half-known state in.
+			const settled = Date.now() - directoryChangedAt >= config.rebuildSettleMs;
+			if (!rebuilding && (stale.length > 0 || unmerged.length > 0) && !settled) {
+				logger?.debug?.("tokenledger: the index disagrees with the directory; waiting for the directory to settle before rebuilding");
+			} else if (!rebuilding && (stale.length > 0 || unmerged.length > 0)) {
+				logger?.info?.(
+					"tokenledger: rebuilding the index — %s",
+					[
+						...stale.map((r) => `${r.provider}: ${r.site} -> ${r.expected}`),
+						...unmerged.map((m) => `merge ${m}`)
+					].join(", ")
+				);
 				// The reset discards the good index AND the checkpoints, so it
 				// must not run when the logs cannot even be listed: a failed
 				// rebuild after a blind reset leaves the panel empty, and any
@@ -1058,7 +1142,8 @@ export function apply(ctx, userConfig = {}) {
 				dayOffsetMinutes: config.dayOffsetMinutes,
 				// Read per sweep, so a holiday added in settings applies from the
 				// next fold on (already-folded usage keeps the phase it got).
-				phaseOf: phaseClassifier({ since: store.phaseSince(), holidays: holidaySet(normalizePeakConfig(config.peak).holidays) })
+				phaseOf: phaseClassifier({ since: store.phaseSince(), holidays: holidaySet(normalizePeakConfig(config.peak).holidays) }),
+				merge
 			});
 			// Nothing scanned and a failure is the listing itself failing; every
 			// session would look unfolded, so the drop waits for a real pass.

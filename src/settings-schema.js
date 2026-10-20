@@ -109,6 +109,18 @@ export function buildSchema(z) {
 		relays: z.dict(relay)
 			.description("中转路由")
 			.comment("按 DSH provider route 覆盖中转站地址与类型"),
+		/**
+		 * Renames the fold applies before a row is keyed, so a re-fold keeps a
+		 * merge instead of growing the old names back. A merged provider takes
+		 * the target's site. Removing an entry does not split rows already
+		 * merged; `/tokenledger reindex` does.
+		 */
+		merge: z.object({
+			providers: z.dict(z.string()).description("并入路由（旧 → 新）"),
+			models: z.dict(z.string()).description("并入模型（旧 → 新）")
+		})
+			.description("账本归并")
+			.comment("收账时把旧路由 / 旧模型名记到新名下；重建账本也保持合并"),
 		/** Origins that are a vendor's own endpoint, so not a relay site. */
 		officialOrigins: z.array(z.string())
 			.description("官方站点源地址")

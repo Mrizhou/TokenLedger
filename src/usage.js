@@ -362,9 +362,14 @@ export function createUsageState() {
  *   for a DSH provider route, or a falsy value for a direct/official call.
  *   Omitting it attributes everything to {@link DIRECT}. `phaseOf(timeMs)`
  *   returns the peak/off-peak phase to split rows by (`""` for none).
+ *   `merge` (`{ providers, models }`, Maps from old name to new) renames a
+ *   route or model before it is keyed; a merged provider resolves its site
+ *   under the new name.
  */
 export function applyUsageDelta(state, events, options = {}) {
 	const resolveSite = options.resolveSite ?? (() => DIRECT);
+	const mergeProvider = options.merge?.providers;
+	const mergeModel = options.merge?.models;
 	const dayOffset = options.dayOffsetMinutes;
 	const phaseOf = typeof options.phaseOf === "function" ? options.phaseOf : undefined;
 	let last = state.lastSample;
@@ -393,8 +398,10 @@ export function applyUsageDelta(state, events, options = {}) {
 		if (timed) state.lastUsageAt = Math.max(state.lastUsageAt ?? -Infinity, event.time);
 
 		const provenance = provenanceOf(event) ?? currentRoute;
-		const provider = provenance?.provider ?? UNKNOWN;
-		const model = provenance?.model ?? UNKNOWN;
+		const rawProvider = provenance?.provider ?? UNKNOWN;
+		const rawModel = provenance?.model ?? UNKNOWN;
+		const provider = mergeProvider?.get(rawProvider) ?? rawProvider;
+		const model = mergeModel?.get(rawModel) ?? rawModel;
 		// Three answers, not two. `undefined` from the resolver means the route
 		// is absent from the directory — which is not the same as a route that
 		// is present and points at no relay.
