@@ -293,6 +293,16 @@ test("shouldUseWallet: credentials decide, known non-New-API vendors keep their 
 	assert.equal(shouldUseWallet(account, undefined), false);
 });
 
+test("shouldUseWallet: a Qoder gateway is not a New API console", () => {
+	// `qoder` is a vendor name with no reader (see `VENDORS`): it exists so the
+	// card stops fingerprinting Qoder's gateway. It must not be borrowed as an
+	// excuse to read that gateway with the New API wallet reader, which would
+	// be guessing at software nobody identified.
+	const auth = { userId: 42, token: "tok" };
+	assert.equal(shouldUseWallet({ origin: "https://gateway.qoder.com.cn", scheme: "qoder" }, auth), false);
+	assert.equal(shouldUseWallet({ origin: "https://api3.qoder.sh", scheme: "qoder" }, auth), false);
+});
+
 test("a 429 carrying retry-after backs off for exactly that long, not the doubling fallback", async () => {
 	// Regression lock for the dropped 6th argument: limitOrStale used to be
 	// called without `response`, so throttleHeaders saw undefined and every

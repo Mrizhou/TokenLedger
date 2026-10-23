@@ -24,7 +24,8 @@ import {
 	mapDeepSeekAccountWallets,
 	readBalance,
 	readDeepSeekAccountBalance,
-	sectionReader
+	sectionReader,
+	vendorOf
 } from "../src/balance.js";
 
 test("official is decided by origin, not by what the route is called", () => {
@@ -849,6 +850,70 @@ test("sectionReader prefers get(), falls back to describe(), and survives a thro
 	assert.equal(sectionReader({ describe: () => [{ ns: "y", value: {} }] })("x"), undefined);
 	assert.equal(sectionReader({ describe: () => { throw new Error("not settled"); } })("x"), undefined);
 	assert.equal(sectionReader(undefined)("x"), undefined);
+});
+
+test("a Qoder region is its own account, and stops being folded into the DeepSeek card", () => {
+	// Two separate consequences of one route having no readable baseURL, both
+	// seen on a live install on 2026-10-22. The route fell back to the shipped
+	// DeepSeek origin, so (a) it was listed among the DeepSeek card's routes —
+	// a card read `deepseek-official, deepseek-account, qoder-cn` and the panel
+	// offered the Qoder key as if it read DeepSeek's wallet — and (b) there was
+	// no card for Qoder at all. The origin table fixes both: the account takes
+	// the gateway's own origin and cannot collapse into DeepSeek's.
+	const directory = [
+		{ provider: "deepseek-official", displayName: "DeepSeek", settingsNs: "llm-deepseek", settingsPath: [] },
+		{ provider: "qoder-cn", displayName: "Qoder CN", settingsNs: "dsh-connect-qoder", settingsPath: [], declared: false }
+	];
+	const sections = {
+		"llm-deepseek": { apiKeyEnv: "DEEPSEEK_API_KEY" },
+		"dsh-connect-qoder": { useMaximumContextWindow: false }
+	};
+	const ctx = {
+		get: (name) =>
+			name === "llm"
+				? { listConfigurableProviders: () => directory }
+				: name === "settings"
+					? { get: (ns) => sections[ns] }
+					: undefined
+	};
+	const accounts = listAccounts(ctx, { softwareOf: new Map() });
+	assert.deepEqual(
+		accounts.map((a) => a.id),
+		["deepseek-official", "qoder-cn"]
+	);
+	assert.deepEqual(accounts[0].routes, ["deepseek-official"], "DeepSeek's card answers for DeepSeek's routes only");
+	assert.equal(accounts[1].origin, "https://gateway.qoder.com.cn");
+	// A vendor with no reader: the scheme says so and, more to the point, keeps
+	// `createBalanceReader` from fingerprinting a gateway — six anonymous probes
+	// per open asking whether Qoder's own endpoint runs New API or Sub2API.
+	assert.equal(accounts[1].scheme, "qoder");
+	assert.equal(accounts[1].displayName, "Qoder CN");
+	assert.equal(vendorOf("https://gateway.qoder.com.cn").scheme, "qoder");
+	assert.equal(SCHEMES.qoder, undefined, "naming it a vendor must not pretend there is a reader");
+});
+
+test("a Qoder card says there is no reader instead of probing the gateway", async () => {
+	// The account exists so the usage has a site row; the balance does not
+	// exist, and asking the gateway to identify itself is a question with no
+	// answer put to a third party. The panel is where the missing reader is
+	// reported, with the declared-endpoint escape hatch.
+	let probes = 0;
+	const read = createBalanceReader(
+		ctxWith(
+			[{ provider: "qoder-cn", settingsNs: "dsh-connect-qoder", settingsPath: [], declared: false }],
+			{ useMaximumContextWindow: false }
+		),
+		{
+			detect: async () => {
+				probes++;
+				return { billingAvailable: false, software: "unknown" };
+			}
+		}
+	);
+	const card = await read("qoder-cn");
+	assert.equal(card.supported, false);
+	assert.equal(card.reason, "unknown-software");
+	assert.equal(probes, 0, "a known vendor is never fingerprint-probed");
 });
 
 test("0.1.7 live shape: the keyed DeepSeek route owns the card, and vendors open the picker", () => {

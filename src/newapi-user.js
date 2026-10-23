@@ -202,7 +202,11 @@ export function createNewApiWalletReader() {
  */
 export function shouldUseWallet(account, auth) {
 	const KNOWN_NON_NEWAPI = new Set([
-		"deepseek", "openrouter", "moonshot", "zai", "kimi", "minimax", "opencode-go", "sub2api", "mimo"
+		// `qoder` is a vendor name with no reader behind it (see `VENDORS`): it
+		// exists so the card stops fingerprinting a gateway, and it is certainly
+		// not a New API console, so a stray wallet entry must not reach the
+		// New API reader with it.
+		"deepseek", "openrouter", "moonshot", "zai", "kimi", "minimax", "opencode-go", "sub2api", "mimo", "qoder"
 	]);
 	if (auth === null || typeof auth !== "object") return false;
 	if (typeof auth.token !== "string" || auth.token === "") return false;

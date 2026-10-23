@@ -17,6 +17,34 @@
   `test/discovery.test.js`「a catalog route's own endpoint is its origin…」
   与「…nobody configured still attributes to its own endpoint」。
   **合上游时这一处要保留**（可上游的形态：表项按需补 + discovery 共用表；上游若合了就取上游那份）。
+- **Qoder 的两条路由进 `BUILTIN_PROVIDER_ORIGINS`，并在 `VENDORS` 里占一个无读取器的位置**（2026-10-23）：
+  - 来由：`@eghrhegpe/dsh-connect-qoder`（10-18 装）注册 `qoder-cn` / `qoder` 时写死 `settingsPath: []` ＋
+    `declared: false`，设置区**不暴露 baseURL**；模型出口是本机 `127.0.0.1:<随机端口>/v1` 的临时 shim，
+    再转发到 `gateway.qoder.com.cn/algo/api/v2/…`（`lib/index.js:9912`、`:1374`、`:1871`）。
+    于是命中 `discovery.js` 的「无 baseURL ＋ `declared: false` → `directProviders`」规则，**整包落进「直连/官方」**：
+    真实账本里 `direct` 只剩两条路由，`qoder-cn` 占 665M tokens（66 行，10-18 ~ 10-23），
+    与 DeepSeek 自家的 1.18B 挤在同一行；同一原因还让 DeepSeek 的余额卡把 `qoder-cn` 收进自己的 `routes`。
+  - 修法：表里加 `["qoder-cn", "https://gateway.qoder.com.cn"]` 与 `["qoder", "https://api3.qoder.sh"]`
+    （两个 edition 是真两台网关，两个站点行）。**不能读 shim 的端口**——它每次启动都变，没有两次一致的名义。
+    这与 Command Code ⑧ 是同一族、同一形态：插件的默认端点不在存储的 profile 里。
+  - 附带一处：`VENDORS` 加 `gateway.qoder.com.cn` / `api3.qoder.sh` → `{ scheme: "qoder" }`，**但 `SCHEMES.qoder` 不存在**。
+    它不是装饰：余额卡拿到 `scheme === undefined` 会把它当中转站去**匿名探测六条路由**（问 Qoder 的网关
+    「你跑的是 New API 还是 Sub2API」——一个没有答案的问题，问在第三方身上，每次开面板一次、每 10 分钟一轮）。
+    有了 scheme 就走「已知厂商、无读取器」，卡片如实说没有读取器并给声明端点的出路。
+    `newapi-user.js` 的 `KNOWN_NON_NEWAPI` 同步加 `qoder`，免得残留的钱包条目把它送进 New API 读取器。
+  - **🔴 别改用 `relays` 钉站**（2026-10-22 试过、已撤回）：`discovery` 判 direct 与 `mergeSites` 判站点 id
+    两处期望打架，`staleAttributions()` 每轮 sweep 都判 stale → 反复重折叠，账本 `meta.rebuild.count` 涨到 421、
+    `reason` 的箭头在两个值之间每次反向翻转，且热配置撤销止不住（必须彻底退出桌面版）。
+    表项没有这个问题：它让 `discovery` 自己就不再产出 `directProviders`，期望只剩一处。
+  - 守卫测试：`test/discovery.test.js`「a Qoder region's traffic is its own site row, not a share of 直连/官方」、
+    `test/balance.test.js`「a Qoder region is its own account, and stops being folded into the DeepSeek card」
+    「a Qoder card says there is no reader instead of probing the gateway」、
+    `test/newapi-user.test.js`「shouldUseWallet: a Qoder gateway is not a New API console」。
+    变异验证（逐一拆开）：表里去掉两条 → discovery 那条红；只去掉国际版 → 同一条红；去掉 `VENDORS` 两条 →
+    balance 两条红；`KNOWN_NON_NEWAPI` 去掉 `qoder` → newapi-user 那条红。
+  - 装机副作用：首轮会触发一次全量重折叠（10-20 起不清表，累计数中途不乱跳），历史上 665M 从「直连/官方」
+    挪到 `gateway.qoder.com.cn`；余额一节多一张「Qoder CN · 无读取器」的卡。**合上游时这一处要保留**
+    （上游没有 Qoder 支持；若上游补了自己的形态，取其那份并确认四条守卫仍绿）。
 - `src/plugin.js` 的 `revisionUnchanged()`（2026-09-24，**0.1.7 revision 语义适配**）：0.1.7 起 JSONL 后端对
    「从旧会话格式迁移的」日志把 revision 报成 `fileRevision`（`dev:ino:size:mtimeNs:ctimeNs`）**再拼一段**
    `historicalCorpusRevision()`，而这段语料哈希**每次观测都会变**（0.1.7-rc.2 实测：相邻两个 sweep 波次给出

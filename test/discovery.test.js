@@ -185,6 +185,44 @@ test("a provider plugin's route with a default endpoint stops being an unknown r
 	assert.equal(skipped, 0, "a known endpoint is not an omission to report");
 });
 
+test("a Qoder region's traffic is its own site row, not a share of 直连/官方", () => {
+	// 2026-10-22 on a live install: 665M Qoder tokens sat inside 直连/官方
+	// beside DeepSeek's own, because the client plugin registers each region
+	// with `settingsPath: []` and `declared: false` and serves its models off a
+	// loopback shim on a port that moves every start. Nothing stored on the
+	// route names the gateway, so `discovery` read the route as direct traffic.
+	// The entry is the whole fix; the shim's own port must never be what a site
+	// row is named, since no two starts would agree on it.
+	const qoder = (region) => ({
+		provider: region,
+		displayName: region,
+		settingsNs: "dsh-connect-qoder",
+		settingsPath: [],
+		declared: false
+	});
+	const { sites, providerBaseUrls, directProviders, skipped } = discoverSites({
+		providers: [qoder("qoder-cn"), qoder("qoder")],
+		// The region's real settings section: no baseURL of any kind in it.
+		readSection: () => ({ useMaximumContextWindow: false, enabledRegions: {} })
+	});
+	assert.deepEqual(providerBaseUrls, {
+		"qoder-cn": "https://gateway.qoder.com.cn",
+		qoder: "https://api3.qoder.sh"
+	});
+	assert.deepEqual(
+		sites.map((s) => s.id).sort(),
+		["api3.qoder.sh", "gateway.qoder.com.cn"],
+		"the CN and international editions are two gateways, hence two rows"
+	);
+	assert.deepEqual(directProviders, [], "its endpoint is known, so it is not undifferentiated direct traffic");
+	assert.equal(skipped, 0);
+	assert.equal(
+		sites.some((s) => s.id.includes("127.0.0.1")),
+		false,
+		"the loopback shim is a moving port, never the site a call went to"
+	);
+});
+
 test("an unparseable base URL is skipped, not turned into a site named after garbage", () => {
 	const { sites, skipped } = discoverSites({
 		providers: [piAi("a", true), piAi("b", true)],

@@ -106,7 +106,19 @@ const VENDORS = new Map([
 	["api.xiaomimimo.com", { scheme: "mimo", displayName: "小米 MiMo" }],
 	["token-plan-cn.xiaomimimo.com", { scheme: "mimo", displayName: "小米 MiMo" }],
 	["token-plan-sgp.xiaomimimo.com", { scheme: "mimo", displayName: "小米 MiMo" }],
-	["token-plan-ams.xiaomimimo.com", { scheme: "mimo", displayName: "小米 MiMo" }]
+	["token-plan-ams.xiaomimimo.com", { scheme: "mimo", displayName: "小米 MiMo" }],
+	// Qoder's two editions. A KNOWN vendor with no reader: its quota is Credits
+	// counted in its own console, and this package has no scheme for it. Naming
+	// it here is not cosmetic — `scheme` is what tells the reader the origin is
+	// a vendor, so the card stops fingerprinting it. Without the entry the
+	// account is typeless, `createBalanceReader` probes six routes at
+	// gateway.qoder.com.cn on every panel open (once per 10 min), asking a
+	// gateway whether it runs New API or Sub2API — a question with no answer,
+	// put to a third party. With it the card says "no reader" and offers the
+	// declared-endpoint escape hatch instead. Deliberately NOT in `SCHEMES`:
+	// that table is for origins this package can actually read.
+	["gateway.qoder.com.cn", { scheme: "qoder", displayName: "Qoder CN" }],
+	["api3.qoder.sh", { scheme: "qoder", displayName: "Qoder" }]
 ]);
 
 /** 阿里云百炼, matched by host pattern in {@link vendorOf}. */
@@ -162,7 +174,20 @@ export const BUILTIN_PROVIDER_ORIGINS = new Map([
 	// out of every site row, while the balance card fell back to the shipped
 	// DeepSeek default and became DeepSeek's. Its account API shares the host
 	// with its inference API, so one entry serves the site row and the plan card.
-	["commandcode", "https://api.commandcode.ai"]
+	["commandcode", "https://api.commandcode.ai"],
+	// Qoder, whose routes are mounted by `@eghrhegpe/dsh-connect-qoder`
+	// (installed 2026-10-18). Same shape as Command Code and for the same
+	// reason: the plugin registers each region with `settingsPath: []` and
+	// `declared: false`, so nothing stored on the route says where a call went,
+	// and its models are served off a loopback shim on `127.0.0.1:<random
+	// port>/v1` that forwards to the region's gateway — a port that moves on
+	// every start, so reading the shim would be reading the wrong host anyway.
+	// Without these entries every Qoder token was undifferentiated direct
+	// traffic: 665M of them sat inside 直连/官方 beside DeepSeek's own on a live
+	// install (2026-10-22), and the DeepSeek balance card claimed the route.
+	// Attribution follows where the call went, so it names the gateway.
+	["qoder-cn", "https://gateway.qoder.com.cn"],
+	["qoder", "https://api3.qoder.sh"]
 ]);
 
 /** A trimmed non-empty string, or undefined. */
