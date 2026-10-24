@@ -9,7 +9,8 @@ import {
 	rebuildLines,
 	staleAttributions,
 	sweep,
-	unmergedRoutes
+	unmergedRoutes,
+	unreadableLines
 } from "../src/plugin.js";
 import { LedgerStore } from "../src/store.js";
 import { RelaySiteRegistry, createSiteResolver } from "../src/relay-sites.js";
@@ -499,6 +500,42 @@ test("diagnostics says whether, when, and why the ledger was rebuilt", () => {
 	assert.match(done, /用时 61 秒，清掉 2 个日志已不在的会话/);
 	assert.match(done, /merge bd -> google-antigravity/);
 	assert.match(rebuildLines({ count: 1, at: 0, reason: "r" }).join("\n"), /进行中或被中断/);
+});
+
+test("diagnostics names the logs it could not read, without claiming more than it shows", () => {
+	// The "…and N more" tail must count what is actually hidden. The first
+	// version compared against `sample.length`, so a record holding 5 samples
+	// of 18 printed five rows and then "…还有 0 个" — a line that says nothing
+	// and reads like a bug.
+	assert.deepEqual(unreadableLines(undefined), [], "a healthy install prints nothing");
+	assert.deepEqual(unreadableLines({ count: 0 }), []);
+
+	const one = unreadableLines({ count: 1, at: 0, sample: [{ sessionId: "s1", reason: "corrupt Zstandard log" }] });
+	assert.match(one.join("\n"), /读不出的日志     1 个/);
+	assert.match(one.join("\n"), /s1  corrupt Zstandard log/);
+	assert.equal(one.some((l) => l.includes("还有")), false, "nothing is hidden, so nothing says it is");
+
+	// The live shape on 2026-10-24: 18 unreadable logs, and the record wrote all
+	// 18 into `sample` (it caps at 20). The old tail compared against
+	// `sample.length`, so it printed five rows and then "…还有 0 个" — a line
+	// claiming nothing is hidden directly under the proof that 13 are.
+	const many = unreadableLines({
+		count: 18,
+		at: 0,
+		sample: Array.from({ length: 18 }, (_, i) => ({ sessionId: `s${i}`, reason: "nope" }))
+	});
+	assert.match(many.join("\n"), /…还有 13 个/);
+	assert.equal(many.filter((l) => /^\s+s\d+\s/.test(l)).length, 5, "five rows are shown, no more");
+
+	// The host appends the absolute log path to its message; the id already
+	// names the session, so that tail is noise on a diagnostics line.
+	const pathy = unreadableLines({
+		count: 1,
+		at: 0,
+		sample: [{ sessionId: "s1", reason: "stored log is corrupt (raw log: C:\\Users\\a\\very\\deep\\path\\session.jsonl.zstd)" }]
+	});
+	assert.match(pathy.join("\n"), /stored log is corrupt$/m);
+	assert.equal(pathy.join("\n").includes("raw log"), false);
 });
 
 test("relay attribution flows through the sweep", async () => {

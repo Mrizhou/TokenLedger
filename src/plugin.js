@@ -911,10 +911,17 @@ export function unreadableLines(record) {
 	const lines = [
 		`  读不出的日志     ${record.count} 个${record.at === undefined ? "" : `（最近一次 ${new Date(record.at).toLocaleString()}）`} ← 这些会话的行保留在上次能读到时的数字`,
 	];
-	for (const entry of (record.sample ?? []).slice(0, 5)) {
-		lines.push(`     ${entry.sessionId}  ${entry.reason}`);
+	const sample = record.sample ?? [];
+	const shown = sample.slice(0, 5);
+	for (const entry of shown) {
+		// The host's message ends with the absolute log path, which the session
+		// id already identifies — on a deep project directory it is most of the
+		// line, and the part worth reading is in front of it.
+		const reason = String(entry.reason ?? "").split(" (raw log:")[0];
+		lines.push(`     ${entry.sessionId}  ${reason}`);
 	}
-	if (record.count > Math.min(5, (record.sample ?? []).length)) lines.push(`     …还有 ${record.count - (record.sample ?? []).length} 个`);
+	const remaining = record.count - shown.length;
+	if (remaining > 0) lines.push(`     …还有 ${remaining} 个`);
 	return lines;
 }
 
