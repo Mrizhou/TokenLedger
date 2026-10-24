@@ -148,6 +148,47 @@ test("the rebuild record counts rebuilds, survives reset, and only appears once 
 	});
 });
 
+test("a rebuild drops only the sessions whose log is gone, never one that merely failed to read", () => {
+	// 2026-10-24 on a real install: a rebuild dropped rows for sessions whose
+	// logs were still on disk — 19 of them, 176M tokens — because "not
+	// re-committed" was the only test. Two of those logs were present and
+	// unreadable (a corrupt first frame, a zero-byte file). Only a session the
+	// host no longer lists at all is safe to drop.
+	withStore((store) => {
+		const fold = () => {
+			const state = { days: new Map(), lastSample: null, currentRoute: null, consumedSeq: -1 };
+			applyUsageDelta(state, [message(1, 1, "deepseek", "v4", usage(100, 10))]);
+			return state;
+		};
+		for (const id of ["gone", "corrupt", "ok"]) store.commitSession(id, fold());
+		assert.equal(store.totals().inputTokens, 300);
+
+		// A rebuild forgets every checkpoint, then re-commits only "ok".
+		store.forgetCheckpoints();
+		store.commitSession("ok", fold());
+
+		// "corrupt" was LISTED but did not fold; "gone" was not listed at all.
+		assert.equal(store.dropUnfolded(["corrupt"]), 1, "only the unlisted session is dropped");
+		assert.equal(store.totals().inputTokens, 200, "the unreadable session keeps the rows its log still holds");
+		assert.equal(store.checkpointFor("corrupt"), undefined, "but it has no checkpoint, so the next pass retries it");
+		assert.notEqual(store.checkpointFor("ok"), undefined);
+	});
+});
+
+test("the unreadable-log record appears in diagnostics only while there is something to report", () => {
+	withStore((store) => {
+		assert.equal(store.diagnostics().unreadableLogs, undefined, "a healthy install says nothing");
+		store.recordUnreadable([{ sessionId: "s1", reason: "empty log" }], 1000);
+		assert.deepEqual(store.diagnostics().unreadableLogs, {
+			count: 1,
+			at: 1000,
+			sample: [{ sessionId: "s1", reason: "empty log" }]
+		});
+		store.recordUnreadable([], 2000);
+		assert.equal(store.diagnostics().unreadableLogs, undefined, "a pass that read everything clears it");
+	});
+});
+
 test("reset clears everything so the next pass rebuilds from seq 0", () => {
 	withStore((store) => {
 		const state = { days: new Map(), lastSample: null, currentRoute: null, consumedSeq: -1 };

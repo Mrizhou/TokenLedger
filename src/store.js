@@ -283,6 +283,39 @@ export class LedgerStore {
 			.run(JSON.stringify(value));
 	}
 
+	/**
+	 * Note the sessions the last pass listed but could not fold, and why.
+	 *
+	 * Kept beside the rebuild record for the same reason: a log that exists and
+	 * cannot be read is invisible everywhere else. The sweep logs a warning the
+	 * host never shows, the rows look stale to `staleAttributions`, and the only
+	 * thing anyone sees is a total that will not grow. Naming them turns that
+	 * into a fact with a number attached.
+	 *
+	 * @param entries - `[{ sessionId, reason }]`; empty clears the record.
+	 */
+	recordUnreadable(entries = [], at = Date.now()) {
+		if (entries.length === 0) {
+			this.#db.prepare("DELETE FROM meta WHERE key = 'unreadable'").run();
+			return;
+		}
+		this.#db
+			.prepare("INSERT INTO meta (key, value) VALUES ('unreadable', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+			.run(JSON.stringify({ count: entries.length, at, sample: entries.slice(0, 20).map((e) => ({ sessionId: e.sessionId, reason: String(e.reason ?? "").slice(0, 200) })) }));
+	}
+
+	/** The last {@link recordUnreadable} note, or undefined. */
+	unreadableRecord() {
+		const row = this.#db.prepare("SELECT value FROM meta WHERE key = 'unreadable'").get();
+		if (row === undefined) return undefined;
+		try {
+			const value = JSON.parse(row.value);
+			return value !== null && typeof value === "object" ? value : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
 	/** Epoch ms from which usage is split by peak/off-peak phase. */
 	phaseSince() {
 		const row = this.#db.prepare("SELECT value FROM meta WHERE key = 'phaseSince'").get();
@@ -478,20 +511,44 @@ export class LedgerStore {
 
 	/**
 	 * End a {@link forgetCheckpoints} rebuild: drop the sessions the full pass did
-	 * not re-commit (log deleted, unreadable, or empty). Their rows still carry
-	 * the old attribution, and left in place they would call the index stale
-	 * again — the same loss `reset()` takes, only deferred to the end.
+	 * not re-commit. Their rows still carry the old attribution, and left in
+	 * place they would call the index stale again — the same loss `reset()`
+	 * takes, only deferred to the end.
 	 *
+	 * ## Which sessions that means, exactly
+	 *
+	 * Only the ones whose log is genuinely GONE. "Not re-committed" used to be
+	 * the whole test, and it conflated two different facts:
+	 *
+	 * - the session is no longer listed by the host at all → its log was
+	 *   deleted, and the rows are unfaithful to any log. Drop them.
+	 * - the session IS still listed but the sweep could not read it (a corrupt
+	 *   first frame, an empty file, a transient I/O error) → the log is right
+	 *   there. Dropping its rows destroys history the log still holds, and the
+	 *   user sees a total quietly shrink for no stated reason.
+	 *
+	 * On a real install (2026-10-24) that difference cost 176M tokens of
+	 * sessions that were never listed, plus two whose logs were present but
+	 * unreadable. The second kind has to survive with its old rows.
+	 *
+	 * @param keep - session ids the pass listed but could not re-commit. Their
+	 *   rows stay exactly as they were, still crediting the site that served
+	 *   them; the checkpoint is what is missing, so the next pass retries.
 	 * @returns how many sessions were dropped.
 	 */
-	dropUnfolded() {
+	dropUnfolded(keep = []) {
 		return this.#transaction(() => {
-			const orphaned = "sessionId NOT IN (SELECT sessionId FROM checkpoints)";
-			const dropped = Number(
-				this.#db.prepare(`SELECT count(DISTINCT sessionId) AS n FROM session_rollups WHERE ${orphaned}`).get().n
-			);
-			this.#db.exec(`DELETE FROM session_rollups WHERE ${orphaned}`);
-			this.#db.exec(`DELETE FROM sessions WHERE ${orphaned}`);
+			const kept = new Set(keep);
+			const uncommitted = this.#db
+				.prepare("SELECT sessionId, count(*) AS n FROM session_rollups GROUP BY sessionId")
+				.all()
+				.filter((row) => this.#stmt.getCheckpoint.get(row.sessionId) === undefined);
+			const drop = uncommitted.filter((row) => !kept.has(row.sessionId)).map((row) => row.sessionId);
+			const dropped = drop.length;
+			for (const sessionId of drop) {
+				this.#stmt.deleteRollups.run(sessionId);
+				this.#stmt.deleteSession.run(sessionId);
+			}
 			return dropped;
 		});
 	}
@@ -646,6 +703,7 @@ export class LedgerStore {
 			.prepare("SELECT COUNT(*) AS n FROM session_rollups WHERE provider = 'unknown' OR model = 'unknown'")
 			.get();
 		const lastRebuild = this.rebuildRecord();
+		const unreadable = this.unreadableRecord();
 		return {
 			schemaVersion: SCHEMA_VERSION,
 			rollupRows: Number(counts.rollupRows),
@@ -656,7 +714,10 @@ export class LedgerStore {
 			lastUsageAt: counts.lastUsageAt === null ? undefined : Number(counts.lastUsageAt),
 			lastUpdatedAt: counts.lastUpdatedAt === null ? undefined : Number(counts.lastUpdatedAt),
 			unattributedRows: Number(unknownRoutes.n),
-			...(lastRebuild === undefined ? {} : { lastRebuild })
+			...(lastRebuild === undefined ? {} : { lastRebuild }),
+			// Present only when the last pass found logs it could not fold.
+			// Absence is the healthy state and says nothing worth printing.
+			...(unreadable === undefined ? {} : { unreadableLogs: unreadable })
 		};
 	}
 

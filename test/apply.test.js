@@ -705,6 +705,88 @@ test("a rebuild keeps the cumulative total whole while it runs, then drops sessi
 	}
 });
 
+test("a rebuild keeps the rows of a session whose log is present but unreadable", async () => {
+	// 2026-10-24 on a real install: 19 sessions lost their rows to a rebuild
+	// even though their logs were still on disk — 176M tokens. Two of them had
+	// logs the host could not read (a corrupt first frame, a zero-byte file),
+	// and a rebuild treated "did not re-commit" as "log gone". This is that
+	// session surviving a relay change: the log is listed, the read fails, and
+	// the usage it already contributed must still be in the totals.
+	const { mkdtempSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const dir = mkdtempSync(join(tmpdir(), "tokenledger-unreadable-"));
+	const database = join(dir, "ledger.sqlite");
+	const list = async () => [
+		{ header: { id: "good" }, revision: "r1" },
+		{ header: { id: "corrupt" }, revision: "r1" }
+	];
+	// First generation reads both; the second cannot read "corrupt" any more —
+	// which is exactly the live shape (a log that used to fold and then did
+	// not). The rows from the first generation are what must survive.
+	let corruptReadable = true;
+	const readFrom = async (id, from) => {
+		if (id === "corrupt") {
+			if (!corruptReadable) throw new Error("corrupt Zstandard session log: first frame is not exactly one header line");
+			return { events: from === 0 ? [turn(1, "api99")] : [] };
+		}
+		return { events: from === 0 ? [turn(1, "api99")] : [] };
+	};
+	let api;
+	let api2;
+	try {
+		const first = fakeContext({ persistence: { listSnapshots: list, readFrom } });
+		const firstServices = captureServices(first.ctx);
+		apply(first.ctx, { database, sweepIntervalMs: 0, sweepOnStart: false, detect: async () => ({ billingAvailable: false }) });
+		await settle();
+		api = firstServices.get("tokenLedger");
+		await api.sweep();
+		assert.equal(api.totals({}).inputTokens, 2000, "both sessions folded while both were readable");
+		await first.dispose();
+
+		corruptReadable = false;
+
+		// A relay change forces a rebuild. "corrupt" is still listed and now
+		// unreadable — its old rows must not be mistaken for a deleted log's.
+		const second = fakeContext({ providers: [piAi("api99")], section: { providers: { api99: { baseURL: "https://api.relay-one.example/v1" } } }, persistence: { listSnapshots: list, readFrom } });
+		const secondServices = captureServices(second.ctx);
+		apply(second.ctx, {
+			database,
+			sweepIntervalMs: 0,
+			sweepOnStart: false,
+			detect: async () => ({ billingAvailable: false }),
+			relays: { api99: "https://api.relay-one.example/v1" },
+			rebuildSettleMs: 0
+		});
+		await settle();
+		api2 = secondServices.get("tokenLedger");
+		await api2.sweep();
+
+		assert.equal(
+			api2.totals({}).inputTokens,
+			2000,
+			"both sessions still count; dropping the unreadable one read 1000 here"
+		);
+		assert.equal(api2.totals({}, "api.relay-one.example").inputTokens, 1000, "the readable one moved to the relay");
+		assert.equal(api2.totals({}, "direct").inputTokens, 1000, "the unreadable one keeps the site that served it");
+		const record = api2.diagnostics().lastRebuild;
+		assert.equal(record.dropped, 0, "a session that is listed is never dropped for failing to read");
+		const unreadable = api2.diagnostics().unreadableLogs;
+		assert.equal(unreadable.count, 1, "the unreadable log is reported, not swallowed");
+		assert.equal(unreadable.sample[0].sessionId, "corrupt");
+		assert.match(unreadable.sample[0].reason, /corrupt Zstandard/);
+		await second.dispose();
+	} finally {
+		try {
+			api?.store?.close();
+		} catch {}
+		try {
+			api2?.store?.close();
+		} catch {}
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("a rebuild whose listing fails after the probe keeps every session and finishes on the next sweep", async () => {
 	// The readability probe and the sweep list separately. If the second one
 	// fails, nothing was re-read, and treating every session as unfolded would

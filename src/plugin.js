@@ -406,6 +406,11 @@ export async function sweep(persistence, store, options = {}) {
 	// keeping phases; a caller without holiday config gets the shipped list.
 	const phaseOf = options.phaseOf ?? phaseClassifier({ since: store.phaseSince?.(), holidays: holidaySet() });
 	const stats = { scanned: 0, updated: 0, skipped: 0, failed: 0, events: 0 };
+	// Sessions this pass LISTED but could not re-commit, and why. A rebuild uses
+	// this to tell "the log is gone" (drop the rows) from "the log is right
+	// there and we could not read it" (keep them). Without the distinction a
+	// corrupt or momentarily unreadable log silently erased its own history.
+	const unreadable = new Map();
 
 	let snapshots;
 	try {
@@ -534,6 +539,14 @@ export async function sweep(persistence, store, options = {}) {
 				}
 			}
 			if ((events?.length ?? 0) === 0) {
+				// Listed, but nothing to fold. Two situations look identical here
+				// and are not: a session that legitimately has no usage yet (the
+				// header exists, nothing has been billed), and one whose log the
+				// host could not read at all. Either way the session's old rows
+				// must survive a rebuild — the log was LISTED, so it exists, and
+				// "we found nothing" is not "the log is gone". Recorded so
+				// `dropUnfolded` keeps them.
+				unreadable.set(sessionId, "no events");
 				stats.skipped++;
 				continue;
 			}
@@ -551,9 +564,21 @@ export async function sweep(persistence, store, options = {}) {
 			stats.events += events.length;
 		} catch (error) {
 			// One bad session must not stop the rest, and must never reach DSH.
+			// It is also NOT evidence that the log went away: a corrupt first
+			// frame, a torn tail or a transient I/O error all land here, and the
+			// file is still on disk. Marked so a rebuild keeps its old rows.
 			stats.failed++;
+			unreadable.set(sessionId, error?.message ?? String(error));
 			logger?.warn?.("tokenledger: session %s failed: %s", sessionId, error?.message ?? error);
 		}
+	}
+
+	// Ids whose log exists but did not fold this pass, with why. The caller
+	// passes these to `dropUnfolded` so a rebuild does not mistake them for
+	// deleted logs, and records them where diagnostics can show them.
+	stats.unreadable = [...unreadable].map(([sessionId, reason]) => ({ sessionId, reason }));
+	if (unreadable.size > 0) {
+		logger?.info?.("tokenledger: %d session log(s) could not be folded this pass", unreadable.size);
 	}
 
 	return stats;
@@ -730,6 +755,11 @@ export async function runCommand(rawInput, deps) {
 			// A rebuild nobody can see is how "every restart rebuilt twice" went
 			// unnoticed; the record says how often, when, and what triggered it.
 			...rebuildLines(d.lastRebuild),
+			// Logs that exist and will not fold. This is the one line that
+			// explains a total that stopped growing while the sessions are
+			// plainly still on disk — previously it existed only as a host log
+			// nobody reads.
+			...unreadableLines(d.unreadableLogs),
 			"",
 			...routeAttributionReport(store, deps.directory?.())
 		].join("\n");
@@ -865,6 +895,27 @@ export function rebuildLines(record) {
 		`  账本重建         共 ${record.count ?? 0} 次；最近一次 ${when(record.at)}（${state}）`,
 		`  最近一次的原因   ${record.reason ?? "—"}`
 	];
+}
+
+/**
+ * The diagnostics lines for logs that exist but did not fold.
+ *
+ * Healthy installs say nothing here: the record only exists while a pass has
+ * something to report, so an absent line means every listed log was read. When
+ * it is present the number is the whole point — these sessions keep their old
+ * rows, so the totals are not wrong, they are merely frozen at the last pass
+ * that could read them.
+ */
+export function unreadableLines(record) {
+	if (record === undefined || !(record.count > 0)) return [];
+	const lines = [
+		`  读不出的日志     ${record.count} 个${record.at === undefined ? "" : `（最近一次 ${new Date(record.at).toLocaleString()}）`} ← 这些会话的行保留在上次能读到时的数字`,
+	];
+	for (const entry of (record.sample ?? []).slice(0, 5)) {
+		lines.push(`     ${entry.sessionId}  ${entry.reason}`);
+	}
+	if (record.count > Math.min(5, (record.sample ?? []).length)) lines.push(`     …还有 ${record.count - (record.sample ?? []).length} 个`);
+	return lines;
 }
 
 /**
@@ -1164,11 +1215,25 @@ export function apply(ctx, userConfig = {}) {
 			// Nothing scanned and a failure is the listing itself failing; every
 			// session would look unfolded, so the drop waits for a real pass.
 			if (rebuilding && !(stats.scanned === 0 && stats.failed > 0)) {
-				const dropped = store.dropUnfolded();
+				// Sessions that were LISTED but did not fold keep their old rows:
+				// their log exists, so the numbers are still faithful to it. Only
+				// a session the host no longer lists at all is dropped.
+				const unreadable = stats.unreadable ?? [];
+				const dropped = store.dropUnfolded(unreadable.map((entry) => entry.sessionId));
 				store.recordRebuildDone(dropped);
 				rebuilding = false;
 				if (dropped > 0) logger?.info?.("tokenledger: rebuild dropped %d session(s) whose logs were not re-read", dropped);
+				if (unreadable.length > 0) {
+					logger?.warn?.(
+						"tokenledger: %d session log(s) are present but unreadable; their rows were kept",
+						unreadable.length
+					);
+				}
 			}
+			// Kept current on every pass, rebuild or not: a log that cannot be
+			// read is not a rebuild-time event, and the panel reads this record
+			// whenever it wants to explain a total that stopped growing.
+			store.recordUnreadable(stats.unreadable ?? []);
 			if (stats.updated > 0 || stats.failed > 0) {
 				logger?.info?.(
 					"tokenledger: swept %d, updated %d, skipped %d, failed %d",

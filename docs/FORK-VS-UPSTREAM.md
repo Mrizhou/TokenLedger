@@ -45,6 +45,33 @@
   - 装机副作用：首轮会触发一次全量重折叠（10-20 起不清表，累计数中途不乱跳），历史上 665M 从「直连/官方」
     挪到 `gateway.qoder.com.cn`；余额一节多一张「Qoder CN · 无读取器」的卡。**合上游时这一处要保留**
     （上游没有 Qoder 支持；若上游补了自己的形态，取其那份并确认四条守卫仍绿）。
+- **重建只丢「日志真没了」的会话，读不出的保留旧行并报出来**（2026-10-24，用户「能改的改」）：
+  - 来因：一轮自动重建后 `meta.rebuild.dropped = 26`。排查发现 **19 个会话的日志仍在磁盘上、带 1.76 亿 tokens，
+    账本里却一行都没有**（回溯到 09-29 的五个账本备份里也从未出现）。逐条解码全部 523 个日志后定性：
+    17 个是 host `listArtifacts()` 从不返回（v0 老格式，表头完好、帧完整、0 坏帧）；
+    2 个是日志**本身坏了**——`session-279b9846…` 第一帧是 `job/settled`（seq 178，header 帧丢了）、
+    `session-fa0a8bbf…` 是 0 字节空文件。
+    host 侧源码（asar 内 `dsh-session-persistence`）：`assertZstdHeaderFrame()` 要求第一帧恰好一行 header，
+    否则抛 `SessionPersistenceCorruptionError`；`listArtifacts()` 遇 `metadata === undefined` 直接 `continue`
+    ——**静默跳过、不报错**。这些会话对插件等于不存在。
+  - 真正的插件缺陷：`sweep()` 把「读了但是空的」和「根本列不出来」混成同一件事，两者都 `stats.skipped++`
+    且**不写 checkpoint**，于是重建末尾的 `dropUnfolded()` 按「不在 checkpoint 里 = 日志已删」删掉旧行。
+    可日志明明在，删掉的是日志仍然持有的历史——与知识库那条「读不到不该显示成一个确定的答案」同一错误形态。
+  - 改法（`store.js` ＋ `plugin.js`）：① `sweep()` 收集 `stats.unreadable`（`[{ sessionId, reason }]`），
+    读取抛异常或读到 0 事件都算——「列表里有它」已证明日志存在；② `dropUnfolded(keep = [])` 只删
+    **既不在 checkpoint、也不在 keep 里**的会话，其余原样保留（没有 checkpoint，下一轮自动重试）；
+    ③ 新增 `store.recordUnreadable()` / `unreadableRecord()` 写 `meta.unreadable`（`{ count, at, sample }`，
+    sample ≤20 条、reason 截 200 字符），健康时空记录并自动清除；④ `diagnostics()` 仅在有时新增
+    `unreadableLogs`（附加、不改原有字段），`/tokenledger diagnostics` 多一组 `unreadableLines()`。
+  - 明确不做：**不补历史**（用户「老账不补」）。那 19 个会话仍缺账——17 个是 host 侧 v0 读不回来、
+    2 个是日志损坏，都不是账本能修的；回填脚本会把日志原文之外的数字塞进派生数据，违反红线 7。
+  - 守卫测试：`test/store.test.js`「a rebuild drops only the sessions whose log is gone, never one that merely failed to read」
+    「the unreadable-log record appears in diagnostics only while there is something to report」、
+    `test/apply.test.js`「a rebuild keeps the rows of a session whose log is present but unreadable」
+    （该条刻意**先读成功、再读失败**——第一版让 corrupt 会话一开始就读不出，没有行可丢，变异验证照样全绿，漏掉了）。
+    变异验证（每次只拆一处）：`dropUnfolded()` 不传 keep → apply 那条红在 `read 1000 here`；
+    store 去掉 keep 过滤 → store 那条红；`diagnostics()` 去掉字段 → 第二条红。
+    **合上游时这一处要保留**（上游仍是「不重新提交就删」）。
 - `src/plugin.js` 的 `revisionUnchanged()`（2026-09-24，**0.1.7 revision 语义适配**）：0.1.7 起 JSONL 后端对
    「从旧会话格式迁移的」日志把 revision 报成 `fileRevision`（`dev:ino:size:mtimeNs:ctimeNs`）**再拼一段**
    `historicalCorpusRevision()`，而这段语料哈希**每次观测都会变**（0.1.7-rc.2 实测：相邻两个 sweep 波次给出
