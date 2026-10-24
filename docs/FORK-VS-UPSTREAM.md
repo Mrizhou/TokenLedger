@@ -47,13 +47,23 @@
     （上游没有 Qoder 支持；若上游补了自己的形态，取其那份并确认四条守卫仍绿）。
 - **重建只丢「日志真没了」的会话，读不出的保留旧行并报出来**（2026-10-24，用户「能改的改」）：
   - 来因：一轮自动重建后 `meta.rebuild.dropped = 26`。排查发现 **19 个会话的日志仍在磁盘上、带 1.76 亿 tokens，
-    账本里却一行都没有**（回溯到 09-29 的五个账本备份里也从未出现）。逐条解码全部 523 个日志后定性：
-    17 个是 host `listArtifacts()` 从不返回（v0 老格式，表头完好、帧完整、0 坏帧）；
-    2 个是日志**本身坏了**——`session-279b9846…` 第一帧是 `job/settled`（seq 178，header 帧丢了）、
-    `session-fa0a8bbf…` 是 0 字节空文件。
-    host 侧源码（asar 内 `dsh-session-persistence`）：`assertZstdHeaderFrame()` 要求第一帧恰好一行 header，
-    否则抛 `SessionPersistenceCorruptionError`；`listArtifacts()` 遇 `metadata === undefined` 直接 `continue`
-    ——**静默跳过、不报错**。这些会话对插件等于不存在。
+    账本里却一行都没有**（回溯到 09-29 的五个账本备份里也从未出现）。
+  - 定性（⚠️ **2026-10-24 订正过一次，以本节为准**）：早先根据 host 源码
+    `listArtifacts()` 里那句 `if (metadata === void 0) continue;` 推断「这 17 个 v0 日志**从不被列出**」——
+    **这个结论是错的**。装上诊断后的实测 reason 说明它们**列得出、也尝试读了，是解码阶段被拒**：
+    ```
+    assistant/message 36 chunk references are not one complete ordered attempt;
+    source v0 artifact remains unchanged (raw log: …)
+    subagent/descriptor 0 uses unsupported descriptor version 2; source v0 artifact remains unchanged
+    ```
+    18 条读不出的实际分布：**10 条 v0 attempt 完整性校验失败**（chunk 引用不构成一个有序 attempt）、
+    **7 条 v0 `subagent/descriptor` 版本 2 不受支持**、**1 条真损坏**（`tool call id requires a nonempty string`）。
+    17/18 带同一句 `source v0 artifact remains unchanged` —— host **拒绝迁移 v0 文件、只读不写**。
+    另有一个 `session-279b9846…` 在**列表阶段**就被跳过（第一帧是 `job/settled` seq 178，header 帧丢了，
+    命中 `assertZstdHeaderFrame()` 抛 `SessionPersistenceCorruptionError` → `metadata === undefined` → `continue`），
+    外加一个 0 字节空文件 `session-fa0a8bbf…`。
+    **差别为什么重要**：那句 `continue` 只解释了列表阶段那一个；把 17 个也归到它下面，是把
+    「列不出来」和「列得出但读不了」混成一件事 —— 正是这次要修的那个错误，我差点在诊断里重犯一遍。
   - 真正的插件缺陷：`sweep()` 把「读了但是空的」和「根本列不出来」混成同一件事，两者都 `stats.skipped++`
     且**不写 checkpoint**，于是重建末尾的 `dropUnfolded()` 按「不在 checkpoint 里 = 日志已删」删掉旧行。
     可日志明明在，删掉的是日志仍然持有的历史——与知识库那条「读不到不该显示成一个确定的答案」同一错误形态。
@@ -63,8 +73,9 @@
     ③ 新增 `store.recordUnreadable()` / `unreadableRecord()` 写 `meta.unreadable`（`{ count, at, sample }`，
     sample ≤20 条、reason 截 200 字符），健康时空记录并自动清除；④ `diagnostics()` 仅在有时新增
     `unreadableLogs`（附加、不改原有字段），`/tokenledger diagnostics` 多一组 `unreadableLines()`。
-  - 明确不做：**不补历史**（用户「老账不补」）。那 19 个会话仍缺账——17 个是 host 侧 v0 读不回来、
-    2 个是日志损坏，都不是账本能修的；回填脚本会把日志原文之外的数字塞进派生数据，违反红线 7。
+  - 明确不做：**不补历史**（用户「老账不补」）。那 19 个会话仍缺账——17 个是 host 的 v0 解码器拒收、
+    1 个日志损坏、1 个在列表阶段被跳过，都不是账本能修的；回填脚本会把日志原文之外的数字塞进派生数据，
+    违反红线 7。实测这些量并非本次丢的：`yos` 那 4 个会话（合计 231 万 tokens）在 10-19 的账本备份里同样没有。
   - 守卫测试：`test/store.test.js`「a rebuild drops only the sessions whose log is gone, never one that merely failed to read」
     「the unreadable-log record appears in diagnostics only while there is something to report」、
     `test/apply.test.js`「a rebuild keeps the rows of a session whose log is present but unreadable」
